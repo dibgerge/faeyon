@@ -3,8 +3,6 @@ import torch
 from typing import Optional
 from torch import nn
 
-nn.MultiheadAttention
-
 
 class Attention(nn.Module):
     """
@@ -17,6 +15,7 @@ class Attention(nn.Module):
         query_size: Optional[int] = None,
         value_size: Optional[int] = None
     ) -> None:
+
         super().__init__()
         if key_size is None:
             key_size = embed_size
@@ -24,6 +23,12 @@ class Attention(nn.Module):
             query_size = embed_size
         if value_size is None:
             value_size = embed_size
+
+        if any([embed_size <= 0, key_size <= 0, query_size <= 0, value_size <= 0]):
+            raise ValueError(
+                "`embed_size`, `key_size`, `query_size` and `value_size` must be positive, "
+                "if specified."
+            )
 
         self.embed_size = embed_size
         self.key_size = key_size

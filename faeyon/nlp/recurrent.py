@@ -2,7 +2,7 @@ import enum
 import torch
 
 from dataclasses import dataclass, asdict
-from typing import Optional
+from typing import Optional, override
 
 from faeyon.layers import Attention
 from torch import nn
@@ -45,8 +45,8 @@ class CellType(enum.Enum):
 
 @dataclass
 class DefaultEmbedding:
-    vocab_size: int
-    embedding_size: int
+    num_embeddings: int
+    embedding_dim: int
 
     def __call__(self) -> nn.Embedding:
         return nn.Embedding(**asdict(self))
@@ -55,7 +55,6 @@ class DefaultEmbedding:
 class Encoder(nn.Module):
     def __init__(
         self,
-        input_size: int,
         embedding: nn.Embedding | DefaultEmbedding | dict,
         hidden_size: Optional[int] = None,
         num_layers: int = 1,
@@ -75,17 +74,18 @@ class Encoder(nn.Module):
 
             self.embedding = embedding()
 
+        self.vocab_size = self.embedding.num_embeddings
+        self.input_size = self.embedding.embedding_dim
+
         if hidden_size is None:
-            self.hidden_size = input_size
+            self.hidden_size = self.input_size
         else:
             self.hidden_size = hidden_size
-
-        self.vocab_size = self.embedding.num_embeddings
 
         cell = CellType(cell)  # type: ignore
 
         self.model = cell(
-            input_size=input_size,
+            input_size=self.input_size,
             hidden_size=self.hidden_size,
             num_layers=num_layers,
             bidirectional=bidirectional,
@@ -94,7 +94,18 @@ class Encoder(nn.Module):
             bias=bias
         )
 
-    def forward(self, x: torch.Tensor, hidden: Optional[torch.Tensor] = None) -> torch.Tensor:
+    @override
+    def forward(self, x: torch.Tensor, hidden: torch.Tensor) -> torch.Tensor:
+        ...
+
+    @override
+    def forward(self, x: torch.Tensor, hidden: tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
+        ...
+
+    def forward(
+        self, x: torch.Tensor, 
+        hidden: Optional[torch.Tensor | tuple[torch.Tensor, torch.Tensor]] = None
+    ) -> torch.Tensor:
         x = self.embedding(x)
         output, _ = self.model(x, hidden)
         return output
@@ -103,7 +114,6 @@ class Encoder(nn.Module):
 class Decoder(Encoder):
     def __init__(
         self,
-        input_size: int,
         embedding: nn.Embedding | DefaultEmbedding | dict,
         hidden_size: Optional[int] = None,
         num_layers: int = 1,
@@ -113,7 +123,6 @@ class Decoder(Encoder):
         cell: CellType | str = CellType.GRU
     ) -> None:
         super().__init__(
-            input_size=input_size,
             embedding=embedding,
             hidden_size=hidden_size,
             num_layers=num_layers,
@@ -137,12 +146,15 @@ class Seq2Seq(nn.Module):
         self.decoder = decoder
         self.attention = attention
 
-        self.hidden_proj = nn.Linear(attention.embed_size + decoder.hidden_size, attention.embed_size)
+        self.hidden_proj = nn.Linear(
+            attention.embed_size + decoder.hidden_size,
+            attention.embed_size
+        )
         self.out_proj = nn.Linear(attention.embed_size, decoder.vocab_size)
 
     def forward(
-        self, 
-        x: torch.Tensor, 
+        self,
+        x: torch.Tensor,
         hidden: Optional[torch.Tensor] = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -159,8 +171,8 @@ class Seq2Seq(nn.Module):
         output : torch.Tensor
             Output tensor of shape (batch_size, output_size)
 
-        hidden : torch.Tensor
-            Hidden state tensor of shape (batch_size, hidden_size)
+        attention : torch.Tensor
+            Attention tensor of shape (batch_size, sequence length, embed_size)
         """
         ye, _ = self.encoder(x, hidden)
         yd, _ = self.decoder(x, hidden)

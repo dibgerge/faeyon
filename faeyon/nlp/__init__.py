@@ -1,1 +1,1 @@
-from .rnn import RNN
+from . import recurrent
