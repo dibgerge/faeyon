@@ -1,8 +1,9 @@
 import pytest
 import torch
 
-from faeyon.nlp.recurrent import Encoder, Decoder, Seq2Seq, CellType, DefaultEmbedding
 from torch import nn
+from faeyon.nlp.recurrent import Encoder, Decoder, Seq2Seq, CellType, DefaultEmbedding
+from faeyon.layers import AdditiveAttention
 
 
 def test_cell_type():
@@ -102,17 +103,12 @@ class TestEncoder:
             cell="lstm"
         )
 
-        if bidirectional:
-            hidden_out_size = hidden_size * 2
-        else:
-            hidden_out_size = hidden_size
-
         if batch_size > 0:
             x = torch.randint(0, 100, (batch_size, tx))
-            expected_output_shape = (batch_size, tx, hidden_out_size)
+            expected_output_shape = (batch_size, tx, encoder.output_size)
         else:
             x = torch.randint(0, 100, (tx, ))
-            expected_output_shape = (tx, hidden_out_size)
+            expected_output_shape = (tx, encoder.output_size)
         output = encoder(x)
 
         assert output.shape == expected_output_shape
@@ -152,3 +148,50 @@ class TestDecoder:
             output = decoder(x, hidden)
 
         assert output.shape == expected_output_shape
+
+
+class TestSeq2Seq:
+    def test_forward(self):
+        batch_size = 2
+        Tx = 7
+        Ty = 6
+        encoder_hidden_size = 20
+        decoder_hidden_size = 15
+        decoder_vocab_size = 100
+        encoder_vocab_size = 200
+        attention_embed_size = 5
+
+        encoder = Encoder(
+            embedding=DefaultEmbedding(encoder_vocab_size, 10),
+            hidden_size=encoder_hidden_size,
+            num_layers=2,
+            cell="lstm",
+            batch_first=True,
+            bidirectional=True
+        )
+
+        decoder = Decoder(
+            embedding=DefaultEmbedding(decoder_vocab_size, 10),
+            hidden_size=decoder_hidden_size,
+            num_layers=2,
+            cell="lstm",
+            batch_first=True,
+        )
+
+        attention = AdditiveAttention(
+            embed_size=attention_embed_size,
+            key_size=encoder.output_size,
+            query_size=decoder.output_size,
+            value_size=encoder.output_size
+        )
+
+        model = Seq2Seq(
+            encoder=encoder,
+            decoder=decoder,
+            attention=attention
+        )
+
+        x = torch.randint(0, encoder_vocab_size, (batch_size, Tx))
+        target = torch.randint(0, decoder_vocab_size, (batch_size, Ty))
+        output, alpha = model(x, target)
+        assert output.shape == (batch_size, Ty, decoder_vocab_size)

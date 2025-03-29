@@ -76,15 +76,16 @@ class Encoder(nn.Module):
 
         self.vocab_size = self.embedding.num_embeddings
         self.input_size = self.embedding.embedding_dim
+        self.num_layers = num_layers
 
         if hidden_size is None:
             self.hidden_size = self.input_size
         else:
             self.hidden_size = hidden_size
 
-        cell = CellType(cell)  # type: ignore
+        self.cell_type = CellType(cell)  # type: ignore
 
-        self.model = cell(
+        self.model = self.cell_type(
             input_size=self.input_size,
             hidden_size=self.hidden_size,
             num_layers=num_layers,
@@ -94,21 +95,23 @@ class Encoder(nn.Module):
             bias=bias
         )
 
-    @override
-    def forward(self, x: torch.Tensor, hidden: torch.Tensor) -> torch.Tensor:
-        ...
-
-    @override
-    def forward(self, x: torch.Tensor, hidden: tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
-        ...
-
     def forward(
-        self, x: torch.Tensor, 
+        self, x: torch.Tensor,
         hidden: Optional[torch.Tensor | tuple[torch.Tensor, torch.Tensor]] = None
     ) -> torch.Tensor:
+        if hidden is not None and self.cell_type == CellType.LSTM:
+            if isinstance(hidden, torch.Tensor):
+                hidden = (hidden, torch.zeros_like(hidden))
+
         x = self.embedding(x)
         output, _ = self.model(x, hidden)
         return output
+
+    @property
+    def output_size(self):
+        if self.model.bidirectional:
+            return self.hidden_size * 2
+        return self.hidden_size
 
 
 class Decoder(Encoder):
@@ -146,8 +149,10 @@ class Seq2Seq(nn.Module):
         self.decoder = decoder
         self.attention = attention
 
+        # This is not in the original paper, but we use here to keep attention / decoder separated
+        self.encoder_proj = nn.Linear(encoder.output_size, decoder.hidden_size)
         self.hidden_proj = nn.Linear(
-            attention.embed_size + decoder.hidden_size,
+            encoder.output_size + decoder.output_size,
             attention.embed_size
         )
         self.out_proj = nn.Linear(attention.embed_size, decoder.vocab_size)
@@ -155,6 +160,7 @@ class Seq2Seq(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
+        target: torch.Tensor,
         hidden: Optional[torch.Tensor] = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -164,7 +170,7 @@ class Seq2Seq(nn.Module):
             Input tensor of shape (batch_size, sequence length, input_size)
 
         hidden : torch.Tensor
-            Hidden state tensor of shape (batch_size, hidden_size)      
+            Hidden state tensor of shape (batch_size, hidden_size)   
 
         Returns
         -------
@@ -174,9 +180,11 @@ class Seq2Seq(nn.Module):
         attention : torch.Tensor
             Attention tensor of shape (batch_size, sequence length, embed_size)
         """
-        ye, _ = self.encoder(x, hidden)
-        yd, _ = self.decoder(x, hidden)
+        ye = self.encoder(x, hidden)
+        ye_proj = self.encoder_proj(ye[..., -1, :])
 
+        hidden = torch.repeat_interleave(ye_proj[None], self.decoder.num_layers, dim=0)
+        yd = self.decoder(target, hidden)
         alpha = self.attention(key=ye, query=yd, value=ye)
 
         ht = torch.tanh(self.hidden_proj(torch.cat([yd, alpha], dim=-1)))
