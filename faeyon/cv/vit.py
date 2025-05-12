@@ -29,7 +29,7 @@ class ViTBlock(nnx.Module):
         x2 = x + in_x
         x = self.lnorm_out(x2)
         x = self.linear1(x)
-        x = nnx.relu(x)
+        x = nnx.gelu(x)
         x = self.linear2(x)
         x = self.dropout(x)
         x = x + x2
@@ -76,6 +76,7 @@ class ViT(nnx.Module):
         )
         self.dropout = nnx.Dropout(0.1, rngs=rngs)
         self.classifier = nnx.Linear(hidden_size, 1000, rngs=rngs)
+        self.lnorm = nnx.LayerNorm(hidden_size, rngs=rngs)
 
         self.deterministic = False
 
@@ -93,6 +94,7 @@ class ViT(nnx.Module):
         for layer in self.layers:
             x = layer(x)
 
+        x = self.lnorm(x)
         x = x[..., 0, :]
         x = self.classifier(x)
         return x
