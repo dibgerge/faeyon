@@ -2,9 +2,9 @@ import enum
 import torch
 
 from dataclasses import dataclass, asdict
-from typing import Optional, override
+from typing import Optional
 
-from faeyon.layers import Attention
+from faeyon.models.layers import Attention
 from torch import nn
 
 

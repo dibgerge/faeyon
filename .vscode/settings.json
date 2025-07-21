@@ -1,11 +1,18 @@
 {
-    "flake8.args": [
-        "--config=setup.cfg"
-    ],
+    "ruff.nativeServer": "on",
+    
     "python.testing.pytestArgs": [
         "tests"
     ],
     "python.experiments.optInto": ["pythonTestAdapter"],
     "python.testing.unittestEnabled": false,
-    "python.testing.pytestEnabled": true
+    "python.testing.pytestEnabled": true,
+    "python.linting.mypyEnabled": true,
+    "python.linting.mypyArgs": [
+        "--config-file=pyproject.toml"
+    ],
+    "mypy-type-checker.cwd": "${nearestConfig}",
+    "mypy-type-checker.args": [
+        "--config-file=pyproject.toml"
+    ]
 }

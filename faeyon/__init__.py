@@ -1,3 +1,5 @@
-from . import cv
-from .trainer import train
-from .core import ClassificationSpell, Spell
+from . import models
+
+from .magic import faek
+
+faek.on()

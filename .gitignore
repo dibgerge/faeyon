@@ -131,3 +131,4 @@ dmypy.json
 /experiments/
 scratch/
 /.test_coverage/
+/stubs/

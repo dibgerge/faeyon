@@ -6,3 +6,11 @@ max-line-length = 100
 [tool:pytest]
 addopts = --color=yes -s --cov=faeyon/ --cov-report html:.test_coverage/html
 required_plugins = pytest-cov
+
+
+[mypy]
+files = "faeyon"
+mypy_path = "$MYPY_CONFIG_FILE_DIR/stubs"
+
+[mypy-torch.*]
+ignore_errors = true
