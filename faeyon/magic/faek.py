@@ -3,50 +3,8 @@ import inspect
 import torch
 
 from torch import nn
-from typing import Any, overload
+from typing import Any
 
-
-class MetaX(type):
-    def __getattr__(cls, item):
-        print("here")
-        out = cls()
-        out.op = item
-        return out
-
-    # def __call__(cls):
-    #     print("call", cls)
-        
-    def __getitem__(cls, item):
-        x = torch.randn(10, 4)
-        print("get item", item, x[item])
-
-
-class X(metaclass=MetaX):
-    """ 
-    A placeholder for lazy access of operations on the left side of the >> operator when they are not available yet.
-    """
-    def __init__(self, *args, **kwargs) -> None:
-        self.args = args
-        self.kwargs = kwargs
-    
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.args, name)
-    
-    def __getitem__(self, key: str) -> Any:
-        pass
-
-
-
-class FaeArgs:
-    """
-    A placeholder for mapping next operation's arguments to the left side of the >> operator.
-
-    The arguments are stored in `args` and `kwargs` attributes will be used to specify the operations of the next layer. Their values can be used to access the previous layer using the `X` placeholder, or just provide static arguments if that's all you need.
-    """
-    def __init__(self, *args, **kwargs) -> None:
-        self.args = args
-        self.kwargs = kwargs
-    
 
 def __new__(cls, *args, **kwargs):
     instance = object.__new__(cls)
@@ -178,7 +136,7 @@ class Faek(metaclass=Singleton):
         "__rrshift__",
         "clone"
     ]
-    nn.Sequential
+
     def __init__(self):
         self._is_on = False
 
