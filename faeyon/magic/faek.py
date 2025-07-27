@@ -1,6 +1,5 @@
 import sys
 import inspect
-import torch
 
 from torch import nn
 from typing import Any
@@ -46,26 +45,12 @@ def __rmul__(self: nn.Module, other: int) -> list[nn.Module]:
     return self.__mul__(other)
 
 
-def __rrshift__[T: nn.Module](self: T, other: torch.Any) -> torch.Any:
-    if isinstance(other, nn.Module):
-        if not isinstance(other, nn.ModuleList):
-            left = [other]
-        else:
-            left = other
-
-        if not isinstance(self, nn.ModuleList):
-            right = [self]
-        else:
-            right = self
-
-        return nn.ModuleList(left + right)
-
-    elif isinstance(other, torch.Tensor):
-        return self(other)
-    else:
-        raise ValueError(
-            f"Unsupported types: {type(self)} and {type(other)} for operation __rshift__ (>>)."
-        )
+def __rrshift__[T: nn.Module](self: T, other: Any) -> Any:
+    """
+    This is an alias for `__call__`. The limitation here is that it only works for 
+    single inputs. If you need to pass multiple inputs, use the `FaeArgs` class.
+    """
+    return self(other)
 
 
 def clone(self: nn.Module) -> nn.Module:

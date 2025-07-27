@@ -1,3 +1,6 @@
+"""
+Note: Currently faek is automatically enabled when faeyon is imported. 
+"""
 from torch import nn
 from faeyon import faek
 

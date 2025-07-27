@@ -1,5 +1,7 @@
+import itertools
 from collections.abc import Callable
 from typing import Any
+from faeyon.utils import is_ipython
 
 
 # Define methods supported by the _MetaX metaclass
@@ -10,20 +12,14 @@ _methods = [
     "__ne__",
     "__gt__",
     "__ge__",
-    "__hash__",
-    "__bool__",
     "__getattr__",
-
 
     # Emulating callables
     "__call__",
     
     # Containers
-    "__len__",
     "__getitem__",
-    "__iter__",
     "__reversed__",
-    "__contains__"
 
     # Numeric types
     "__add__",
@@ -62,10 +58,7 @@ _methods = [
     "__abs__",
     "__invert__",
 
-    # built-in number types
-    "__complex__",
-    "__int__",
-    "__float__",
+   # built-in number types
     "__round__",
     "__trunc__",
     "__floor__",
@@ -75,7 +68,10 @@ _methods = [
 
 def _meta_method[T](name: str) -> Callable[..., T]:
     def method(cls: type[T], *args, **kwargs) -> T:
-        obj = getattr(super(_MetaX, cls), name)
+        # Call the constructor method to return an instance of the class
+        # This removes the requirement to explicity initialize the class with `X()`, since 
+        # the latter should be interpreted as a function call
+        obj = super(_MetaX, cls).__call__()  # type: ignore
         return getattr(obj, name)(*args, **kwargs)
     return method
 
@@ -84,10 +80,26 @@ def _x_method[T](name: str) -> Callable[..., T]:
     def method(self, *args, **kwargs):
         self._buffer.append((name, args, kwargs))
         return self
+
+    def __getattr__(self, key: str):
+        # Bypass IPython's internal check for the _ipython_canary_method_should_not_exist_ attribute
+        # This is required to make IPython display the object's contents
+        if is_ipython() and key == "_ipython_canary_method_should_not_exist_":
+            return self
+        return method(self, key)
+
+    if name == "__getattr__":
+        return __getattr__
+
     return method
 
 
+def _meta_hash(cls) -> int:
+    return super(_MetaX, cls).__hash__()  # type: ignore
+
+
 _MetaX = type("_MetaX", (type,), {k: _meta_method(k) for k in _methods})
+_MetaX.__hash__ = _meta_hash  # type: ignore
 
 
 class X(metaclass=_MetaX):  # type: ignore
@@ -99,6 +111,29 @@ class X(metaclass=_MetaX):  # type: ignore
         self._buffer: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
 
 
+    def __repr__(self) -> str:
+        output = []
+        for name, args, kwargs in self._buffer:
+            if args:
+                args_f = ", ".join(map(repr, args)) + ", "
+            else:
+                args_f = ""
+
+            if kwargs:
+                kwargs_f = ", ".join(f"{k}={v!r}" for k, v in kwargs.items())
+            else:
+                kwargs_f = ""
+            
+            output.append(f"{name}({args_f}{kwargs_f})")
+        
+        return " -> ".join(output)
+
+    def __iter__(self):
+        return iter(self._buffer)
+
+    def __len__(self):
+        return len(self._buffer)
+
 for method in _methods:
     setattr(X, method, _x_method(method))
 
@@ -107,8 +142,53 @@ class FaeArgs:
     """
     A placeholder for mapping next operation's arguments to the left side of the >> operator.
 
-    The arguments are stored in `args` and `kwargs` attributes will be used to specify the operations of the next layer. Their values can be used to access the previous layer using the `X` placeholder, or just provide static arguments if that's all you need.
+    The arguments are stored in `args` and `kwargs` attributes will be used to specify the 
+    operations of the next layer. Their values can be used to access the previous layer using the 
+    `X` placeholder, or just provide static arguments if that's all you need.
     """
     def __init__(self, *args, **kwargs) -> None:
+        self._is_resolved = not any(
+            isinstance(item, X) for item in itertools.chain(args, kwargs.values())
+        )
+
         self.args = args
         self.kwargs = kwargs
+
+    def call(self, func: Callable[..., Any]) -> Any:
+        if not self.is_resolved:
+            raise ValueError(
+                f"Cannot call {func} with unresolved arguments. Feed data `FaeArgs` to resolve it."
+            )
+        return func(*self.args, **self.kwargs)
+
+    def __rshift__(self, func: Callable[..., Any]) -> Any:
+        return self.call(func)
+
+    @property
+    def is_resolved(self) -> bool:
+        return self._is_resolved
+
+    @staticmethod
+    def _resolve_item(item: Any, data: Any) -> Any:
+        if isinstance(item, type) and issubclass(item, X):
+            return data
+
+        if not isinstance(item, X):
+            return item
+        
+        for name, args, kwargs in item:
+            data = getattr(data, name)(*args, **kwargs)
+        
+        return data
+         
+    def resolve(self, data: Any) -> "FaeArgs":
+        if self.is_resolved:
+            return self
+        
+        resolved_args = tuple(self._resolve_item(arg, data) for arg in self.args)
+        resolved_kwargs = {k: self._resolve_item(v, data) for k, v in self.kwargs.items()}
+        return FaeArgs(*resolved_args, **resolved_kwargs)
+
+
+    def __rrshift__(self, data: Any) -> "FaeArgs":
+        return self.resolve(data)
