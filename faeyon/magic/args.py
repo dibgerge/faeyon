@@ -5,65 +5,65 @@ from faeyon.utils import is_ipython
 
 
 # Define methods supported by the _MetaX metaclass
-_methods = [
-    "__lt__",
-    "__le__",
-    "__eq__",
-    "__ne__",
-    "__gt__",
-    "__ge__",
-    "__getattr__",
+_methods = {
+    "__lt__": "X < {}",
+    "__le__": "X <= {}",
+    "__eq__": "X == {}",
+    "__ne__": "X != {}",
+    "__gt__": "X > {}",
+    "__ge__": "X >= {}",
+    "__getattr__": "X.{}",
 
     # Emulating callables
-    "__call__",
+    "__call__": "X({}, {})",
     
     # Containers
-    "__getitem__",
-    "__reversed__",
+    "__getitem__": "X[{}]",
+    "__reversed__": "reversed(X)",
 
     # Numeric types
-    "__add__",
-    "__sub__",
-    "__mul__",
-    "__matmul__",
-    "__truediv__",
-    "__floordiv__",
-    "__mod__",
-    "__divmod__",
-    "__pow__",
-    "__lshift__",
-    "__rshift__",
-    "__and__",
-    "__or__",
-    "__xor__",
+    "__add__": "X + {}",
+    "__sub__": "X - {}",
+    "__mul__": "X * {}",
+    "__matmul__": "X @ {}",
+    "__truediv__": "X / {}",
+    "__floordiv__": "X // {}",
+    "__mod__": "X % {}",
+    "__divmod__": "divmod(X, {})",
+    "__pow__": "X ** {}",
+    "__lshift__": "X << {}",
+    "__rshift__": "X >> {}",
+    "__and__": "X & {}",
+    "__or__": "X | {}",
+    "__xor__": "X ^ {}",
 
-    "__radd__",
-    "__rsub__",
-    "__rmul__",
-    "__rmatmul__",
-    "__rtruediv__",
-    "__rfloordiv__",
-    "__rmod__",
-    "__rdivmod__",
-    "__rpow__",
-    "__rlshift__",
-    "__rrshift__",
-    "__rand__",
-    "__ror__",
-    "__rxor__",
+    "__radd__": "{} + X",
+    "__rsub__": "{} - X",
+    "__rmul__": "{} * X",
+    "__rmatmul__": "{} @ X",
+    "__rtruediv__": "{} / X",
+    "__rfloordiv__": "{} // X",
+    "__rmod__": "{} % X",
+    "__rdivmod__": "divmod({}, X)",
+    "__rpow__": "{} ** X",
+    "__rlshift__": "{} << X",
+    "__rrshift__": "{} >> X",
+    "__rand__": "{} & X",
+    "__ror__": "{} | X",
+    "__rxor__": "{} ^ X",
 
     # Unary operators
-    "__neg__",
-    "__pos__",
-    "__abs__",
-    "__invert__",
+    "__neg__": "-X",
+    "__pos__": "+X",
+    "__abs__": "abs(X)",
+    "__invert__": "~X",
 
    # built-in number types
-    "__round__",
-    "__trunc__",
-    "__floor__",
-    "__ceil__"
-]
+    "__round__": "round(X)",
+    "__trunc__": "trunc(X)",
+    "__floor__": "floor(X)",
+    "__ceil__": "ceil(X)",
+}
 
 
 def _meta_method[T](name: str) -> Callable[..., T]:
@@ -98,8 +98,31 @@ def _meta_hash(cls) -> int:
     return super(_MetaX, cls).__hash__()  # type: ignore
 
 
+def _meta_len(cls) -> int:
+    return 0
+
+
+def _meta_iter(cls):
+    return iter([])
+
+
+def _meta_repr(cls):
+    return "X"
+
+
+def _meta_instancecheck(cls, instance):
+    return (
+        super(_MetaX, cls).__instancecheck__(instance) 
+        or (isinstance(instance, type) and issubclass(instance, cls))
+    )
+
+
 _MetaX = type("_MetaX", (type,), {k: _meta_method(k) for k in _methods})
 _MetaX.__hash__ = _meta_hash  # type: ignore
+_MetaX.__len__ = _meta_len  # type: ignore
+_MetaX.__iter__ = _meta_iter  # type: ignore
+_MetaX.__repr__ = _meta_repr  # type: ignore
+_MetaX.__instancecheck__ = _meta_instancecheck  # type: ignore
 
 
 class X(metaclass=_MetaX):  # type: ignore
@@ -113,18 +136,11 @@ class X(metaclass=_MetaX):  # type: ignore
 
     def __repr__(self) -> str:
         output = []
-        for name, args, kwargs in self._buffer:
-            if args:
-                args_f = ", ".join(map(repr, args)) + ", "
-            else:
-                args_f = ""
-
-            if kwargs:
-                kwargs_f = ", ".join(f"{k}={v!r}" for k, v in kwargs.items())
-            else:
-                kwargs_f = ""
-            
-            output.append(f"{name}({args_f}{kwargs_f})")
+        for name, args, kwargs in self:
+            args_f = ", ".join(map(repr, args))
+            kwargs_f = ", ".join(f"{k}={v!r}" for k, v in kwargs.items())
+            fmt = _methods[name].format(args_f, kwargs_f)
+            output.append(fmt)
         
         return " -> ".join(output)
 
@@ -170,9 +186,6 @@ class FaeArgs:
 
     @staticmethod
     def _resolve_item(item: Any, data: Any) -> Any:
-        if isinstance(item, type) and issubclass(item, X):
-            return data
-
         if not isinstance(item, X):
             return item
         
@@ -181,7 +194,7 @@ class FaeArgs:
         
         return data
          
-    def resolve(self, data: Any) -> "FaeArgs":
+    def bind(self, data: Any) -> "FaeArgs":
         if self.is_resolved:
             return self
         
@@ -191,4 +204,4 @@ class FaeArgs:
 
 
     def __rrshift__(self, data: Any) -> "FaeArgs":
-        return self.resolve(data)
+        return self.bind(data)

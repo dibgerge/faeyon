@@ -1,5 +1,3 @@
 from . import models
 
-from .magic import faek
-
-faek.on()
+from .magic import faek, X, FaeArgs

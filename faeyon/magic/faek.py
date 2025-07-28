@@ -15,6 +15,17 @@ def __new__(cls, *args, **kwargs):
     return instance
 
 
+def __default_new__(cls, *args, **kwargs):
+    """ Once we override __new__ in `nn.Module`, we cannot restore the old one, since nn.Module 
+    (as of PyTorch 2.7) does not implement `__new__`, and hence expect it to have no arguments. 
+    The custom __new__ method we implemented above does not match this signature, and hence 
+    we cannot restore the old one. As a workaround, we define a default __new__ method that 
+    matches the signature of the default __new__ method in `nn.Module`, but calls the parent object 
+    without any arguments.
+    """
+    return object.__new__(cls)
+
+
 def __mul__(self: nn.Module, other: int) -> list[nn.Module]:
     """
     Creates a ModuleList of `other` clones of this module.
@@ -27,17 +38,7 @@ def __mul__(self: nn.Module, other: int) -> list[nn.Module]:
     if other < 1:
         raise ValueError("Number of modules must be greater than 0.")
 
-    module_list = []
-    for _ in range(other):
-        try:
-            module_list.append(self.clone())
-        except TypeError as e:
-            raise TypeError(
-                f"Cannot multiply {self} to create a ModuleList of {other} clones due to\n"
-                "unsupported argument types. Try generating the ModuleList manually."
-            ) from e
-
-    return module_list
+    return [self.clone() for _ in range(other)]
 
 
 def __rmul__(self: nn.Module, other: int) -> list[nn.Module]:
@@ -55,24 +56,22 @@ def __rrshift__[T: nn.Module](self: T, other: Any) -> Any:
 
 def clone(self: nn.Module) -> nn.Module:
     """
-    Create a new instance of the same module with the same arguments. This function only works
-    on a strict subset of types, so that to avoid any possible side effects. If any of the 
-    Module arguments are not supported, a TypeError will be raised.
+    Create a new instance of the same module with the same arguments. This method should be used 
+    carefully, since it is does not do any deep copying on all types of module arguments. 
 
-    Here is a list of supported types and behavior:
-    - nn.Module: The module is cloned recursively.
-    - Numbers and strings: Passed as is to the cloned instance
-    - torch.Tensor / np.ndarray : Passed by reference to the cloned instance.
+    The module is cloned based on the arguments passed to the constructor. If any of the arguments
+    were changed after the module was created, the cloned module will have the same arguments as the
+    original module (unless the argument itself was mutated).
+    
+    Here is the behavior on how the arguments are handled during cloning based on their type:
+    - `nn.Module`: The module is cloned recursively.
     - list/tuple/dict: Iterate recursively and use the above rules for each element. 
         Return a new list/tuple/dict.
+    - Anything else is passed as is to the new instance.
     """
-
     def _get_argument_clone(arg):
         if isinstance(arg, nn.Module):
             return arg.clone()
-
-        # if isinstance(arg, (Number, str, torch.Tensor, np.ndarray)):                
-        #     return arg
 
         if isinstance(arg, (list, tuple)):
             return type(arg)(_get_argument_clone(item) for item in arg)
@@ -80,9 +79,6 @@ def clone(self: nn.Module) -> nn.Module:
         if isinstance(arg, dict):
             return {k: _get_argument_clone(v) for k, v in arg.items()}
 
-        # raise TypeError(
-        #     f"Unsupported type: {type(arg)} ({arg}) for operation _get_argument_clone."
-        # )
         return arg
 
     cls = self.__class__
@@ -115,7 +111,6 @@ class Faek(metaclass=Singleton):
     """
 
     methods = [
-        "__new__",
         "__mul__",
         "__rmul__",
         "__rrshift__",
@@ -135,12 +130,15 @@ class Faek(metaclass=Singleton):
         current_module = sys.modules[__name__]
         for method in self.methods:
             setattr(nn.Module, method, getattr(current_module, method))
+
+        nn.Module.__new__ = staticmethod(__new__)
         self._is_on = True
 
     def off(self):
         for method in self.methods:
-            if method != "__new__":
-                delattr(nn.Module, method)
+            delattr(nn.Module, method)
+
+        nn.Module.__new__ = staticmethod(__default_new__)
         self._is_on = False
 
 
