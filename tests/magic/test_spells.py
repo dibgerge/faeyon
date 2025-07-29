@@ -140,7 +140,7 @@ class TestFaeVar:
     def test_rrshift(self):
         fae_var = FaeVar(strict=True)
         2 >> fae_var
-        assert fae_var._value == 2
+        assert fae_var._value.value == 2
 
     def test_rrshift_raisesValueError(self):
         """ 
@@ -154,31 +154,38 @@ class TestFaeVar:
     def test_rrshift_overwrite(self):
         fae_var = FaeVar(strict=False)
         out = 2 >> fae_var
-        assert fae_var._value == 2
+        assert fae_var._value.value == 2
         assert out == 2
 
         out = 3 >> fae_var
-        assert fae_var._value == 3
+        assert fae_var._value.value == 3
         assert out == 3
 
     def test_using(self):
         """ `using` method is same as >> operator. """
         fae_var = FaeVar(strict=True)
         out = fae_var.using(2)
-        assert fae_var._value == 2
+        assert fae_var._value.value == 2
         assert out == 2
 
     def test_select_return_type(self):
-        fae_var = FaeVar()
+        fae_var = FaeVar(strict=False)
         selectable = fae_var.select(X[1])
         assert isinstance(selectable, FaeVar)
+        assert selectable is not fae_var
+
+        [10, 20] >> selectable
+        assert selectable._value.value == 20
+
+        [10, 20] >> fae_var
+        assert fae_var._value.value == [10, 20]
     
     def test_select(self):
         fae_var = FaeVar(strict=True)
         data = [1, 2,  3]
         out = data >> fae_var.select(X[1])
         assert data is out
-        assert fae_var._value == 2
+        assert fae_var._value.value == 2
 
     def test_matmul(self):
         """ `matmul` (@) operator is same as select method. """
@@ -186,7 +193,7 @@ class TestFaeVar:
         data = [1, 2, 3]
         out = data >> fae_var @ X[1]
         assert data is out
-        assert fae_var._value == 2
+        assert fae_var._value.value == 2
     
     def test_select_raisesValueError_multiple_calls(self):
         """ 
@@ -209,8 +216,22 @@ class TestFaeVar:
         [1, 2, 3] >> fae_var @ X[1:]
         assert fae_var.shed() == [2, 3]
         assert +fae_var == [2, 3]
-        
 
+    def test_shed_raisesValueError(self):
+        fae_var = FaeVar()
+        with pytest.raises(ValueError):
+            fae_var.shed()
+
+        with pytest.raises(ValueError):
+            fae_var @ X[1]
+            fae_var.shed()
+
+    def test_repr(self):
+        fae_var = FaeVar()
+        2 >> fae_var
+        assert str(fae_var) == "FaeVar(2)"
+
+    
 class TestFaeList:
     """ 
     Some of the common methods and code paths with `FaeVar` are not tested here, especially that
@@ -265,11 +286,24 @@ class TestFaeDict:
         assert +fae_dict == {"a": 2}
         3 >> fae_dict["a"]
         assert +fae_dict == {"a": 3}
+        4 >> fae_dict["b"]
+        assert +fae_dict == {"a": 3, "b": 4}
     
     def test_raises_key_error(self):
         fae_dict = FaeDict()
         with pytest.raises(KeyError):
             2 >> fae_dict
+
+        # KeyError when accessing non-existent key. Make sure there is no 
+        # side effects due to inplace operations.
+        with pytest.raises(KeyError):
+            fae_dict["a"]
+            2 >> fae_dict
+    
+    def test_general_usage(self):
+        fae_dict = FaeDict()
+        [1, 2, 3] >> fae_dict["a"] @ X[1] >> fae_dict["b"]
+        assert +fae_dict == {"a": 2, "b": [1, 2, 3]}
 
 
 class TestFaeMultiMap:
@@ -284,4 +318,20 @@ class TestFaeMultiMap:
     def test_init_value_error(self):
         with pytest.raises(ValueError):
             FaeMultiMap(a=[1, 2, 3], b=4)
+    
+    def test_general_usage(self):
+        fae_multimap = FaeMultiMap()
+        out = (
+            [1, 2, 3] 
+            >> fae_multimap["a"] @ X[1] 
+            >> fae_multimap["a"] @ X[2] 
+            >> fae_multimap["b"] @ X[0]
+        )
+        assert +fae_multimap == {"a": [2, 3], "b": [1]}
         
+
+class Test_Variable:
+    def test_repr(self):
+        from faeyon.magic.spells import _Variable
+        var = _Variable(10)
+        assert str(var) == "_Variable(10)"

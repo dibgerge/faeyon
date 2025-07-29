@@ -209,15 +209,43 @@ class FaeArgs:
         return self.bind(data)
 
 
+class _Variable:
+    """
+    A wrappert to hold a container value so that it can be passed by reference across different
+    Container selections.
+    """
+    _value: Any
+    
+    def __init__(self, *args) -> None:
+        self.empty = False
 
-class _NoValue:
-    """ This is a placeholder value to indicate that a container has no value. """
+        if len(args) == 1:
+            self._value = args[0]
+        elif len(args) > 1:
+            raise ValueError("`_Variable` can only be initialized with one or no arguments.")
+        else:
+            self.empty = True
+    
+    @property
+    def value(self) -> Any:
+        if self.empty:
+            raise ValueError("No value.")
+        return self._value
+
+    @value.setter
+    def value(self, val: Any) -> None:
+        self._value = val
+        self.empty = False
+
+    def __repr__(self):
+        return f"_Variable({self.value!r})"
+
 
 
 class ContainerBase(ABC):
-    _value: Any = _NoValue
     
-    def __init__(self) -> None:
+    def __init__(self, *args) -> None:
+        self._value: Any = _Variable(*args)
         self._expression: Optional[X] = None
     
     def select[T: ContainerBase](self: T, expression: X) -> T:
@@ -232,8 +260,10 @@ class ContainerBase(ABC):
                 f"Cannot assign expression to {self.__class__.__name__}, "
                 "since expression is not an instance of `X`."
             )
-        self._expression = expression
-        return self
+
+        out = self._copy()
+        out._expression = expression
+        return out
 
     def __matmul__[T: ContainerBase](self: T, expression: X) -> T:
         return self.select(expression)
@@ -241,6 +271,12 @@ class ContainerBase(ABC):
     def __rmatmul__[T: ContainerBase](self: T, expression: X) -> T:
         return self.select(expression)
 
+    def _copy[T: ContainerBase](self: T) -> T:
+        out = type(self)()
+        for k, v in self.__dict__.items():
+            setattr(out, k, v)
+        return out
+        
     @abstractmethod
     def _set(self, data: Any) -> None:
         pass
@@ -252,7 +288,6 @@ class ContainerBase(ABC):
                 resolved_data = getattr(resolved_data, name)(*args, **kwargs)
         
         self._set(resolved_data)
-        self._expression = None
         return data
     
     def __rrshift__(self, data: Any) -> Any:
@@ -264,7 +299,7 @@ class ContainerBase(ABC):
 
     @property
     def sheddable(self) -> bool:
-        return self._value is not _NoValue and not self.is_selected
+        return not self._value.empty and not self.is_selected
 
     def shed(self) -> Any:
         if not self.sheddable:
@@ -272,24 +307,26 @@ class ContainerBase(ABC):
                 "Cannot shed value from {self.__class__.__name__} with no value or a "
                 "pending select."
             )
-        return self._value
+        return self._value.value
 
     def __pos__(self) -> Any:
         return self.shed()
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self._value.value})"
     
 
 class FaeList(ContainerBase):
     def __init__(self, *args) -> None:
-        super().__init__()
-        self._value = list(args)
+        super().__init__(list(args))
         
     def _set(self, data: Any) -> None:
-        self._value.append(data)
+        self._value.value.append(data)
     
 
 class KeyedContainer(ContainerBase):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(kwargs)
         self._key = None
 
     def __getitem__(self, key: str):
@@ -297,8 +334,10 @@ class KeyedContainer(ContainerBase):
             raise KeyError(
                 "Key has already been assigned to {self.__class__.__name__} and no data used yet."
             )
-        self._key = key
-        return self
+
+        out = self._copy()
+        out._key = key
+        return out
 
     @abstractmethod
     def _set_item(self, data: Any) -> None:
@@ -311,7 +350,6 @@ class KeyedContainer(ContainerBase):
             )
 
         self._set_item(data)
-        self._key = None
 
 
 class FaeVar(ContainerBase):
@@ -320,40 +358,43 @@ class FaeVar(ContainerBase):
         self.strict = strict
         
     def _set(self, data: Any) -> None:
-        if self._value is not _NoValue:
+        if not self._value.empty:
             if self.strict:
                 raise ValueError(
                     "Cannot bind a value to a strict FaeVar with existing value."
                 )
         
-        self._value = data
+        self._value.value = data
 
         
 class FaeDict(KeyedContainer):
     def __init__(self, strict: bool = True, **kwargs) -> None:
-        super().__init__()
-        self._value = kwargs
+        super().__init__(**kwargs)
         self.strict = strict
 
     def _set_item(self, data: Any) -> None:
-        if self._key in self._value:
+        if self._key in self._value.value:
             if self.strict:
                 raise ValueError(
                     "Cannot bind a value to a strict FaeDict with existing key."
                 )
-        self._value[self._key] = data
+        self._value.value[self._key] = data
 
 
 class FaeMultiMap(KeyedContainer):
     def __init__(self, **kwargs) -> None:
-        super().__init__()
         for value in kwargs.values():
             if not isinstance(value, list):
                 raise ValueError(
                     "All values in FaeMultiMap must be lists."
                 )
-        self._value = defaultdict(list)
-        self._value.update(kwargs)
+
+        super().__init__(**kwargs)
+        self._value.value = defaultdict(list, self._value.value)
 
     def _set_item(self, data: Any) -> None:
-        self._value[self._key].append(data)
+        self._value.value[self._key].append(data)
+
+    def shed(self) -> Any:
+        return dict(super().shed())
+        
