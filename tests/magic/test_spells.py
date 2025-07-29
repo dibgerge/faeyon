@@ -1,4 +1,4 @@
-from faeyon import X, FaeArgs, FaeVar, FaeList, FaeDict, FaeMultiMap
+from faeyon import X, FaeArgs, FaeVar, FaeList, FaeDict, FaeMultiMap, Op
 import pytest
 
 
@@ -56,8 +56,8 @@ class TestX:
         assert str(X) == "X"
 
     def test_repr_multiops(self):
-        x = round(X("foo", k="bar")[0] + 1)
-        assert str(x) == "X('foo', k='bar') -> X[0] -> X + 1 -> round(X)"
+        x = round(X("foo", k="bar")[0].a + 1)
+        assert repr(x) == "round(X('foo', k='bar')[0].a + 1)"
 
 
 class TestFaeArgs:
@@ -335,3 +335,19 @@ class Test_Variable:
         from faeyon.magic.spells import _Variable
         var = _Variable(10)
         assert str(var) == "_Variable(10)"
+
+
+class TestOp:
+    def test_usage(self):
+        data = [1, 2, 3]
+        out = data >> Op(X)
+        assert out == data
+
+    def test_usage2(self):
+        data = [1, 2, 3]
+        out = data >> Op(X[1:])
+        assert out == [2, 3]
+
+    def test_repr(self):
+        op = Op(X[1].a)
+        assert str(op) == "Op(X[1].a)"

@@ -7,5 +7,6 @@ from .magic import (
     FaeDict, 
     FaeList, 
     FaeMultiMap,
-    FaeVar
+    FaeVar,
+    Op
 )

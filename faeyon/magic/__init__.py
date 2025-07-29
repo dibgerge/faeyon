@@ -5,5 +5,6 @@ from .spells import (
     FaeDict, 
     FaeList,
     FaeMultiMap,
-    FaeVar, 
+    FaeVar,
+    Op 
 )

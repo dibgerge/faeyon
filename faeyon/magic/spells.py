@@ -9,63 +9,63 @@ from collections import defaultdict
 
 # Define methods supported by the _MetaX metaclass
 _methods = {
-    "__lt__": "X < {}",
-    "__le__": "X <= {}",
-    "__eq__": "X == {}",
-    "__ne__": "X != {}",
-    "__gt__": "X > {}",
-    "__ge__": "X >= {}",
-    "__getattr__": "X.{}",
+    "__lt__": "{X} < {}",
+    "__le__": "{X} <= {}",
+    "__eq__": "{X} == {}",
+    "__ne__": "{X} != {}",
+    "__gt__": "{X} > {}",
+    "__ge__": "{X} >= {}",
+    "__getattr__": "{X}.{}",
 
     # Emulating callables
-    "__call__": "X({}, {})",
+    "__call__": "{X}({}, {})",
     
     # Containers
-    "__getitem__": "X[{}]",
-    "__reversed__": "reversed(X)",
+    "__getitem__": "{X}[{}]",
+    "__reversed__": "reversed({X})",
 
     # Numeric types
-    "__add__": "X + {}",
-    "__sub__": "X - {}",
-    "__mul__": "X * {}",
-    "__matmul__": "X @ {}",
-    "__truediv__": "X / {}",
-    "__floordiv__": "X // {}",
-    "__mod__": "X % {}",
-    "__divmod__": "divmod(X, {})",
-    "__pow__": "X ** {}",
-    "__lshift__": "X << {}",
-    "__rshift__": "X >> {}",
-    "__and__": "X & {}",
-    "__or__": "X | {}",
-    "__xor__": "X ^ {}",
+    "__add__": "{X} + {}",
+    "__sub__": "{X} - {}",
+    "__mul__": "{X} * {}",
+    "__matmul__": "{X} @ {}",
+    "__truediv__": "{X} / {}",
+    "__floordiv__": "{X} // {}",
+    "__mod__": "{X} % {}",
+    "__divmod__": "divmod({X}, {})",
+    "__pow__": "{X} ** {}",
+    "__lshift__": "{X} << {}",
+    "__rshift__": "{X} >> {}",
+    "__and__": "{X} & {}",
+    "__or__": "{X} | {}",
+    "__xor__": "{X} ^ {}",
 
-    "__radd__": "{} + X",
-    "__rsub__": "{} - X",
-    "__rmul__": "{} * X",
-    "__rmatmul__": "{} @ X",
-    "__rtruediv__": "{} / X",
-    "__rfloordiv__": "{} // X",
-    "__rmod__": "{} % X",
-    "__rdivmod__": "divmod({}, X)",
-    "__rpow__": "{} ** X",
-    "__rlshift__": "{} << X",
-    "__rrshift__": "{} >> X",
-    "__rand__": "{} & X",
-    "__ror__": "{} | X",
-    "__rxor__": "{} ^ X",
+    "__radd__": "{} + {X}",
+    "__rsub__": "{} - {X}",
+    "__rmul__": "{} * {X}",
+    "__rmatmul__": "{} @ {X}",
+    "__rtruediv__": "{} / {X}",
+    "__rfloordiv__": "{} // {X}",
+    "__rmod__": "{} % {X}",
+    "__rdivmod__": "divmod({}, {X})",
+    "__rpow__": "{} ** {X}",
+    "__rlshift__": "{} << {X}",
+    "__rrshift__": "{} >> {X}",
+    "__rand__": "{} & {X}",
+    "__ror__": "{} | {X}",
+    "__rxor__": "{} ^ {X}",
 
     # Unary operators
-    "__neg__": "-X",
-    "__pos__": "+X",
-    "__abs__": "abs(X)",
-    "__invert__": "~X",
+    "__neg__": "-{X}",
+    "__pos__": "+{X}",
+    "__abs__": "abs({X})",
+    "__invert__": "~{X}",
 
    # built-in number types
-    "__round__": "round(X)",
-    "__trunc__": "trunc(X)",
-    "__floor__": "floor(X)",
-    "__ceil__": "ceil(X)",
+    "__round__": "round({X})",
+    "__trunc__": "trunc({X})",
+    "__floor__": "floor({X})",
+    "__ceil__": "ceil({X})",
 }
 
 
@@ -138,14 +138,18 @@ class X(metaclass=_MetaX):  # type: ignore
 
 
     def __repr__(self) -> str:
-        output = []
+        output = "X"
         for name, args, kwargs in self:
-            args_f = ", ".join(map(repr, args))
+
+            # Don't show the parentheses for __getattr__
+            if name == "__getattr__":
+                args_f = str(args[0])
+            else:
+                args_f = ", ".join(map(repr, args))
+            
             kwargs_f = ", ".join(f"{k}={v!r}" for k, v in kwargs.items())
-            fmt = _methods[name].format(args_f, kwargs_f)
-            output.append(fmt)
-        
-        return " -> ".join(output)
+            output = _methods[name].format(args_f, kwargs_f, X=output)        
+        return output
 
     def __iter__(self):
         return iter(self._buffer)
@@ -398,3 +402,22 @@ class FaeMultiMap(KeyedContainer):
     def shed(self) -> Any:
         return dict(super().shed())
         
+
+
+class Op:
+    def __init__(self, op: X, /) -> None:
+        if not isinstance(op, X):
+            raise ValueError("Operations should use the `X` buffer.")
+        self.op = op
+            
+    def using(self, data: Any) -> Any:
+        for name, args, kwargs in self.op:
+            data = getattr(data, name)(*args, **kwargs)
+        return data
+
+    def __rrshift__(self, data: Any) -> Any:
+        return self.using(data)
+
+    
+    def __repr__(self):
+        return f"Op({self.op!r})"
