@@ -1,0 +1,287 @@
+from faeyon import X, FaeArgs, FaeVar, FaeList, FaeDict, FaeMultiMap
+import pytest
+
+
+class TestX:
+
+    def test_noop(self):
+        """ No operation available in `X` """
+        x = X
+        assert issubclass(x, X)
+        assert len(x) == 0
+
+    def test_single_op(self):
+        """ One operation available in `X` """
+
+        # getitem
+        x = X[0]
+        assert isinstance(x, X)
+        assert len(x) == 1
+
+        # add
+        x = X + 1
+        assert isinstance(x, X)
+        assert len(x) == 1
+
+        # call
+        x = X("foo", bar="baz")
+        assert isinstance(x, X)
+        assert len(x) == 1
+
+        # getattr
+        x = X.a
+        assert isinstance(x, X)
+        assert len(x) == 1
+
+    def test_multiple_ops(self):
+        """ Multiple operations available in `X` """
+        x = X[0] + 1
+        assert isinstance(x, X)
+        assert len(x) == 2
+
+        x = round(X[0] + 1)
+        assert isinstance(x, X)
+        assert len(x) == 3
+
+    def test_iter_noop(self):
+        all_ops = list(X)
+        assert len(all_ops) == 0
+
+    def test_iter_multiops(self):
+        x = round(X[0] + 1)
+        all_ops = [op[0] for op in x]
+        assert all_ops == ["__getitem__", "__add__", "__round__"]
+
+    def test_repr_noops(self):
+        assert str(X) == "X"
+
+    def test_repr_multiops(self):
+        x = round(X("foo", k="bar")[0] + 1)
+        assert str(x) == "X('foo', k='bar') -> X[0] -> X + 1 -> round(X)"
+
+
+class TestFaeArgs:
+
+    def func_simple(self, x):
+        return x + 1
+
+    def func_multi(self, x=1, y=0):
+        return x + y
+    
+    def test_init(self):
+        faek = FaeArgs(1, 2, 3)
+        assert isinstance(faek, FaeArgs)
+        assert faek.args == (1, 2, 3)
+        assert faek.kwargs == {}
+
+    def test_call_raisesTypeError(self):
+        """ 
+        When `FaeArgs` does not match the callable's required number of arguments.
+        """
+        fae_args = FaeArgs(1, 2, 3)
+
+        with pytest.raises(TypeError):
+            fae_args.call(self.func_simple)
+        
+        with pytest.raises(TypeError):
+            fae_args >> self.func_simple
+
+    def test_call_raisesValueError(self):
+        """ 
+        When `FaeArgs` has unresolved arguments, an error is raised.
+        """
+        fae_args = FaeArgs(X[0])
+
+        with pytest.raises(ValueError):
+            fae_args.call(self.func_simple)
+
+        with pytest.raises(ValueError):
+            fae_args >> self.func_simple
+
+    @pytest.mark.parametrize("args,kwargs", [
+        ((), {}),
+        ((2,), {}),
+        ((), {"y": 10}),
+        ((1,), {"y": 10}),
+    ])
+    def test_call(self, args, kwargs):
+        """ Tests the call (FaeArgs >> callable) operator/method. """
+        fae_args = FaeArgs(*args, **kwargs)
+        expected = self.func_multi(*args, **kwargs)
+        assert fae_args.call(self.func_multi) == expected
+        assert fae_args >> self.func_multi == expected
+
+    def test_bind_resolved(self):
+        """ Tests the bind (Any >> FaeArgs) operator when `FaeArgs` is already resolved. """
+        fae_args = FaeArgs(1, x="Bar")
+        data = "Foo"
+        out_args = fae_args.bind(data)
+        assert out_args.args == (1,)
+        assert out_args.kwargs == {"x": "Bar"}
+        
+        out_args = data >> fae_args
+        assert out_args.args == (1,)
+        assert out_args.kwargs == {"x": "Bar"}
+
+    def test_bind_unresolved(self):
+        fea_args = FaeArgs(X[0], x="Bar", y=X[1])
+        data = [10, 11, 12]
+
+        out_args = fea_args.bind(data)
+        assert out_args.args == (10,)
+        assert out_args.kwargs == {"x": "Bar", "y": 11}
+
+        out_args = data >> fea_args
+        assert out_args.args == (10,)
+        assert out_args.kwargs == {"x": "Bar", "y": 11}
+
+
+class TestFaeVar:
+    def test_rrshift(self):
+        fae_var = FaeVar(strict=True)
+        2 >> fae_var
+        assert fae_var._value == 2
+
+    def test_rrshift_raisesValueError(self):
+        """ 
+        Cannot bind a value to a strict FaeVar with existing value.
+        """
+        fae_var = FaeVar(strict=True)
+        with pytest.raises(ValueError):
+            2 >> fae_var
+            3 >> fae_var
+
+    def test_rrshift_overwrite(self):
+        fae_var = FaeVar(strict=False)
+        out = 2 >> fae_var
+        assert fae_var._value == 2
+        assert out == 2
+
+        out = 3 >> fae_var
+        assert fae_var._value == 3
+        assert out == 3
+
+    def test_using(self):
+        """ `using` method is same as >> operator. """
+        fae_var = FaeVar(strict=True)
+        out = fae_var.using(2)
+        assert fae_var._value == 2
+        assert out == 2
+
+    def test_select_return_type(self):
+        fae_var = FaeVar()
+        selectable = fae_var.select(X[1])
+        assert isinstance(selectable, FaeVar)
+    
+    def test_select(self):
+        fae_var = FaeVar(strict=True)
+        data = [1, 2,  3]
+        out = data >> fae_var.select(X[1])
+        assert data is out
+        assert fae_var._value == 2
+
+    def test_matmul(self):
+        """ `matmul` (@) operator is same as select method. """
+        fae_var = FaeVar(strict=True)
+        data = [1, 2, 3]
+        out = data >> fae_var @ X[1]
+        assert data is out
+        assert fae_var._value == 2
+    
+    def test_select_raisesValueError_multiple_calls(self):
+        """ 
+        Can only call once
+        """
+        fae_var = FaeVar(strict=True)
+        with pytest.raises(ValueError):
+            fae_var @ X[1] @ X[2]
+            
+    def test_select_raisesValueError_wrong_type(self):
+        """ 
+        Cannot select an expression to a strict FaeVar with existing value.
+        """
+        fae_var = FaeVar(strict=True)
+        with pytest.raises(ValueError):
+            fae_var @ "foo"
+
+    def test_shed(self):
+        fae_var = FaeVar()
+        [1, 2, 3] >> fae_var @ X[1:]
+        assert fae_var.shed() == [2, 3]
+        assert +fae_var == [2, 3]
+        
+
+class TestFaeList:
+    """ 
+    Some of the common methods and code paths with `FaeVar` are not tested here, especially that
+    the operator / method overloading are consistent, since this is implemented at the base class 
+    level.
+    """
+    def test_init_no_args(self):
+        fae_list = FaeList()
+        assert +fae_list == []
+
+    def test_init_with_args(self):
+        fae_list = FaeList(1, 2, 3)
+        assert +fae_list == [1, 2, 3]
+    
+    def test_rrshift(self):
+        fae_list = FaeList()
+        2 >> fae_list
+        3 >> fae_list
+        assert +fae_list == [2, 3]
+
+    def test_general_usage(self):
+        fae_list = FaeList()
+        [10, 20, 30] >> fae_list @ X[1] >> fae_list @ X[2]
+        assert +fae_list == [20, 30]
+
+
+class TestFaeDict:
+    def test_init_no_args(self):
+        fae_dict = FaeDict()
+        assert +fae_dict == {}
+    
+    def test_init_with_args(self):
+        init_data = {"a": 1, "b": 2, "c": 3}
+        fae_dict = FaeDict(**init_data)
+        assert +fae_dict == init_data
+    
+    def test_rrshift(self):
+        fae_dict = FaeDict(b=10)
+        2 >> fae_dict["a"]
+        assert +fae_dict == {"a": 2, "b": 10}
+
+    def test_rrshift_strict_raises(self):
+        """ Raise error when overwriting existing key in strict mode. """
+        fae_dict = FaeDict(strict=True)
+        with pytest.raises(ValueError):
+            2 >> fae_dict["a"]
+            3 >> fae_dict["a"]
+        
+    def test_rrshift_nonstrict_overwrite(self):
+        fae_dict = FaeDict(strict=False)
+        2 >> fae_dict["a"]
+        assert +fae_dict == {"a": 2}
+        3 >> fae_dict["a"]
+        assert +fae_dict == {"a": 3}
+    
+    def test_raises_key_error(self):
+        fae_dict = FaeDict()
+        with pytest.raises(KeyError):
+            2 >> fae_dict
+
+
+class TestFaeMultiMap:
+    def test_init_no_args(self):
+        fae_multimap = FaeMultiMap()
+        assert +fae_multimap == {}
+    
+    def test_init_with_args(self):
+        fae_multimap = FaeMultiMap(a=[1, 2, 3], b=[4, 5, 6])
+        assert +fae_multimap == {"a": [1, 2, 3], "b": [4, 5, 6]}
+        
+    def test_init_value_error(self):
+        with pytest.raises(ValueError):
+            FaeMultiMap(a=[1, 2, 3], b=4)
+        

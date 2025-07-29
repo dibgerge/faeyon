@@ -1,2 +1,9 @@
 from .faek import faek
-from .args import X, FaeArgs
+from .spells import (
+    X, 
+    FaeArgs, 
+    FaeDict, 
+    FaeList,
+    FaeMultiMap,
+    FaeVar, 
+)
