@@ -326,6 +326,9 @@ class FaeList(ContainerBase):
         
     def _set(self, data: Any) -> None:
         self._value.value.append(data)
+
+    def __len__(self):
+        return len(self._value.value)
     
 
 class KeyedContainer(ContainerBase):
@@ -354,6 +357,9 @@ class KeyedContainer(ContainerBase):
             )
 
         self._set_item(data)
+
+    def __len__(self):
+        return len(self._value.value)
 
 
 class FaeVar(ContainerBase):

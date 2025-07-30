@@ -1,18 +1,94 @@
 import sys
 import inspect
+import itertools
 
+from collections import defaultdict
 from torch import nn
 from typing import Any
 
+from .spells import FaeList, FaeDict
 
-def __new__(cls, *args, **kwargs):
+
+def _new_instance(cls, *args, **kwargs):
     instance = object.__new__(cls)
     sig = inspect.signature(cls.__init__)
     bound = sig.bind(instance, *args, **kwargs)
     bound.apply_defaults()
     del bound.arguments["self"]
-    instance._arguments = bound.arguments
+    instance._arguments = bound
     return instance
+
+
+def __new__(cls, *args, **kwargs):
+    """
+    Allow `nn.Module` to save constructor arguments passed to it, so that the could be used 
+    later for cloning modules.
+
+    When any of the arguments is of type `FaeList` or `FaeDict`, special handing is applied to 
+    generate clones.
+    """
+    try:
+        kwargs_keys, kwargs_values = zip(*kwargs.items())
+    except ValueError:
+        kwargs_keys, kwargs_values = [], []
+    
+    raveled_args = []
+    num_faelist = 0
+    num_faedict = 0
+    fae_keys = None
+    fae_len = None
+    for arg in itertools.chain(args, kwargs_values):
+        if isinstance(arg, FaeList):
+            num_faelist += 1
+            arg_value = arg.shed()
+
+            if fae_len is None:
+                fae_len = len(arg_value)
+            elif fae_len != len(arg_value):
+                raise ValueError("All arguments of type `FaeList` must have the same length.")
+
+            raveled_args.append(arg_value)
+        elif isinstance(arg, FaeDict):
+            num_faedict += 1
+            arg_value = arg.shed()
+
+            if fae_keys is None:
+                fae_keys = list(arg_value.keys())
+                fae_len = len(fae_keys)
+            else:
+                if set(fae_keys) != set(arg_value.keys()):
+                    raise ValueError("All arguments of type `FaeDict` must have the same keys.")
+
+            raveled_args.append([arg_value[k] for k in fae_keys])
+        else:
+            raveled_args.append(itertools.repeat(arg))
+
+    if num_faelist > 0 and num_faedict > 0:
+        raise ValueError("Cannot mix `FaeList` and `FaeDict` arguments. Choose one.")
+
+    num_fae = max(num_faelist, num_faedict)
+
+    # No argument parametrization, return a regular nn.Module instance
+    if num_fae == 0:
+        return _new_instance(cls, *args, **kwargs)
+
+    nkeys = len(kwargs_keys)
+    nargs = len(raveled_args)
+    args = [val[:nargs-nkeys] for val in zip(*raveled_args)]
+    kwargs = [dict(zip(kwargs_keys, val[nargs-nkeys:])) for val in zip(*raveled_args)]
+
+    out = []
+    for c_args, c_kwargs in zip(args, kwargs):
+        inst = _new_instance(cls, *c_args, **c_kwargs)
+        # Call __init__ on each instance since it will not be called when different class type is 
+        # returned in __new__
+        cls.__init__(inst, *c_args, **c_kwargs)
+        out.append(inst)
+    
+    if fae_keys is not None:
+        out = dict(zip(fae_keys, out))
+
+    return out
 
 
 def __default_new__(cls, *args, **kwargs):
@@ -26,7 +102,7 @@ def __default_new__(cls, *args, **kwargs):
     return object.__new__(cls)
 
 
-def __mul__(self: nn.Module, other: int) -> list[nn.Module]:
+def __mul__[T: nn.Module](self: T, other: int) -> list[T]:
     """
     Creates a ModuleList of `other` clones of this module.
     """
@@ -41,7 +117,7 @@ def __mul__(self: nn.Module, other: int) -> list[nn.Module]:
     return [self.clone() for _ in range(other)]
 
 
-def __rmul__(self: nn.Module, other: int) -> list[nn.Module]:
+def __rmul__[T: nn.Module](self: T, other: int) -> list[T]:
     """ Multiplication is commutative!"""
     return self.__mul__(other)
 
@@ -54,39 +130,27 @@ def __rrshift__[T: nn.Module](self: T, other: Any) -> Any:
     return self(other)
 
 
-def clone(self: nn.Module) -> nn.Module:
+def clone[T: nn.Module](self: T, *args: Any, **kwargs: Any) -> T:
     """
     Create a new instance of the same module with the same arguments. This method should be used 
     carefully, since it is does not do any deep copying on all types of module arguments. 
 
-    The module is cloned based on the arguments passed to the constructor. If any of the arguments
-    were changed after the module was created, the cloned module will have the same arguments as the
-    original module (unless the argument itself was mutated).
-    
-    Here is the behavior on how the arguments are handled during cloning based on their type:
-    - `nn.Module`: The module is cloned recursively.
-    - list/tuple/dict: Iterate recursively and use the above rules for each element. 
-        Return a new list/tuple/dict.
-    - Anything else is passed as is to the new instance.
+    The module is cloned based on the arguments passed to its constructor during its creation. 
+    If any of the arguments were changed after the module was created, the changes will not be 
+    reflected in the cloned module unless the changes were made on the arguments itslef inplace 
+    causing its mutation. E.g. passing a list to the current module and then mutating that same list
+    outside the module...
+
+    If you need to clone a module with a argument which should be a new object rather than a shared
+    object, you can pass a copy of the argument to the clone method with the new object to use.    
     """
-    def _get_argument_clone(arg):
-        if isinstance(arg, nn.Module):
-            return arg.clone()
-
-        if isinstance(arg, (list, tuple)):
-            return type(arg)(_get_argument_clone(item) for item in arg)
-
-        if isinstance(arg, dict):
-            return {k: _get_argument_clone(v) for k, v in arg.items()}
-
-        return arg
-
     cls = self.__class__
-    params_clone = {
-        name: _get_argument_clone(param)
-        for name, param in self._arguments.items()
-    }
-    return cls(**params_clone)
+    sig = inspect.signature(self.__init__)  # type: ignore
+    bound = sig.bind_partial(*args, **kwargs)
+    cur_arguments = dict(self._arguments.arguments)
+    cur_arguments.update(bound.arguments)
+    new_bound = inspect.BoundArguments(sig, cur_arguments)
+    return cls(*new_bound.args, **new_bound.kwargs)
 
 
 class Singleton(type):
