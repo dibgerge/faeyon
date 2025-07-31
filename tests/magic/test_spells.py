@@ -1,4 +1,5 @@
-from faeyon import X, FaeArgs, FaeVar, FaeList, FaeDict, FaeMultiMap, Op
+import inspect
+from faeyon import X, FaeArgs, FaeVar, FaeList, FaeDict, FaeMultiMap, Op, Wire, Wiring
 import pytest
 
 
@@ -351,3 +352,76 @@ class TestOp:
     def test_repr(self):
         op = Op(X[1].a)
         assert str(op) == "Op(X[1].a)"
+
+
+class TestWire:
+    @staticmethod
+    def example_func(x: int, y: int) -> int:
+        return x + y
+
+    @pytest.fixture(scope="class")
+    def sig(self):
+        return inspect.signature(self.example_func)
+
+    def test_init(self, sig):
+        wire = Wire(X)
+        out = wire.init(sig, 1, 2)
+        assert wire._fanout == {}
+        assert isinstance(out, FaeArgs)
+        assert out.args == (1, 2)
+        assert out.kwargs == {}
+    
+    def test_init_with_fanout(self, sig):
+        wire = Wire(x=X, y=Wiring.Fanout)
+        out = wire.init(sig, 1, y=[10, 11])
+        assert set(wire._fanout.keys()) == {"y"}
+        assert out.args == (1, 10)
+        assert out.kwargs == {}
+
+    def test_init_with_passthru(self, sig):
+        wire = Wire(x=Wiring.Passthru, y=Wiring.Passthru)
+        out = wire.init(sig, 1, 2)
+        assert wire._fanout == {}
+        assert out.args == (1, 2)
+        assert out.kwargs == {}
+        
+    def test_step(self, sig):
+        wire = Wire(X)
+        wire.init(sig, 1, 2)
+        out = wire.step(3)
+        assert out.args == (3, 2)
+        assert out.kwargs == {}
+    
+        out = wire.step(4)
+        assert out.args == (4, 2)
+        assert out.kwargs == {}
+
+    def test_step_with_fanout(self, sig):
+        wire = Wire(x=X, y=Wiring.Fanout)
+        wire.init(sig, 1, y=[10, 11])
+        out = wire.step(2)        
+        assert out.args == (2, 11)
+        assert out.kwargs == {}
+    
+    def test_rrshift(self, sig):
+        wire = Wire(X)
+        wire.init(sig, 1, 2)
+        out = 3 >> wire
+        assert out.args == (3, 2)
+        assert out.kwargs == {}
+
+    def test_step_no_init(self):
+        wire = Wire(X)
+        with pytest.raises(ValueError):
+            wire.step(1)
+
+    def test_step_with_fanout_overflow(self, sig):
+        wire = Wire(x=X, y=Wiring.Fanout)
+        wire.init(sig, 1, y=[10, 11])
+        with pytest.raises(ValueError):
+            wire.step(2)
+            wire.step(3)
+            wire.step(4)
+
+        
+    

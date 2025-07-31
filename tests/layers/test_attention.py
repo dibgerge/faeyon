@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from faeyon.models.layers import AdditiveAttention
+from faeyon.layers import AdditiveAttention
 
 
 class TestAdditiveAttention:

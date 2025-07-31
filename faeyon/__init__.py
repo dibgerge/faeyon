@@ -8,5 +8,7 @@ from .magic import (
     FaeList, 
     FaeMultiMap,
     FaeVar,
-    Op
+    Op,
+    Wire,
+    Wiring,
 )

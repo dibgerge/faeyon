@@ -1,10 +1,11 @@
+import inspect
+import enum
 import itertools
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any, Optional
 from faeyon.utils import is_ipython
 from abc import ABC, abstractmethod
 from collections import defaultdict
-
 
 
 # Define methods supported by the _MetaX metaclass
@@ -302,6 +303,11 @@ class ContainerBase(ABC):
         return self._expression is not None
 
     @property
+    @abstractmethod
+    def is_appendable(self) -> bool:
+        pass
+
+    @property
     def sheddable(self) -> bool:
         return not self._value.empty and not self.is_selected
 
@@ -329,7 +335,30 @@ class FaeList(ContainerBase):
 
     def __len__(self):
         return len(self._value.value)
+
+    @property
+    def is_appendable(self) -> bool:
+        return True
     
+
+class FaeVar(ContainerBase):
+    def __init__(self, strict: bool = True) -> None:
+        super().__init__()
+        self.strict = strict
+        
+    def _set(self, data: Any) -> None:
+        if not self._value.empty:
+            if self.strict:
+                raise ValueError(
+                    "Cannot bind a value to a strict FaeVar with existing value."
+                )
+        
+        self._value.value = data
+
+    @property
+    def is_appendable(self) -> bool:
+        return False
+
 
 class KeyedContainer(ContainerBase):
     def __init__(self, **kwargs):
@@ -362,21 +391,6 @@ class KeyedContainer(ContainerBase):
         return len(self._value.value)
 
 
-class FaeVar(ContainerBase):
-    def __init__(self, strict: bool = True) -> None:
-        super().__init__()
-        self.strict = strict
-        
-    def _set(self, data: Any) -> None:
-        if not self._value.empty:
-            if self.strict:
-                raise ValueError(
-                    "Cannot bind a value to a strict FaeVar with existing value."
-                )
-        
-        self._value.value = data
-
-        
 class FaeDict(KeyedContainer):
     def __init__(self, strict: bool = True, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -389,6 +403,10 @@ class FaeDict(KeyedContainer):
                     "Cannot bind a value to a strict FaeDict with existing key."
                 )
         self._value.value[self._key] = data
+
+    @property
+    def is_appendable(self) -> bool:
+        return self._key is None
 
 
 class FaeMultiMap(KeyedContainer):
@@ -407,7 +425,10 @@ class FaeMultiMap(KeyedContainer):
 
     def shed(self) -> Any:
         return dict(super().shed())
-        
+
+    @property
+    def is_appendable(self) -> bool:
+        return True
 
 
 class Op:
@@ -427,3 +448,64 @@ class Op:
     
     def __repr__(self):
         return f"Op({self.op!r})"
+
+
+class Wiring(enum.StrEnum):
+    Fanout = "Fanout"
+    Passthru = "Passthru"
+
+
+class Wire:
+    _fanout: dict[str, Iterator]
+    _current_wire: Optional[inspect.BoundArguments]
+    
+    def __init__(self, *args, **kwargs) -> None:
+        self.args = args
+        self.kwargs = kwargs
+        self.reset()
+        
+    def reset(self) -> None:
+        self._fanout = {}
+        self._current_wire = None
+    
+    def init(self, sig: inspect.Signature, *args, **kwargs) -> FaeArgs:
+        self.reset()
+        bound = sig.bind(*args, **kwargs)
+        bound.apply_defaults()
+        given_wire = sig.bind_partial(*self.args, **self.kwargs)
+    
+        # Replace fanout arguments with their first value in bound
+        # update given_wire with bound arguments for passthru arguments only, or if argument does
+        # not exist in given_wire, add it.        
+        for k, v in bound.arguments.items():
+            if k not in given_wire.arguments:
+                given_wire.arguments[k] = v
+            elif not isinstance(given_wire.arguments[k], Wiring):
+                continue
+                
+            match(given_wire.arguments[k]):
+                case Wiring.Fanout:
+                    self._fanout[k] = iter(v)
+                    bound.arguments[k] = next(self._fanout[k])
+                case Wiring.Passthru:
+                    given_wire.arguments[k] = v
+
+        self._current_wire = given_wire
+        return FaeArgs(*bound.args, **bound.kwargs)
+
+    def step(self, data: Any) -> FaeArgs:
+        if self._current_wire is None:
+            raise ValueError("No wire has been initialized.")
+        
+        for k, v in self._fanout.items():
+            try:
+                v = next(v)
+            except StopIteration:
+                raise ValueError(f"Fanout argument {k} has no more values.")
+            else:
+                self._current_wire.arguments[k] = v
+                
+        return data >> FaeArgs(*self._current_wire.args, **self._current_wire.kwargs)
+
+    def __rrshift__(self, data: Any) -> FaeArgs:
+        return self.step(data)

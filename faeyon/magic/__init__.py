@@ -6,5 +6,7 @@ from .spells import (
     FaeList,
     FaeMultiMap,
     FaeVar,
-    Op 
+    Op,
+    Wire,
+    Wiring
 )

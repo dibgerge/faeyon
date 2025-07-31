@@ -3,7 +3,7 @@ import torch
 
 from torch import nn
 from faeyon.models.nlp import Encoder, Decoder, Seq2Seq, CellType, DefaultEmbedding
-from faeyon.models.layers import AdditiveAttention
+from faeyon.layers import AdditiveAttention
 
 
 def test_cell_type():
