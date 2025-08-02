@@ -2,9 +2,9 @@ import sys
 import inspect
 import itertools
 
-from collections import defaultdict
 from torch import nn
 from typing import Any
+from collections.abc import Callable
 
 from .spells import FaeList, FaeDict
 
@@ -149,8 +149,15 @@ def clone[T: nn.Module](self: T, *args: Any, **kwargs: Any) -> T:
     bound = sig.bind_partial(*args, **kwargs)
     cur_arguments = dict(self._arguments.arguments)
     cur_arguments.update(bound.arguments)
-    new_bound = inspect.BoundArguments(sig, cur_arguments)
+    new_bound = inspect.BoundArguments(sig, cur_arguments)  # type: ignore[arg-type]
     return cls(*new_bound.args, **new_bound.kwargs)
+
+
+def module_op[T: nn.Module](op_name) -> Callable[[T], Op]:
+    def func(self: T, other: Any) -> Op:
+        return Op(op_name, self, other)
+    return func
+    
 
 
 class Singleton(type):
@@ -181,6 +188,29 @@ class Faek(metaclass=Singleton):
         "clone"
     ]
 
+    delayed_methods = [
+        "__add__",
+        "__sub__",
+        # TODO: "__mul__",
+        "__matmul__",
+        "__truediv__",
+        "__floordiv__",
+        "__mod__",
+        "__divmod__",
+        "__pow__",
+        "__and__",
+        "__or__",
+        "__xor__",
+        "__neg__",
+        "__pos__",
+        "__abs__",
+        "__invert__",
+        "__round__",
+        "__trunc__",
+        "__floor__",
+        "__ceil__",
+    ]
+
     def __init__(self):
         self._is_on = False
 
@@ -196,6 +226,9 @@ class Faek(metaclass=Singleton):
             setattr(nn.Module, method, getattr(current_module, method))
 
         nn.Module.__new__ = staticmethod(__new__)
+
+        for method in Faek.delayed_methods:
+            setattr(nn.Module, method, getattr(current_module, method))
         self._is_on = True
 
     def off(self):

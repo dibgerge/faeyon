@@ -7,6 +7,8 @@ from faeyon.utils import is_ipython
 from abc import ABC, abstractmethod
 from collections import defaultdict
 
+from torch import nn
+
 
 # Define methods supported by the _MetaX metaclass
 _methods = {
@@ -81,11 +83,11 @@ def _meta_method[T](name: str) -> Callable[..., T]:
 
 
 def _x_method[T](name: str) -> Callable[..., T]:
-    def method(self, *args, **kwargs):
+    def method(self, *args, **kwargs) -> Any:
         self._buffer.append((name, args, kwargs))
         return self
 
-    def __getattr__(self, key: str):
+    def __getattr__(self, key: str) -> Any:
         # Bypass IPython's internal check for the _ipython_canary_method_should_not_exist_ attribute
         # This is required to make IPython display the object's contents
         if is_ipython() and key == "_ipython_canary_method_should_not_exist_":
@@ -137,7 +139,6 @@ class X(metaclass=_MetaX):  # type: ignore
     def __init__(self) -> None:
         self._buffer: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
 
-
     def __repr__(self) -> str:
         output = "X"
         for name, args, kwargs in self:
@@ -161,6 +162,22 @@ class X(metaclass=_MetaX):  # type: ignore
 for method in _methods:
     setattr(X, method, _x_method(method))
 
+
+def conjure(x: Any, data: Any) -> Any:
+    """ 
+    Evaluate the operations stored in the `X` buffer. If the input is not an instance of `X`, 
+    return it as is.
+    """
+    if not isinstance(x, X):
+        return x
+
+    for name, args, kwargs in x:
+        # Recursively evaluate the arguments.
+        args = tuple(conjure(arg, data) for arg in args)
+        kwargs = {k: conjure(v, data) for k, v in kwargs.items()}
+        data = getattr(data, name)(*args, **kwargs)
+    return data
+        
 
 class FaeArgs:
     """
@@ -191,23 +208,13 @@ class FaeArgs:
     @property
     def is_resolved(self) -> bool:
         return self._is_resolved
-
-    @staticmethod
-    def _resolve_item(item: Any, data: Any) -> Any:
-        if not isinstance(item, X):
-            return item
-        
-        for name, args, kwargs in item:
-            data = getattr(data, name)(*args, **kwargs)
-        
-        return data
          
     def bind(self, data: Any) -> "FaeArgs":
         if self.is_resolved:
             return self
         
-        resolved_args = tuple(self._resolve_item(arg, data) for arg in self.args)
-        resolved_kwargs = {k: self._resolve_item(v, data) for k, v in self.kwargs.items()}
+        resolved_args = tuple(conjure(arg, data) for arg in self.args)
+        resolved_kwargs = {k: conjure(v, data) for k, v in self.kwargs.items()}
         return FaeArgs(*resolved_args, **resolved_kwargs)
 
     def __rrshift__(self, data: Any) -> "FaeArgs":
@@ -244,7 +251,6 @@ class _Variable:
 
     def __repr__(self):
         return f"_Variable({self.value!r})"
-
 
 
 class ContainerBase(ABC):
@@ -287,12 +293,9 @@ class ContainerBase(ABC):
         pass
         
     def using(self, data: Any) -> Any:
-        resolved_data = data
         if self._expression is not None:
-            for name, args, kwargs in self._expression:
-                resolved_data = getattr(resolved_data, name)(*args, **kwargs)
-        
-        self._set(resolved_data)
+            data = conjure(self._expression, data)
+        self._set(data)
         return data
     
     def __rrshift__(self, data: Any) -> Any:
@@ -432,12 +435,19 @@ class FaeMultiMap(KeyedContainer):
 
 
 class Op:
-    def __init__(self, op: X, /) -> None:
-        if not isinstance(op, X):
-            raise ValueError("Operations should use the `X` buffer.")
-        self.op = op
+    def __init__(self, op: X | Callable[..., Any], *args, **kwargs) -> None:
+        # Note: The condition comes first since X is callable, but not vice versa.
+        if isinstance(op, X):
+            self.op = op
+            self.func = None
+        elif isinstance(op, Callable):  # type: ignore[arg-type]
+            self.op = X(*args, **kwargs)
+            self.func = op
+        else:
+            raise ValueError("`op` should use the `X` buffer or a Callable.")
             
     def using(self, data: Any) -> Any:
+        # TODO: This needs updates
         for name, args, kwargs in self.op:
             data = getattr(data, name)(*args, **kwargs)
         return data
@@ -445,12 +455,11 @@ class Op:
     def __rrshift__(self, data: Any) -> Any:
         return self.using(data)
 
-    
     def __repr__(self):
         return f"Op({self.op!r})"
 
 
-class Wiring(enum.StrEnum):
+class Wiring(enum.Enum):
     Fanout = "Fanout"
     Passthru = "Passthru"
 
@@ -509,3 +518,36 @@ class Wire:
 
     def __rrshift__(self, data: Any) -> FaeArgs:
         return self.step(data)
+
+
+class FaeTree:
+    def __init__(self) -> None:
+        pass
+
+    def __rrshift__(self, data: Any) -> Any:
+        """ This will evaluate the tree using the data provided as the starting point. """
+        if not root:
+            return 0
+        
+        stack = [(root, 1)]
+        ans = 0
+        
+        while stack:
+            node, depth = stack.pop()
+            ans = max(ans, depth)
+            if node.left:
+                stack.append((node.left, depth + 1))
+            if node.right:
+                stack.append((node.right, depth + 1))
+        
+        return ans
+
+
+class FaeNode:
+    def __init__(self, caller, op_name, other: Optional[nn.Module] = None) -> None:
+        self.caller = caller
+        self.op_name = op_name
+        self.other = other
+        
+    def __rrshift__(self, data: Any) -> Any:
+        pass
