@@ -3,6 +3,7 @@ import torch
 from torch import nn
 from typing import Optional
 
+
 class InterpEmbedding(nn.Module):
     """
     Interpolates positional embeddings to match the input size. Also supports 

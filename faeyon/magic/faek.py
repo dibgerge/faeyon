@@ -3,10 +3,10 @@ import inspect
 import itertools
 
 from torch import nn
-from typing import Any
+from typing import Any, overload
 from collections.abc import Callable
 
-from .spells import FaeList, FaeDict
+from .spells import Op, FaeList, FaeDict, FaeArgs, X
 
 
 def _new_instance(cls, *args, **kwargs):
@@ -102,10 +102,22 @@ def __default_new__(cls, *args, **kwargs):
     return object.__new__(cls)
 
 
-def __mul__[T: nn.Module](self: T, other: int) -> list[T]:
+@overload
+def __mul__[T: nn.Module](self: T, other: int) -> list[T]: ...
+
+@overload
+def __mul__[T: nn.Module](self: T, other: nn.Module) -> Op: ...
+
+
+def __mul__[T: nn.Module](self: T, other: int | nn.Module) -> list[T] | Op:
     """
     Creates a ModuleList of `other` clones of this module.
     """
+    if isinstance(other, nn.Module):
+        left = self(X)
+        right = other(X)
+        return Op(left, getattr(X, "__mul__")(right))
+
     if not isinstance(other, int):
         raise TypeError(
             f"Cannot multiply {self} with {type(other)}. Only multiplication by "
@@ -117,9 +129,17 @@ def __mul__[T: nn.Module](self: T, other: int) -> list[T]:
     return [self.clone() for _ in range(other)]
 
 
-def __rmul__[T: nn.Module](self: T, other: int) -> list[T]:
+@overload
+def __rmul__[T: nn.Module](self: T, other: int) -> list[T]: ...
+
+
+@overload
+def __rmul__[T: nn.Module](self: T, other: nn.Module) -> Op: ...
+
+
+def __rmul__[T: nn.Module](self: T, other: int | nn.Module) -> list[T] | Op:
     """ Multiplication is commutative!"""
-    return self.__mul__(other)
+    return self.__mul__(other)  # type: ignore
 
 
 def __rrshift__[T: nn.Module](self: T, other: Any) -> Any:
@@ -153,12 +173,28 @@ def clone[T: nn.Module](self: T, *args: Any, **kwargs: Any) -> T:
     return cls(*new_bound.args, **new_bound.kwargs)
 
 
-def module_op[T: nn.Module](op_name) -> Callable[[T], Op]:
-    def func(self: T, other: Any) -> Op:
-        return Op(op_name, self, other)
+def __call__[T: nn.Module](self: T, *args: Any, **kwargs: Any) -> Any:
+    fae_args = FaeArgs(*args, **kwargs)
+    if fae_args.is_resolved:
+        return faek.module__call__(self, *args, **kwargs)
+    
+    return Op(faek.module__call__, self, *args, **kwargs)
+
+    
+def delayed_unary_method[T: nn.Module](op_name: str) -> Callable[[T], Op]:
+    def func(self: T) -> Op:
+        return getattr(self(X), op_name)()
+    return func
+
+
+def delayed_binary_method[T: nn.Module](op_name: str) -> Callable[[T, nn.Module], Op]:
+    def func(self: T, other: nn.Module) -> Op:
+        if not isinstance(other, nn.Module):
+            return NotImplemented
+
+        return getattr(self(X), op_name)(other(X))
     return func
     
-
 
 class Singleton(type):
     """
@@ -182,37 +218,36 @@ class Faek(metaclass=Singleton):
     """
 
     methods = [
+        "__call__",
         "__mul__",
         "__rmul__",
         "__rrshift__",
-        "clone"
+        "clone",
     ]
 
-    delayed_methods = [
+    # Note: `__mul__` is a special case, since it can operate on integers and module types.
+    delayed_binary_methods = [
         "__add__",
         "__sub__",
-        # TODO: "__mul__",
         "__matmul__",
         "__truediv__",
         "__floordiv__",
         "__mod__",
-        "__divmod__",
         "__pow__",
         "__and__",
         "__or__",
         "__xor__",
+    ]
+    delayed_unary_methods = [
         "__neg__",
         "__pos__",
         "__abs__",
-        "__invert__",
-        "__round__",
-        "__trunc__",
-        "__floor__",
-        "__ceil__",
+        "__invert__"
     ]
 
     def __init__(self):
         self._is_on = False
+        self.module__call__ = nn.Module.__call__
 
     def __enter__(self):
         self.on()
@@ -221,21 +256,30 @@ class Faek(metaclass=Singleton):
         self.off()
 
     def on(self):
+        if self._is_on:
+            return
+
         current_module = sys.modules[__name__]
         for method in self.methods:
             setattr(nn.Module, method, getattr(current_module, method))
 
         nn.Module.__new__ = staticmethod(__new__)
+        for method in Faek.delayed_binary_methods:
+            setattr(nn.Module, method, delayed_binary_method(method))
+        for method in Faek.delayed_unary_methods:
+            setattr(nn.Module, method, delayed_unary_method(method))
 
-        for method in Faek.delayed_methods:
-            setattr(nn.Module, method, getattr(current_module, method))
         self._is_on = True
 
     def off(self):
+        if not self._is_on:
+            return
+        
         for method in self.methods:
             delattr(nn.Module, method)
 
         nn.Module.__new__ = staticmethod(__default_new__)
+        nn.Module.__call__ = self.module__call__
         self._is_on = False
 
 

@@ -62,7 +62,6 @@ class TestFaeSequential:
         torch.testing.assert_close(out[0], torch.tensor([1.4, 0.0]))
         torch.testing.assert_close(out[1], torch.tensor([1.0, 1.0]))
 
-
     @pytest.mark.parametrize(
         "var,expected",
         [
@@ -85,7 +84,6 @@ class TestFaeSequential:
                 .report(var @ X[0])
         )
         torch.testing.assert_close(+var, expected)
-
 
     def test_forward_with_pipe(self, advanced_model):
         x = torch.tensor([1.0, 2.0])

@@ -112,11 +112,11 @@ class TestFaeArgs:
         assert fae_args.call(self.func_multi) == expected
         assert fae_args >> self.func_multi == expected
 
-    def test_bind_resolved(self):
+    def test_using_resolved(self):
         """ Tests the bind (Any >> FaeArgs) operator when `FaeArgs` is already resolved. """
         fae_args = FaeArgs(1, x="Bar")
         data = "Foo"
-        out_args = fae_args.bind(data)
+        out_args = fae_args.using(data)
         assert out_args.args == (1,)
         assert out_args.kwargs == {"x": "Bar"}
         
@@ -124,11 +124,11 @@ class TestFaeArgs:
         assert out_args.args == (1,)
         assert out_args.kwargs == {"x": "Bar"}
 
-    def test_bind_unresolved(self):
+    def test_using_unresolved(self):
         fea_args = FaeArgs(X[0], x="Bar", y=X[1])
         data = [10, 11, 12]
 
-        out_args = fea_args.bind(data)
+        out_args = fea_args.using(data)
         assert out_args.args == (10,)
         assert out_args.kwargs == {"x": "Bar", "y": 11}
 
@@ -422,6 +422,3 @@ class TestWire:
             wire.step(2)
             wire.step(3)
             wire.step(4)
-
-        
-    

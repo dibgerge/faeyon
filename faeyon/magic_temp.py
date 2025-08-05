@@ -1,15 +1,18 @@
 from __future__ import annotations
+
+import sys
 import inspect
-import enum
 import itertools
+import enum
 import math
 import operator
-from collections.abc import Callable, Iterator
-from typing import Any, Optional
-from ..utils import is_ipython
+
+from typing import Any, overload, Optional
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from collections.abc import Callable, Iterator
 
+from faeyon.utils import is_ipython
 from torch import nn
 
 
@@ -182,11 +185,7 @@ def conjure(x: Any, data: Any) -> Any:
         # Recursively evaluate the arguments.
         args = tuple(conjure(arg, data) for arg in args)
         kwargs = {k: conjure(v, data) for k, v in kwargs.items()}
-
-        if name == "__getattr__":
-            data = getattr(data, args[0])
-        else:
-            data = getattr(data, name)(*args, **kwargs)
+        data = getattr(data, name)(*args, **kwargs)
     return data
         
 
@@ -200,7 +199,7 @@ class FaeArgs:
     """
     def __init__(self, *args, **kwargs) -> None:
         self._is_resolved = not any(
-            isinstance(item, (X, Op)) for item in itertools.chain(args, kwargs.values())
+            isinstance(item, X) for item in itertools.chain(args, kwargs.values())
         )
 
         self.args = args
@@ -209,7 +208,7 @@ class FaeArgs:
     def call(self, func: Callable[..., Any]) -> Any:
         if not self.is_resolved:
             raise ValueError(
-                f"Cannot call {func} with unresolved arguments. add data into `FaeArgs` to resolve it."
+                f"Cannot call {func} with unresolved arguments. Feed data `FaeArgs` to resolve it."
             )
         return func(*self.args, **self.kwargs)
 
@@ -220,7 +219,7 @@ class FaeArgs:
     def is_resolved(self) -> bool:
         return self._is_resolved
          
-    def using(self, data: Any) -> FaeArgs:
+    def bind(self, data: Any) -> "FaeArgs":
         if self.is_resolved:
             return self
         
@@ -228,8 +227,8 @@ class FaeArgs:
         resolved_kwargs = {k: conjure(v, data) for k, v in self.kwargs.items()}
         return FaeArgs(*resolved_args, **resolved_kwargs)
 
-    def __rrshift__(self, data: Any) -> FaeArgs:
-        return self.using(data)
+    def __rrshift__(self, data: Any) -> "FaeArgs":
+        return self.bind(data)
 
 
 class _Variable:
@@ -304,10 +303,9 @@ class ContainerBase(ABC):
         pass
         
     def using(self, data: Any) -> Any:
-        new_data = data
         if self._expression is not None:
-            new_data = conjure(self._expression, data)
-        self._set(new_data)
+            data = conjure(self._expression, data)
+        self._set(data)
         return data
     
     def __rrshift__(self, data: Any) -> Any:
@@ -446,10 +444,70 @@ class FaeMultiMap(KeyedContainer):
         return True
 
 
+class _OpStrategy(ABC):
+    @abstractmethod
+    def __call__(self, data: Any) -> Any:
+        pass
+
+
+class _OpX(_OpStrategy):
+    """ 
+    Op Strategy when `op` is an instance of `X`. E.g.:
+    
+    ```python
+    data >> Op(X[0])
+    ```
+    """
+    def __init__(self, op: X) -> None:
+        self.op = op
+
+    def __call__(self, data: Any) -> Any:
+        return conjure(self.op, data)
+
+
+class _OpCallable(_OpStrategy):
+    """ 
+    Op Strategy when `op` is a Callable. E.g.:
+    
+    ```python
+    data >> Op(torch.cat, [X[0], X[1]], dim=1)
+    ```
+    """
+    def __init__(self, op: Callable[..., Any], *args, **kwargs) -> None:
+        self.op = op
+        self.args = FaeArgs(*args, **kwargs)
+
+    def __call__(self, data: Any) -> Any:
+        resolved = data >> self.args
+        return self.op(*resolved.args, **resolved.kwargs)
+
+
+class _OpOp(_OpStrategy):
+    """ 
+    Op Strategy when `op` is a list of `Op` Instances. E.g.:
+    
+    ```python
+    linear1 >> linear2
+    ```
+
+    which is the same as `Op(linear1, linear2)`. This calls each op in sequence.
+    """
+    def __init__(self, *args: "Op") -> None:
+        for op in args:
+            if not isinstance(op, Op):
+                raise ValueError("All arguments must be of type `Op`.")
+        self.ops = args
+
+    def __call__(self, data: Any) -> Any:
+        for op in self.ops:
+            data = op.using(data)
+        return data
+
+
 class Op:
     strategy: _OpStrategy
 
-    def __init__(self, op: X | Callable[..., Any] | Op, *args,  **kwargs) -> None:
+    def __init__(self, op: X | Callable[..., Any] | "Op", *args,  **kwargs) -> None:
       
         # Note: X is callable, but not vice versa.
         if isinstance(op, X):
@@ -469,127 +527,35 @@ class Op:
     def using(self, data: Any) -> Any:
         return self.strategy(data)
         
-    def __rshift__(self, data: Op | nn.Module) -> Op:
-        if isinstance(data, Op):
-            return Op(self, data)
-        elif isinstance(data, nn.Module):
-            return Op(self, data(X))
-        
-        return NotImplemented
-        
     def __rrshift__(self, data: Any) -> Any:
-        if isinstance(data, nn.Module):
-            return Op(data(X), self)
-
         return self.using(data)
 
     def __add__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)        
         return Op(operator.add, self, other)
-
-    def __radd__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
-        return Op(operator.add, other, self)
     
     def __sub__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
         return Op(operator.sub  , self, other)
     
-    def __rsub__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
-        return Op(operator.sub  , other, self)
-    
     def __mul__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
         return Op(operator.mul, self, other)
 
-    def __rmul__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
-        return Op(operator.mul, other, self)
-
     def __truediv__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
         return Op(operator.truediv, self, other)
     
     def __rtruediv__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
         return Op(operator.truediv, other, self)
     
     def __floordiv__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
         return Op(operator.floordiv, self, other)
     
     def __rfloordiv__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
         return Op(operator.floordiv, other, self)
     
     def __mod__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
         return Op(operator.mod, self, other)
     
     def __rmod__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
         return Op(operator.mod, other, self)
-
-    def __matmul__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
-        return Op(operator.matmul, self, other)
-    
-    def __rmatmul__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
-        return Op(operator.matmul, other, self)
-    
-    def __pow__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
-        return Op(operator.pow, self, other)
-    
-    def __rpow__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
-        return Op(operator.pow, other, self)
-    
-    def __and__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
-        return Op(operator.and_, self, other)
-    
-    def __rand__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
-        return Op(operator.and_, other, self)
-    
-    def __or__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
-        return Op(operator.or_, self, other)
-    
-    def __ror__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
-        return Op(operator.or_, other, self)
-    
-    def __xor__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
-        return Op(operator.xor, self, other)
-    
-    def __rxor__(self, other: Any) -> Op:
-                return Op(operator.xor, other, self)
     
     def __pos__(self) -> Op:
         return Op(operator.pos, self)
@@ -616,85 +582,7 @@ class Op:
         return Op(math.ceil, self)
 
     def __repr__(self):
-        return f"Op({self.strategy!r})"
-
-
-class _OpStrategy(ABC):
-    @abstractmethod
-    def __call__(self, data: Any) -> Any:
-        pass
-
-    @abstractmethod
-    def __repr__(self):
-        pass
-
-
-class _OpX(_OpStrategy):
-    """ 
-    Op Strategy when `op` is an instance of `X`. E.g.:
-    
-    ```python
-    data >> Op(X[0])
-    ```
-    """
-    def __init__(self, op: X) -> None:
-        self.op = op
-
-    def __call__(self, data: Any) -> Any:
-        return conjure(self.op, data)
-
-    def __repr__(self):
-        return f"{self.op!r}"
-
-
-class _OpCallable(_OpStrategy):
-    """ 
-    Op Strategy when `op` is a Callable. E.g.:
-    
-    ```python
-    data >> Op(torch.cat, [X[0], X[1]], dim=1)
-    ```
-    """
-    def __init__(self, op: Callable[..., Any], *args, **kwargs) -> None:
-        self.op = op
-        self.args = FaeArgs(*args, **kwargs)
-
-    def __call__(self, data: Any) -> Any:
-        resolved = data >> self.args
-        return self.op(*resolved.args, **resolved.kwargs)
-
-    def __repr__(self):
-        args = ", ".join(map(repr, self.args.args))
-        kwargs = ", ".join(f"{k}={v!r}" for k, v in self.args.kwargs.items())
-
-        if kwargs:
-            args = args + ", " + kwargs
-        return f"{self.op!r}({args})"
-
-
-class _OpOp(_OpStrategy):
-    """ 
-    Op Strategy when `op` is a list of `Op` Instances. E.g.:
-    
-    ```python
-    linear1 >> linear2
-    ```
-
-    which is the same as `Op(linear1, linear2)`. This calls each op in sequence.
-    """
-    def __init__(self, *args: Op) -> None:
-        for op in args:
-            if not isinstance(op, Op):
-                raise ValueError("All arguments must be of type `Op`.")
-        self.ops = args
-
-    def __call__(self, data: Any) -> Any:
-        for op in self.ops:
-            data = op.using(data)
-        return data
-
-    def __repr__(self):
-        return f"Op({', '.join(map(repr, self.ops))})"
+        return f"Op({self.op!r})"
 
 
 class Wiring(enum.Enum):
@@ -756,3 +644,315 @@ class Wire:
 
     def __rrshift__(self, data: Any) -> FaeArgs:
         return self.step(data)
+
+
+class FaeTree:
+    def __init__(self) -> None:
+        pass
+
+    def __rrshift__(self, data: Any) -> Any:
+        """ This will evaluate the tree using the data provided as the starting point. """
+        if not root:
+            return 0
+        
+        stack = [(root, 1)]
+        ans = 0
+        
+        while stack:
+            node, depth = stack.pop()
+            ans = max(ans, depth)
+            if node.left:
+                stack.append((node.left, depth + 1))
+            if node.right:
+                stack.append((node.right, depth + 1))
+        
+        return ans
+
+
+class FaeNode:
+    def __init__(self, caller, op_name, other: Optional[nn.Module] = None) -> None:
+        self.caller = caller
+        self.op_name = op_name
+        self.other = other
+        
+    def __rrshift__(self, data: Any) -> Any:
+        pass
+
+
+def _new_instance(cls, *args, **kwargs):
+    instance = object.__new__(cls)
+    sig = inspect.signature(cls.__init__)
+    bound = sig.bind(instance, *args, **kwargs)
+    bound.apply_defaults()
+    del bound.arguments["self"]
+    instance._arguments = bound
+    return instance
+
+
+def __new__(cls, *args, **kwargs):
+    """
+    Allow `nn.Module` to save constructor arguments passed to it, so that the could be used 
+    later for cloning modules.
+
+    When any of the arguments is of type `FaeList` or `FaeDict`, special handing is applied to 
+    generate clones.
+    """
+    try:
+        kwargs_keys, kwargs_values = zip(*kwargs.items())
+    except ValueError:
+        kwargs_keys, kwargs_values = [], []
+    
+    raveled_args = []
+    num_faelist = 0
+    num_faedict = 0
+    fae_keys = None
+    fae_len = None
+    for arg in itertools.chain(args, kwargs_values):
+        if isinstance(arg, FaeList):
+            num_faelist += 1
+            arg_value = arg.shed()
+
+            if fae_len is None:
+                fae_len = len(arg_value)
+            elif fae_len != len(arg_value):
+                raise ValueError("All arguments of type `FaeList` must have the same length.")
+
+            raveled_args.append(arg_value)
+        elif isinstance(arg, FaeDict):
+            num_faedict += 1
+            arg_value = arg.shed()
+
+            if fae_keys is None:
+                fae_keys = list(arg_value.keys())
+                fae_len = len(fae_keys)
+            else:
+                if set(fae_keys) != set(arg_value.keys()):
+                    raise ValueError("All arguments of type `FaeDict` must have the same keys.")
+
+            raveled_args.append([arg_value[k] for k in fae_keys])
+        else:
+            raveled_args.append(itertools.repeat(arg))
+
+    if num_faelist > 0 and num_faedict > 0:
+        raise ValueError("Cannot mix `FaeList` and `FaeDict` arguments. Choose one.")
+
+    num_fae = max(num_faelist, num_faedict)
+
+    # No argument parametrization, return a regular nn.Module instance
+    if num_fae == 0:
+        return _new_instance(cls, *args, **kwargs)
+
+    nkeys = len(kwargs_keys)
+    nargs = len(raveled_args)
+    args = [val[:nargs-nkeys] for val in zip(*raveled_args)]
+    kwargs = [dict(zip(kwargs_keys, val[nargs-nkeys:])) for val in zip(*raveled_args)]
+
+    out = []
+    for c_args, c_kwargs in zip(args, kwargs):
+        inst = _new_instance(cls, *c_args, **c_kwargs)
+        # Call __init__ on each instance since it will not be called when different class type is 
+        # returned in __new__
+        cls.__init__(inst, *c_args, **c_kwargs)
+        out.append(inst)
+    
+    if fae_keys is not None:
+        out = dict(zip(fae_keys, out))
+
+    return out
+
+
+def __default_new__(cls, *args, **kwargs):
+    """ Once we override __new__ in `nn.Module`, we cannot restore the old one, since nn.Module 
+    (as of PyTorch 2.7) does not implement `__new__`, and hence expect it to have no arguments. 
+    The custom __new__ method we implemented above does not match this signature, and hence 
+    we cannot restore the old one. As a workaround, we define a default __new__ method that 
+    matches the signature of the default __new__ method in `nn.Module`, but calls the parent object 
+    without any arguments.
+    """
+    return object.__new__(cls)
+
+
+@overload
+def __mul__[T: nn.Module](self: T, other: int) -> list[T]: ...
+
+@overload
+def __mul__[T: nn.Module](self: T, other: nn.Module) -> Op: ...
+
+
+def __mul__[T: nn.Module](self: T, other: int | nn.Module) -> list[T] | Op:
+    """
+    Creates a ModuleList of `other` clones of this module.
+    """
+    if isinstance(other, nn.Module):
+        left = self(X)
+        right = other(X)
+        return Op(left, getattr(X, "__mul__")(right))
+
+    if not isinstance(other, int):
+        raise TypeError(
+            f"Cannot multiply {self} with {type(other)}. Only multiplication by "
+            f"int is supported."
+        )
+    if other < 1:
+        raise ValueError("Number of modules must be greater than 0.")
+
+    return [self.clone() for _ in range(other)]
+
+
+@overload
+def __rmul__[T: nn.Module](self: T, other: int) -> list[T]: ...
+
+
+@overload
+def __rmul__[T: nn.Module](self: T, other: nn.Module) -> Op: ...
+
+
+def __rmul__[T: nn.Module](self: T, other: int | nn.Module) -> list[T] | Op:
+    """ Multiplication is commutative!"""
+    return self.__mul__(other)  # type: ignore
+
+
+def __rrshift__[T: nn.Module](self: T, other: Any) -> Any:
+    """
+    This is an alias for `__call__`. The limitation here is that it only works for 
+    single inputs. If you need to pass multiple inputs, use the `FaeArgs` class.
+    """
+    return self(other)
+
+
+def clone[T: nn.Module](self: T, *args: Any, **kwargs: Any) -> T:
+    """
+    Create a new instance of the same module with the same arguments. This method should be used 
+    carefully, since it is does not do any deep copying on all types of module arguments. 
+
+    The module is cloned based on the arguments passed to its constructor during its creation. 
+    If any of the arguments were changed after the module was created, the changes will not be 
+    reflected in the cloned module unless the changes were made on the arguments itslef inplace 
+    causing its mutation. E.g. passing a list to the current module and then mutating that same list
+    outside the module...
+
+    If you need to clone a module with a argument which should be a new object rather than a shared
+    object, you can pass a copy of the argument to the clone method with the new object to use.    
+    """
+    cls = self.__class__
+    sig = inspect.signature(self.__init__)  # type: ignore
+    bound = sig.bind_partial(*args, **kwargs)
+    cur_arguments = dict(self._arguments.arguments)
+    cur_arguments.update(bound.arguments)
+    new_bound = inspect.BoundArguments(sig, cur_arguments)  # type: ignore[arg-type]
+    return cls(*new_bound.args, **new_bound.kwargs)
+
+
+def __call__[T: nn.Module](self: T, *args: Any, **kwargs: Any) -> Any:
+    fae_args = FaeArgs(*args, **kwargs)
+    if fae_args.is_resolved:
+        return faek.module__call__(self, *args, **kwargs)
+    
+    return Op(faek.module__call__, self, *args, **kwargs)
+
+    
+def delayed_unary_method[T: nn.Module](op_name: str) -> Callable[[T], Op]:
+    def func(self: T) -> Op:
+        return getattr(self(X), op_name)()
+    return func
+
+
+def delayed_binary_method[T: nn.Module](op_name: str) -> Callable[[T, nn.Module], Op]:
+    def func_binary(self: T, other: nn.Module) -> Op:
+        return getattr(self(X), op_name)(other(X))
+    return func_binary
+    
+
+class Singleton(type):
+    """
+    This is a singleton metaclass intended to be used as a metaclass for the `FaeMagic` class, 
+    so that we cannot create multiple instances of `FaeMagic`.
+    """
+    def __init__(self, *args, **kwargs) -> None:
+        self.__instance = None
+        super().__init__(*args, **kwargs)
+
+    def __call__(self, *args, **kwargs) -> Any:
+        if self.__instance is None:
+            self.__instance = super().__call__(*args, **kwargs)
+        return self.__instance
+
+
+class Faek(metaclass=Singleton):
+    """
+    This is a singleton class intended to be used as a context manager or as a general tool
+    to enable the `ModuleMixin` functionality by Monkey patching the `nn.Module` in PyTorch.
+    """
+
+    methods = [
+        "__call__",
+        "__mul__",
+        "__rmul__",
+        "__rrshift__",
+        "clone",
+    ]
+
+    # Note: `__mul__` is a special case, since it can operate on integers and module types.
+    delayed_binary_methods = [
+        "__add__",
+        "__sub__",
+        "__matmul__",
+        "__truediv__",
+        "__floordiv__",
+        "__mod__",
+        "__divmod__",
+        "__pow__",
+        "__and__",
+        "__or__",
+        "__xor__",
+    ]
+    delayed_unary_methods = [
+        "__neg__",
+        "__pos__",
+        "__abs__",
+        "__invert__",
+        "__round__",
+        "__trunc__",
+        "__floor__",
+        "__ceil__",
+    ]
+
+    def __init__(self):
+        self._is_on = False
+        self.module__call__ = nn.Module.__call__
+
+    def __enter__(self):
+        self.on()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.off()
+
+    def on(self):
+        if self._is_on:
+            return
+
+        current_module = sys.modules[__name__]
+        for method in self.methods:
+            setattr(nn.Module, method, getattr(current_module, method))
+
+        nn.Module.__new__ = staticmethod(__new__)
+        # for method in Faek.delayed_binary_methods:
+        #     setattr(nn.Module, method, delayed_binary_method(method))
+        # for method in Faek.delayed_unary_methods:
+        #     setattr(nn.Module, method, delayed_unary_method(method))
+
+        self._is_on = True
+
+    def off(self):
+        if not self._is_on:
+            return
+        
+        for method in self.methods:
+            delattr(nn.Module, method)
+
+        nn.Module.__new__ = staticmethod(__default_new__)
+        nn.Module.__call__ = self.module__call__
+        self._is_on = False
+
+
+faek = Faek()

@@ -1,4 +1,3 @@
-from .faek import faek
 from .spells import (
     X, 
     FaeArgs, 
@@ -10,3 +9,4 @@ from .spells import (
     Wire,
     Wiring
 )
+from .faek import faek

@@ -132,3 +132,4 @@ dmypy.json
 scratch/
 /.test_coverage/
 /stubs/
+.VSCodeCounter/

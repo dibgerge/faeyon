@@ -1,5 +1,3 @@
-from . import models
-
 from .magic import (
     faek, 
     X, 
@@ -12,3 +10,5 @@ from .magic import (
     Wire,
     Wiring,
 )
+
+from . import models

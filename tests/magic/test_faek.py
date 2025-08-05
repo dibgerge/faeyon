@@ -1,10 +1,12 @@
 """
 Note: Currently faek is automatically enabled when faeyon is imported. 
 """
+import math
 import pytest
 import torch
 from torch import nn
-from faeyon import faek, FaeArgs, FaeList, FaeDict
+from faeyon import faek, FaeArgs, FaeList, FaeDict, Op, X
+from tests.common import ConstantLayer
 
 
 def _is_faek_on():
@@ -134,3 +136,76 @@ def test_rrshift_with_faeargs():
     x = FaeArgs(torch.randn(1, 10))
     y = x >> model
     assert y.shape == (1, 2)
+
+
+@pytest.mark.parametrize("op,expected", [
+    ("add", torch.tensor([[2.0, 2.0]])), 
+    ("sub", torch.tensor([[0.0, 0.0]])),
+    ("truediv", torch.tensor([[1.0, 1.0]])),
+    ("floordiv", torch.tensor([[1.0, 1.0]])),
+    ("mod", torch.tensor([[0.0, 0.0]])),
+    ("pow", torch.tensor([[1.0, 1.0]])),
+])
+def test_module_delayed_float_binary(op, expected):
+    x = torch.ones(1, 2)
+    with faek:
+        layer1 = ConstantLayer((1, 2), value=1.0)
+        layer2 = ConstantLayer((1, 2), value=1.0)
+        delayed = getattr(layer1, f"__{op}__")(layer2)
+        assert isinstance(delayed, Op)
+        res = x >> delayed
+
+    torch.testing.assert_close(res, expected)
+
+
+def test_module_delayed_matmul():
+    x = torch.ones(2, 1)
+    with faek:
+        layer1 = ConstantLayer((2, 2), value=1.0)
+        layer2 = ConstantLayer((2, 1), value=1.0)
+        delayed = layer1 @ layer2
+        assert isinstance(delayed, Op)
+        res = x >> delayed
+    expected = 2.0 * torch.ones(2, 1)
+    torch.testing.assert_close(res, expected)
+
+
+@pytest.mark.parametrize("op,expected", [
+    ("and", torch.tensor([[0, 0]])),
+    ("or", torch.tensor([[3, 3]])),
+    ("xor", torch.tensor([[3, 3]])),
+])
+def test_module_delayed_bitwise(op, expected):
+    x = torch.ones(1, 2, dtype=torch.int64)
+    with faek:
+        layer1 = ConstantLayer((1, 2), value=2, dtype=torch.int64)
+        layer2 = ConstantLayer((1, 2), value=1, dtype=torch.int64)
+        delayed = getattr(layer1, f"__{op}__")(layer2)
+        assert isinstance(delayed, Op)
+        res = x >> delayed
+    torch.testing.assert_close(res, expected)
+
+
+@pytest.mark.parametrize("op,expected", [
+    ("neg", torch.tensor([[-2.1, -2.1]])),
+    ("pos", torch.tensor([[2.1, 2.1]])),
+    ("abs", torch.tensor([[2.1, 2.1]]))
+])
+def test_module_delayed_unary(op, expected):
+    x = torch.ones(1, 2)
+    with faek:
+        layer = ConstantLayer((1, 2), value=2.1)
+        delayed = getattr(layer, f"__{op}__")()
+        assert isinstance(delayed, Op)
+        res = x >> delayed
+    torch.testing.assert_close(res, expected)
+
+
+def test_module_delayed_invert():
+    x = torch.ones(1, 2, dtype=torch.int64)
+    with faek:
+        layer = ConstantLayer((1, 2), value=2, dtype=torch.int64)
+        delayed = ~layer
+        assert isinstance(delayed, Op)
+        res = x >> delayed
+    torch.testing.assert_close(res, torch.tensor([[-3, -3]]))
