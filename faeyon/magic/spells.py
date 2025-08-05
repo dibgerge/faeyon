@@ -2,7 +2,6 @@ from __future__ import annotations
 import inspect
 import enum
 import itertools
-import math
 import operator
 from collections.abc import Callable, Iterator
 from typing import Any, Optional
@@ -602,18 +601,6 @@ class Op:
 
     def __invert__(self) -> Op:
         return Op(operator.invert, self)
-
-    def __round__(self, ndigits: int = 0) -> Op:
-        return Op(round, self, ndigits)
-
-    def __trunc__(self) -> Op:
-        return Op(math.trunc, self)
-
-    def __floor__(self) -> Op:
-        return Op(math.floor, self)
-
-    def __ceil__(self) -> Op:
-        return Op(math.ceil, self)
 
     def __repr__(self):
         return f"Op({self.strategy!r})"

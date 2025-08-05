@@ -1,6 +1,8 @@
 import inspect
+import torch
 from faeyon import X, FaeArgs, FaeVar, FaeList, FaeDict, FaeMultiMap, Op, Wire, Wiring
 import pytest
+from tests.common import ConstantLayer
 
 
 class TestX:
@@ -348,6 +350,46 @@ class TestOp:
         data = [1, 2, 3]
         out = data >> Op(X[1:])
         assert out == [2, 3]
+
+    def test_delayed_op_op(self):
+        data = [1, 2, 3]
+        delayed = Op(X[1:]) >> Op(X[1:])
+        assert isinstance(delayed, Op)
+        out = data >> delayed
+        assert out == [3]
+
+    @pytest.mark.parametrize("op,expected", [
+        ("add", torch.tensor([3, 5])),
+        ("sub", torch.tensor([1, 1])),
+        ("mul", torch.tensor([2, 6])),
+        ("truediv", torch.tensor([2.0, 1.5])),
+        ("floordiv", torch.tensor([2, 1])),
+        ("mod", torch.tensor([0, 1])),
+        ("pow", torch.tensor([2, 9])),
+    ])
+    def test_delayed_op_op_arithmetic(self, op, expected):
+        data = torch.tensor([1, 2, 3])
+        delayed = getattr(Op(X[1:]), f"__{op}__")(Op(X[:-1]))
+        assert isinstance(delayed, Op)
+        out = data >> delayed
+        torch.testing.assert_close(out, expected)
+
+    @pytest.mark.parametrize("op,expected", [
+        ("add", torch.tensor([3.0, 6.0])),
+        ("sub", torch.tensor([-1.0, -2.0])),
+        ("mul", torch.tensor([2.0, 8.0])),
+        ("truediv", torch.tensor([0.5, 0.5])),
+        ("floordiv", torch.tensor([0., 0.])),
+        ("mod", torch.tensor([1., 2.])),
+        ("pow", torch.tensor([1.0, 16.0])),
+    ])
+    def test_delayed_op_module_arithmetic(self, op, expected):
+        layer = ConstantLayer(2, value=2.0)
+        data = torch.tensor([1.0, 2.0])
+        delayed = getattr(Op(X), f"__{op}__")(layer)
+        assert isinstance(delayed, Op)
+        out = data >> delayed
+        torch.testing.assert_close(out, expected)
 
     def test_repr(self):
         op = Op(X[1].a)
