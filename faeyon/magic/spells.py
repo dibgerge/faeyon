@@ -267,29 +267,27 @@ class ContainerBase(ABC):
     
     def __init__(self, *args) -> None:
         self._value: Any = _Variable(*args)
-        self._expression: Optional[X] = None
+        self._expression: Optional[X | Op] = None
     
-    def select[T: ContainerBase](self: T, expression: X) -> T:
+    def select[T: ContainerBase](self: T, expression: X | Op) -> T:
         if self._expression is not None:
             raise ValueError(
                 f"Cannot reassign expression to {self.__class__.__name__}, "
                 "since expression has not been used."
             )
 
-        if not isinstance(expression, X):
+        if not isinstance(expression, (X, Op)):
+            print("---------", expression)
             raise ValueError(
                 f"Cannot assign expression to {self.__class__.__name__}, "
-                "since expression is not an instance of `X`."
+                "since expression is not an instance of `X` or `Op`."
             )
 
         out = self._copy()
         out._expression = expression
         return out
 
-    def __matmul__[T: ContainerBase](self: T, expression: X) -> T:
-        return self.select(expression)
-
-    def __rmatmul__[T: ContainerBase](self: T, expression: X) -> T:
+    def __matmul__[T: ContainerBase](self: T, expression: X | Op) -> T:
         return self.select(expression)
 
     def _copy[T: ContainerBase](self: T) -> T:
@@ -488,9 +486,7 @@ class Op:
         return Op(operator.add, self, other)
 
     def __radd__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
-        return Op(operator.add, other, self)
+        return self.__add__(other)
     
     def __sub__(self, other: Any) -> Op:
         if isinstance(other, nn.Module):
@@ -508,9 +504,7 @@ class Op:
         return Op(operator.mul, self, other)
 
     def __rmul__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
-        return Op(operator.mul, other, self)
+        return self.__mul__(other)
 
     def __truediv__(self, other: Any) -> Op:
         if isinstance(other, nn.Module):
@@ -568,9 +562,7 @@ class Op:
         return Op(operator.and_, self, other)
     
     def __rand__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
-        return Op(operator.and_, other, self)
+        return self.__and__(other)
     
     def __or__(self, other: Any) -> Op:
         if isinstance(other, nn.Module):
@@ -578,9 +570,7 @@ class Op:
         return Op(operator.or_, self, other)
     
     def __ror__(self, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
-        return Op(operator.or_, other, self)
+        return self.__or__(other)
     
     def __xor__(self, other: Any) -> Op:
         if isinstance(other, nn.Module):
@@ -588,7 +578,7 @@ class Op:
         return Op(operator.xor, self, other)
     
     def __rxor__(self, other: Any) -> Op:
-                return Op(operator.xor, other, self)
+        return self.__xor__(other)
     
     def __pos__(self) -> Op:
         return Op(operator.pos, self)

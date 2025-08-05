@@ -12,3 +12,6 @@ from .magic import (
 )
 
 from . import models
+
+# Enable Faek by default to ensure all features are working as expected
+faek.on()

@@ -114,15 +114,11 @@ def __mul__[T: nn.Module](self: T, other: int | nn.Module) -> list[T] | Op:
     Creates a ModuleList of `other` clones of this module.
     """
     if isinstance(other, nn.Module):
-        left = self(X)
-        right = other(X)
-        return Op(left, getattr(X, "__mul__")(right))
+        return getattr(self(X), "__mul__")(other(X))
 
     if not isinstance(other, int):
-        raise TypeError(
-            f"Cannot multiply {self} with {type(other)}. Only multiplication by "
-            f"int is supported."
-        )
+        return NotImplemented
+    
     if other < 1:
         raise ValueError("Number of modules must be greater than 0.")
 
@@ -188,13 +184,19 @@ def delayed_unary_method[T: nn.Module](op_name: str) -> Callable[[T], Op]:
 
 
 def delayed_binary_method[T: nn.Module](op_name: str) -> Callable[[T, nn.Module], Op]:
-    def func(self: T, other: nn.Module) -> Op:
-        if not isinstance(other, nn.Module):
-            return NotImplemented
+    """
+    This method only handles arithmetic on two modules, e.g. module1 + module2. Thus we expect
+    to implement only the left versions of the operators. If that failed, will manually call the 
+    left type 
 
-        return getattr(self(X), op_name)(other(X))
+    """
+    def func(self: T, other: nn.Module) -> Op:
+        if isinstance(other, nn.Module):
+            return getattr(self(X), op_name)(other(X))
+        
+        return NotImplemented
     return func
-    
+
 
 class Singleton(type):
     """

@@ -1,6 +1,7 @@
 import inspect
 import torch
 from faeyon import X, FaeArgs, FaeVar, FaeList, FaeDict, FaeMultiMap, Op, Wire, Wiring
+from faeyon.magic.spells import conjure
 import pytest
 from tests.common import ConstantLayer
 
@@ -72,10 +73,10 @@ class TestFaeArgs:
         return x + y
     
     def test_init(self):
-        faek = FaeArgs(1, 2, 3)
-        assert isinstance(faek, FaeArgs)
-        assert faek.args == (1, 2, 3)
-        assert faek.kwargs == {}
+        fae = FaeArgs(1, 2, 3)
+        assert isinstance(fae, FaeArgs)
+        assert fae.args == (1, 2, 3)
+        assert fae.kwargs == {}
 
     def test_call_raisesTypeError(self):
         """ 
@@ -256,9 +257,16 @@ class TestFaeList:
         assert +fae_list == [2, 3]
 
     def test_general_usage(self):
+        """ X Selector on left hand side does not work, must wrap it in Op. """
         fae_list = FaeList()
-        [10, 20, 30] >> fae_list @ X[1] >> fae_list @ X[2]
+        [10, 20, 30] >> fae_list @ X[1] >> fae_list @ Op(X[2])
         assert +fae_list == [20, 30]
+
+    def test_len(self):
+        fae_list = FaeList()
+        assert len(fae_list) == 0
+        1 >> fae_list
+        assert len(fae_list) == 1
 
 
 class TestFaeDict:
@@ -308,6 +316,12 @@ class TestFaeDict:
         [1, 2, 3] >> fae_dict["a"] @ X[1] >> fae_dict["b"]
         assert +fae_dict == {"a": 2, "b": [1, 2, 3]}
 
+    def test_len(self):
+        fae_dict = FaeDict()
+        assert len(fae_dict) == 0
+        1 >> fae_dict["a"]
+        assert len(fae_dict) == 1
+
 
 class TestFaeMultiMap:
     def test_init_no_args(self):
@@ -341,6 +355,30 @@ class Test_Variable:
 
 
 class TestOp:
+
+    def test_init_error1(self):
+        """ Cannot initialize Op with more than one argument if first argument is X. """
+        with pytest.raises(ValueError):
+            Op(X, 1, 2)
+        
+        with pytest.raises(ValueError):
+            Op(X, a=2)
+    
+    def test_init_error2(self):
+        """ If first argument is `Op`, all arguments must be `Op` as well. """
+        with pytest.raises(ValueError):
+            Op(Op(X), 1)
+        
+    def test_init_error3(self):
+        """ Cannot have kwargs ig Op arugments are given """
+        with pytest.raises(ValueError):
+            Op(Op(X), Op(X), a=1)
+    
+    def test_init_error4(self):
+        """ Unsupported argument type"""
+        with pytest.raises(ValueError):
+            Op(1)
+    
     def test_usage(self):
         data = [1, 2, 3]
         out = data >> Op(X)
@@ -358,38 +396,266 @@ class TestOp:
         out = data >> delayed
         assert out == [3]
 
+    def test_delayed_module_op(self):
+        data = torch.tensor([1.0, 2.0, 3.0])
+        delayed = ConstantLayer(3, value=1.0) >> Op(X[1])
+        assert isinstance(delayed, Op)
+        out = data >> delayed
+        torch.testing.assert_close(out, torch.tensor(2.0))
+
+    def test_delayed_op_module(self):
+        data = torch.tensor([1.0, 2.0, 3.0])
+        delayed = Op(X[1:]) >> ConstantLayer(2, value=1.0)
+        assert isinstance(delayed, Op)
+        out = data >> delayed
+        torch.testing.assert_close(out, torch.tensor([2.0, 3.0]))
+
     @pytest.mark.parametrize("op,expected", [
-        ("add", torch.tensor([3, 5])),
-        ("sub", torch.tensor([1, 1])),
-        ("mul", torch.tensor([2, 6])),
-        ("truediv", torch.tensor([2.0, 1.5])),
-        ("floordiv", torch.tensor([2, 1])),
-        ("mod", torch.tensor([0, 1])),
-        ("pow", torch.tensor([2, 9])),
+        ("add", [3, 5]),
+        ("sub", [1, 1]),
+        ("mul", [2, 6]),
+        ("truediv", [2.0, 1.5]),
+        ("floordiv", [2, 1]),
+        ("mod", [0, 1]),
+        ("pow", [2, 9]),
     ])
     def test_delayed_op_op_arithmetic(self, op, expected):
         data = torch.tensor([1, 2, 3])
         delayed = getattr(Op(X[1:]), f"__{op}__")(Op(X[:-1]))
         assert isinstance(delayed, Op)
         out = data >> delayed
-        torch.testing.assert_close(out, expected)
+        torch.testing.assert_close(out, torch.tensor(expected))
 
     @pytest.mark.parametrize("op,expected", [
-        ("add", torch.tensor([3.0, 6.0])),
-        ("sub", torch.tensor([-1.0, -2.0])),
-        ("mul", torch.tensor([2.0, 8.0])),
-        ("truediv", torch.tensor([0.5, 0.5])),
-        ("floordiv", torch.tensor([0., 0.])),
-        ("mod", torch.tensor([1., 2.])),
-        ("pow", torch.tensor([1.0, 16.0])),
+        ("and", [0, 2]),
+        ("or", [3, 3]),
+        ("xor", [3, 1]),
+    ])
+    def test_delayed_op_op_bitwise(self, op, expected):
+        data = torch.tensor([1, 2, 3], dtype=torch.int64)
+        delayed = getattr(Op(X[1:]), f"__{op}__")(Op(X[:-1]))
+        assert isinstance(delayed, Op)
+        out = data >> delayed
+        torch.testing.assert_close(out, torch.tensor(expected))
+
+    @pytest.mark.parametrize("op,expected", [
+        ("neg", [-1, -2, 3]),
+        ("pos", [1, 2, -3]),
+        ("abs", [1, 2, 3]),
+        ("invert", [-2, -3, 2]),
+    ])
+    def test_delayed_op_op_unary(self, op, expected):
+        data = torch.tensor([1, 2, -3], dtype=torch.int64)
+        delayed = getattr(Op(X), f"__{op}__")()
+        assert isinstance(delayed, Op)
+        out = data >> delayed
+        torch.testing.assert_close(out, torch.tensor(expected))
+
+    @pytest.mark.parametrize("op,expected", [
+        ("add", [3.0, 6.0]),
+        ("sub", [-1.0, -2.0]),
+        ("mul", [2.0, 8.0]),
+        ("truediv", [0.5, 0.5]),
+        ("floordiv", [0., 0.]),
+        ("mod", [1., 2.]),
+        ("pow", [1.0, 16.0]),
     ])
     def test_delayed_op_module_arithmetic(self, op, expected):
+        """
+        layer(x) = [2, 2] * [1, 2] = [2, 4]
+        """
         layer = ConstantLayer(2, value=2.0)
         data = torch.tensor([1.0, 2.0])
         delayed = getattr(Op(X), f"__{op}__")(layer)
         assert isinstance(delayed, Op)
         out = data >> delayed
+        torch.testing.assert_close(out, torch.tensor(expected))
+
+    def test_delayed_op_module_matmul(self):
+        """
+        As column vectors
+        layer(x) = [2, 2] * [1, 2] = [2, 4]
+        layer(x) @ [1, 2] = 10
+        """
+        layer = ConstantLayer((2, 1), value=2.0)
+        data = torch.tensor([[1.0], [2.0]])
+        delayed = Op(X.T) @ layer
+        assert isinstance(delayed, Op)
+        out = data >> delayed
+        torch.testing.assert_close(out, torch.tensor([[10.0]]))
+
+    def test_delayed_op_op_matmul(self):
+        """
+        layer(x) = [2, 2] * [1, 2] = [2, 4]
+        layer(x) @ [1, 2] = 10
+        """
+        layer = ConstantLayer(2, value=2.0)
+        data = torch.tensor([1.0, 2.0])
+        delayed = Op(X) @ (layer >> Op(X[None].T))
+        assert isinstance(delayed, Op)
+        out = data >> delayed
+        torch.testing.assert_close(out, torch.tensor([10.0]))
+
+    @pytest.mark.parametrize("op,expected", [
+        ("and", [0, 0, 0]),
+        ("or", [3, 3, 3]),
+        ("xor", [3, 3, 3]),
+    ])
+    def test_delayed_op_module_bitwise(self, op, expected):
+        """
+        layer output is [2, 2, 2] * [1, 1, 1] = [2, 2, 2]
+
+            data         layer out
+        [01, 01, 01] & [10, 10, 10] = [0, 0, 0]
+        [01, 01, 01] | [10, 10, 10] = [11, 11, 11]
+        [01, 01, 01] ^ [10, 10, 10] = [11, 11, 11]
+        """
+        layer = ConstantLayer(3, value=2, dtype=torch.int64)
+        data = torch.tensor([1, 1, 1], dtype=torch.int64)
+        delayed = getattr(Op(X), f"__{op}__")(layer)
+        assert isinstance(delayed, Op)
+        out = data >> delayed
+        torch.testing.assert_close(out, torch.tensor(expected, dtype=torch.int64))
+    
+    def test_delayed_module_op_add(self):
+        """
+        The layer comes on the right hand side of the operator. I cannot call layer.__add__, 
+        because the python interpreter will not catch the NotImplemented return and call b.__radd__.
+        I must use the `+` for this to happen.
+        """
+        expected = torch.tensor([3.0, 6.0])
+        layer = ConstantLayer(2, value=2.0)
+        data = torch.tensor([1.0, 2.0])
+        delayed = layer + Op(X)
+        assert isinstance(delayed, Op)
+        out = data >> delayed
         torch.testing.assert_close(out, expected)
+
+    def test_delayed_module_op_sub(self):
+        """
+        layer(x) = [2, 2] * [1, 2] = [2, 4]
+        layer(x) - [1, 2] = [2, 4] - [1, 2] = [1, 2]
+        """
+        expected = torch.tensor([1.0, 2.0])
+        layer = ConstantLayer(2, value=2.0)
+        data = torch.tensor([1.0, 2.0])
+        delayed = layer - Op(X)
+        assert isinstance(delayed, Op)
+        out = data >> delayed
+        torch.testing.assert_close(out, expected)
+
+    def test_delayed_module_op_mul(self):
+        """
+        layer(x) = [2, 2] * [1, 2] = [2, 4]
+        layer(x) * [1, 2] = [2, 4] * [1, 2] = [2, 8]
+        """
+        expected = torch.tensor([2.0, 8.0])
+        layer = ConstantLayer(2, value=2.0)
+        data = torch.tensor([1.0, 2.0])
+        delayed = layer * Op(X)
+        assert isinstance(delayed, Op)
+        out = data >> delayed
+        torch.testing.assert_close(out, expected)
+
+    def test_delayed_module_op_truediv(self):
+        """
+        layer(x) = [2, 2] * [1, 2] = [2, 4]
+        layer(x) / [1, 2] = [2, 4] / [1, 2] = [2, 2]
+        """
+        expected = torch.tensor([2.0, 2.0])
+        layer = ConstantLayer(2, value=2.0)
+        data = torch.tensor([1.0, 2.0])
+        delayed = layer / Op(X)
+        assert isinstance(delayed, Op)
+        out = data >> delayed
+        torch.testing.assert_close(out, expected)
+
+    def test_delayed_module_op_floordiv(self):
+        """
+        layer(x) = [2, 2] * [1, 2] = [2, 4]
+        layer(x) // [1, 2] = [2, 4] // [1, 2] = [2, 2]
+        """
+        expected = torch.tensor([2.0, 2.0])
+        layer = ConstantLayer(2, value=2.0)
+        data = torch.tensor([1.0, 2.0])
+        delayed = layer // Op(X)
+        assert isinstance(delayed, Op)
+        out = data >> delayed
+        torch.testing.assert_close(out, expected)
+
+    def test_delayed_module_op_mod(self):
+        """
+        layer(x) = [2, 2] * [1, 2] = [2, 4]
+        layer(x) % [1, 2] = [2, 4] % [1, 2] = [0, 0]
+        """
+        expected = torch.tensor([0.0, 0.0])
+        layer = ConstantLayer(2, value=2.0)
+        data = torch.tensor([1.0, 2.0])
+        delayed = layer % Op(X)
+        assert isinstance(delayed, Op)
+        out = data >> delayed
+        torch.testing.assert_close(out, expected)
+
+    def test_delayed_module_op_pow(self):
+        """
+        layer(x) = [2, 2] * [1, 2] = [2, 4]
+        layer(x) ** [1, 2] = [2, 4] ** [1, 2] = [2, 16]
+        """
+        expected = torch.tensor([2.0, 16.0])
+        layer = ConstantLayer(2, value=2.0)
+        data = torch.tensor([1.0, 2.0])
+        delayed = layer ** Op(X)
+        assert isinstance(delayed, Op)
+        out = data >> delayed
+        torch.testing.assert_close(out, expected)
+
+    def test_delayed_module_op_matmul(self):
+        """
+        layer(x) = [2, 2] * [1, 2] = [2, 4]
+        layer(x) @ [1, 2] = 10
+        """
+        layer = ConstantLayer(2, value=2.0)
+        data = torch.tensor([1.0, 2.0])
+        delayed = layer @ Op(X[None].T)
+        assert isinstance(delayed, Op)
+        out = data >> delayed
+        torch.testing.assert_close(out, torch.tensor([10.0]))
+
+    def test_delayed_op_module_and(self):
+        """
+        layer(x) = [2, 2, 2]
+        layer(x) & Op(x) = [10, 10, 10] & [01, 01, 01] = [0, 0, 0]
+        """
+        layer = ConstantLayer(3, value=2, dtype=torch.int64)
+        data = torch.tensor([1, 1, 1], dtype=torch.int64)
+        delayed = layer & Op(X)
+        assert isinstance(delayed, Op)
+        out = data >> delayed
+        torch.testing.assert_close(out, torch.tensor([0, 0, 0]))
+
+    def test_delayed_op_module_or(self):
+        """
+        layer(x) = [2, 2, 2]
+        layer(x) & Op(x) = [10, 10, 10] | [01, 01, 01] = [3, 3, 3]
+        """
+        layer = ConstantLayer(3, value=2, dtype=torch.int64)
+        data = torch.tensor([1, 1, 1], dtype=torch.int64)
+        delayed = layer | Op(X)
+        assert isinstance(delayed, Op)
+        out = data >> delayed
+        torch.testing.assert_close(out, torch.tensor([3, 3, 3]))
+
+    def test_delayed_op_module_xor(self):
+        """
+        layer(x) = [2, 2, 2]
+        layer(x) & Op(x) = [10, 10, 10] ^ [01, 01, 01] = [3, 3, 3]
+        """
+        layer = ConstantLayer(3, value=2, dtype=torch.int64)
+        data = torch.tensor([1, 1, 1], dtype=torch.int64)
+        delayed = layer ^ Op(X)
+        assert isinstance(delayed, Op)
+        out = data >> delayed
+        torch.testing.assert_close(out, torch.tensor([3, 3, 3]))
 
     def test_repr(self):
         op = Op(X[1].a)
@@ -464,3 +730,14 @@ class TestWire:
             wire.step(2)
             wire.step(3)
             wire.step(4)
+
+
+def test_conjure():
+    class Something:
+        def __init__(self, a):
+            self.a = a
+    
+    data = [Something(1), Something(2)]
+    res = conjure(X[1].a, data)
+    assert res == 2
+
