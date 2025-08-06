@@ -1,10 +1,9 @@
-import math
 import torch
 from torch import nn
 from typing import Optional
 from faeyon.utils import ImageSize
 from faeyon.nn import PosInterpEmbedding, TokenizedMask, FaeSequential
-from faeyon import FaeArgs, X, Op, faek, FaeVar, FaeList
+from faeyon import FaeArgs, X, Op, FaeVar, FaeList
 
 
 class ViTBlock(nn.Module):
@@ -77,8 +76,8 @@ class ViT(nn.Module):
     def __init__(
         self,
         heads: int,
-        image_size: int | tuple[int, int] | ImageSize,
-        patch_size: int | tuple[int, int] | ImageSize,
+        image_size: int | tuple[int, int],
+        patch_size: int | tuple[int, int],
         layers: int,
         embed_size: int,
         mlp_size: int,
@@ -102,7 +101,7 @@ class ViT(nn.Module):
         self.mask_token = TokenizedMask(embed_size, enabled=use_patch_mask)
 
         #self.pos_embeddings = nn.Parameter(torch.randn(1, self.total_patches + 1, embed_size))
-        self.pos_embeddings = InterpEmbedding(
+        self.pos_embeddings = PosInterpEmbedding(
             size=self.patch_count,
             embedding_dim=embed_size,
             interpolate="bicubic",
