@@ -15,5 +15,6 @@
     "mypy-type-checker.args": [
         "--config-file=pyproject.toml"
     ],
-    "pythonTestExplorer.testFramework": "pytest"
+    "pythonTestExplorer.testFramework": "pytest",
+    "outline.collapseItems": "alwaysCollapse"
 }

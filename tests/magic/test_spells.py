@@ -389,6 +389,19 @@ class TestOp:
         out = data >> Op(X[1:])
         assert out == [2, 3]
 
+    @pytest.mark.parametrize("condition,else_,expected", [
+        (True, None, [2, 3]),
+        (False, None, [1, 2, 3]),
+        (True, Op(X[1:]), [2, 3]),
+        (False, Op(X[0]), 1),
+        (Op(X[0] > 1), None, [1, 2, 3]),
+        (Op(X[0] < 1), Op(X[0] - 1), 0),
+    ])
+    def test_if_(self, condition, else_, expected):
+        data = [1, 2, 3]
+        out = data >> Op(X[1:]).if_(condition, else_=else_)
+        assert out == expected
+
     def test_delayed_op_op(self):
         data = [1, 2, 3]
         delayed = Op(X[1:]) >> Op(X[1:])

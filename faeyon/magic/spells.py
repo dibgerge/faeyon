@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 
 from torch import nn
+from .x import X
 
 
 def conjure(x: Any, data: Any) -> Any:
@@ -290,6 +291,8 @@ class FaeMultiMap(KeyedContainer):
 
 class Op:
     strategy: _OpStrategy
+    _condition: Optional[X | Op | bool] = None
+    _else_: Optional[X | Op] = None
 
     def __init__(self, op: X | Callable[..., Any] | Op, *args,  **kwargs) -> None:
       
@@ -307,9 +310,43 @@ class Op:
             self.strategy = _OpCallable(op, *args, **kwargs)
         else:
             raise ValueError("Arguments should be of type `X`, `Op`, or Callable.")
+
+        self._condition = None
+        self._else_ = None
+
+    @classmethod
+    def from_strategy(cls, strategy: _OpStrategy) -> Op:
+        out = cls.__new__(cls)
+        out.strategy = strategy
+        out._condition = None
+        out._else_ = None
+        return out
             
     def using(self, data: Any) -> Any:
+        if self._condition is not None:
+            condition = conjure(self._condition, data)
+            if condition:
+                return self.strategy(data)
+            
+            if self._else_ is not None:
+                return conjure(self._else_, data)
+            else:
+                return data
+
         return self.strategy(data)
+
+    def if_(self, condition: bool | X | Op, else_: Optional[X | Op] = None) -> Op:
+        """ 
+        Add a condition for executing the op. 
+        If condition is False, optionally execute else_ instead, if given. This creates a new copy
+        of the op with the condition added. Since condition can be an immediately available bool, 
+        or a delayed Op expected to return a bool, we will delay the evaluation of the condition
+        until it is needed, so we don't have to split the logic here based on the type of condition.
+        """
+        out = self.from_strategy(self.strategy)
+        out._condition = condition
+        out._else_ = else_
+        return out
         
     def __rshift__(self, data: Op | nn.Module) -> Op:
         if isinstance(data, Op):
