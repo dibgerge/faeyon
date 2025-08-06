@@ -4,7 +4,7 @@ from torch import nn
 from typing import Optional
 
 
-class InterpEmbedding(nn.Module):
+class PosInterpEmbedding(nn.Module):
     """
     Interpolates positional embeddings to match the input size. Also supports 
     non-positional embeddings. If this is specified, the outputs will be 
@@ -18,7 +18,7 @@ class InterpEmbedding(nn.Module):
         embedding_dim: int,
         non_positional: Optional[int] = None,
         interpolate: Optional[str] = "nearest",
-        align_corners: bool = False,
+        align_corners: Optional[bool] = None,
     ) -> None:
         super().__init__()
 
@@ -36,29 +36,30 @@ class InterpEmbedding(nn.Module):
         self.interpolate = interpolate
         self.align_corners = align_corners
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, input_size: tuple[int, ...] | list[int]) -> torch.Tensor:
         """
-        Input tensor expected to be of shape `(B, E, *size)`.
+        Input tensor expected to be of shape `(B, E, *size)`. This tells the embedding what the 
+        batch size should be and what is the size of the input. Actual inputs values are not used.
+
         Output tensor will be of shape `(B, E, *size)` if `non_positional` is not specified.
         Otherwise, the output will be of shape `(B, E, prod(size) + non_positional)`.
         """
-        if x.ndim != len(self.size) + 2:
+        if len(input_size) != len(self.size):
             raise ValueError(
-                f"Input dimensions {x.ndim}. Expected {len(self.size) + 2}."
+                f"Input has {len(input_size)} dimensions. Expected {len(self.size)}."
             )
 
-        size = x.shape[2:]
         if self.interpolate is None:
-            if size != self.size:
+            if input_size != self.size:
                 raise ValueError(
-                    f"Input size {size} doesn't match embedding size {self.size}. Set "
+                    f"Input size {input_size} doesn't match embedding size {self.size}. Set "
                     f"`interpolate` to interpolate positional embeddings."
                 )
             return self.embeddings
 
         out = nn.functional.interpolate(
             self.embeddings,
-            size=size,
+            size=input_size,
             mode=self.interpolate,
             align_corners=self.align_corners,
         )

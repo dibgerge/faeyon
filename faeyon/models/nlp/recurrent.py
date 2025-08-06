@@ -4,7 +4,7 @@ import torch
 from dataclasses import dataclass, asdict
 from typing import Optional
 
-from faeyon.layers import Attention
+from faeyon.nn import Attention
 from torch import nn
 
 

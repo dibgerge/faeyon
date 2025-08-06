@@ -1,7 +1,7 @@
 import pytest
 import torch
 from torch import nn
-from faeyon.layers import FaeSequential
+from faeyon.nn import FaeSequential
 from faeyon import X, Wiring, FaeArgs, FaeVar, FaeList, FaeDict, FaeMultiMap
 
 

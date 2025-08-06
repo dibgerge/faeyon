@@ -3,15 +3,14 @@ import torch
 from torch import nn
 from typing import Optional
 from faeyon.utils import ImageSize
-from faeyon.layers import InterpEmbedding, TokenizedMask
-from faeyon import FaeArgs, X, Op, faek
+from faeyon.nn import PosInterpEmbedding, TokenizedMask, FaeSequential
+from faeyon import FaeArgs, X, Op, faek, FaeVar, FaeList
 
 
 class ViTBlock(nn.Module):
     """
     #TODO Describe the Block architecture using mermaid for documentation
     """
-    
     def __init__(
         self,
         num_heads: int,
@@ -36,30 +35,31 @@ class ViTBlock(nn.Module):
 
     def forward(
         self, 
-        x: torch.Tensor, 
+        inputs: torch.Tensor, 
         head_mask: Optional[torch.Tensor] = None, 
         return_weights: bool = False
-    ) -> torch.Tensor:
-        weights = FaeVar(condition=return_weights)
-        block1 = x + (
-            x 
-            >> self.lnorm_in 
-            >> Input(FaeIn, FaeIn, FaeIn, need_weights=return_weights) 
-            >> self.attention 
-            >> weights(FaeIn[1])
-        )
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        weights = FaeVar()
 
-        out = block1 + (
-            block1
-            >> self.lnorm_out
-            >> self.linear1
-            >> self.gelu
-            >> self.linear2
-            >> self.dropout
+        out = (
+            inputs 
+            >> self.lnorm_in 
+            >> FaeArgs(X, X, X, need_weights=return_weights)
+            >> self.attention
+            >> weights.select(X[1]).if_(return_weights)
+            >> Op(X[0]).if_(return_weights)
+            >> Op(X) + inputs
+            >> X + (
+                self.lnorm_out
+                >> self.linear1
+                >> self.gelu
+                >> self.linear2
+                >> self.dropout
+            )
         )
 
         if return_weights:
-            return out, ~weights
+            return out, +weights
         return out
 
 
@@ -87,7 +87,6 @@ class ViT(nn.Module):
         dropout: float = 0.1,
         lnorm_eps: float = 1e-12,
     ):
-        self.flatten = nn.Flatten(-2)
         self.patch_embedding = nn.Conv2d(
             in_channels=in_channels,
             out_channels=embed_size,
@@ -95,21 +94,6 @@ class ViT(nn.Module):
             stride=patch_size
         )
 
-        if isinstance(image_size, int):
-            image_size = (image_size, image_size)
-
-        if isinstance(patch_size, int):
-            patch_size = (patch_size, patch_size)
-
-        self.image_size = ImageSize(*image_size)
-        self.patch_size = ImageSize(*patch_size)
-        self.embed_size = embed_size
-
-        self.patch_count = ImageSize(
-            (self.image_size.height // self.patch_size.height),
-            (self.image_size.width // self.patch_size.width)
-        )
-        self.total_patches = math.prod(self.patch_count)
         self.cls_token = nn.Parameter(torch.randn(1, 1, embed_size))
 
         # if use_patch_mask:
@@ -122,67 +106,21 @@ class ViT(nn.Module):
             size=self.patch_count,
             embedding_dim=embed_size,
             interpolate="bicubic",
+            non_positional=1,
             align_corners=False,
         )   
 
-        self.blocks = layers * ViTBlock(
+        self.blocks = FaeSequential(*layers * ViTBlock(
             num_heads=heads,
             embed_dim=embed_size,
             mlp_size=mlp_size,
             dropout=dropout,
             lnorm_eps=lnorm_eps,
-        )
+        ))
 
         self.dropout = nn.Dropout(dropout)
         self.classifier = nn.Linear(embed_size, 1000)
         self.lnorm = nn.LayerNorm(embed_size, eps=lnorm_eps)
-
-    def interpolate_pos_encoding(self, input_size: ImageSize) -> torch.Tensor:
-        """
-        Interpolate the positional embeddings to match the input image size.
-
-        Parameters
-        ----------
-        input_embeddings: torch.Tensor
-            Input embeddings of shape `(B, P, E)`
-        input_size: ImageSize
-            Input image size
-
-        Returns
-        -------
-        torch.Tensor
-            Interpolated positional embeddings of shape `(B, P, E)`
-        """
-        # TODO: Check if this need to be typed as torch int when tracing 
-        # (See https://github.com/huggingface/transformers/pull/33226)
-
-        # always interpolate when tracing to ensure exported model works for dynamic input shapes
-        if not torch.jit.is_tracing() and input_size == self.image_size:
-            return self.pos_embeddings
-
-        input_patch_count = ImageSize(
-            (input_size.height // self.patch_size.height),
-            (input_size.width // self.patch_size.width)
-        )
-
-        patch_pos_embed = (
-            self.pos_embeddings[:, 1:]
-            .reshape(1, *self.patch_count, self.embed_size)
-            .permute(0, 3, 1, 2)
-        )
-
-        patch_pos_embed = (
-            nn.functional.interpolate(
-                patch_pos_embed,
-                size=input_patch_count,
-                mode="bicubic",
-                align_corners=False,
-            )
-            .permute(0, 2, 3, 1)
-            .view(1, -1, self.embed_size)
-        )
-
-        return torch.cat((self.pos_embeddings[:, :1], patch_pos_embed), dim=1)
 
     def forward(
         self,
@@ -208,58 +146,29 @@ class ViT(nn.Module):
             Indicates which patches are masked (True) and which aren't (False).
             Should be of shape `(B, P)`.
         """
+        attention_weights = FaeList()
+        hidden_states = FaeList()
 
-        faek.on()
-
-        batch_size, channels, height, width = img.shape
-
-        embeddings = (
+        return (
             img 
             >> self.patch_embedding             # B, E, H, W
-            >> (self.pos_embeddings + (
-                Op(X.flatten(-2).mT) >> FaeArgs(X, mask=patch_mask)
-                >> self.mask_token
-            ))
-
-        )
-        embeddings = embeddings.mT # (B, E, P)
-
-        # if patch_mask is not None:
-        #     if self.mask_token is None:
-        #         raise ValueError(
-        #             f"Mask token is not initialized. Please set `use_patch_mask=True` "
-        #             f"when initializing {self.__class__.__name__}."
-        #         )
-        #     mask_tokens = self.mask_token.expand(batch_size, self.total_patches, -1)
-        #     mask = patch_mask.unsqueeze(-1).type_as(mask_tokens)
-        #     embeddings = embeddings * (1.0 - mask) + mask_tokens * mask
-
-        input_size = ImageSize(height, width)
-        # if interpolate:
-        #     pos_embeddings = self.interpolate_pos_encoding(input_size)
-        # else:
-        #     if input_size != self.image_size:
-        #         raise ValueError(
-        #             f"Input image size ({height}*{width}) doesn't match model"
-        #             f" ({self.image_size.height}*{self.image_size.width}). Set `interpolate=True`"
-        #             f" to interpolate the positional embeddings."
-        #         )
-        #     pos_embeddings = self.pos_embeddings
-
-        cls_token = self.cls_token.expand(batch_size, -1, -1)  # (B, 1, E)
-        embeddings = torch.cat([cls_token, embeddings], dim=1)  # (B, P + 1, E)
-
-
-        x = (
-            embeddings + (embeddings >> self.pos_embeddings)
+            >> (self.pos_embeddings(X.shape[2:]) >> Op(X.mT)) + (
+                    Op(X.flatten(-2).mT) 
+                    >> FaeArgs(X, mask=patch_mask)
+                    >> self.mask_token
+                    >> Op(torch.concat, [self.cls_token, X]) # TODO: this can't work since can't handle nested X within an argument
+                )
             >> self.dropout
-            >> self.blocks
+            >> self.blocks.wire()             #???
+            >> Op(X[0]).if_(return_weights)
             >> self.lnorm
-        )
+            >> Op(X[..., 0, :])
+            >> self.classifier
+        )  # type: ignore
 
-        x = x[..., 0, :]
-        x = self.classifier(x)
-        return x
+        # input_size = ImageSize(height, width)
+        # cls_token = self.cls_token.expand(batch_size, -1, -1)  # (B, 1, E)
+        # embeddings = torch.cat([cls_token, embeddings], dim=1)  # (B, P + 1, E)
 
 
 # Define the pre-trained model configurations given by google
