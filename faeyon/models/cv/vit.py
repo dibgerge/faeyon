@@ -46,7 +46,7 @@ class ViTBlock(nn.Module):
             >> self.lnorm_in 
             >> FaeArgs(X, X, X, need_weights=return_weights)
             >> self.attention
-            >> weights.select(X[1]).if_(return_weights)
+            >> weights.if_(return_weights) @ X[1]
             >> Op(X[0]).if_(return_weights)
             >> Op(X) + inputs
             >> X + (

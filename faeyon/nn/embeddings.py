@@ -10,7 +10,7 @@ class PosInterpEmbedding(nn.Module):
     non-positional embeddings. If this is specified, the outputs will be 
     flattened.
     """
-    non_positional: Optional[nn.Parameter] = None
+    non_positional: Optional[nn.Parameter]
 
     def __init__(
         self,
@@ -65,5 +65,5 @@ class PosInterpEmbedding(nn.Module):
         )
 
         if self.non_positional is not None:
-            return torch.cat((self.non_positional, out.flatten(-2)), dim=2)
+            return torch.cat((self.non_positional, out.flatten(2)), dim=2)
         return out
