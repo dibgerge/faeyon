@@ -110,10 +110,12 @@ class _Variable:
 
 
 class ContainerBase(ABC):
+    _condition: Optional[bool | X | Op] = None
     
     def __init__(self, *args) -> None:
         self._value: Any = _Variable(*args)
         self._expression: Optional[X | Op] = None
+        self._condition = None
     
     def select[T: ContainerBase](self: T, expression: X | Op) -> T:
         if self._expression is not None:
@@ -123,7 +125,6 @@ class ContainerBase(ABC):
             )
 
         if not isinstance(expression, (X, Op)):
-            print("---------", expression)
             raise ValueError(
                 f"Cannot assign expression to {self.__class__.__name__}, "
                 "since expression is not an instance of `X` or `Op`."
@@ -141,12 +142,22 @@ class ContainerBase(ABC):
         for k, v in self.__dict__.items():
             setattr(out, k, v)
         return out
+
+    def if_[T: ContainerBase](self: T, condition: Any) -> T:
+        out = self._copy()
+        out._condition = condition
+        return out
         
     @abstractmethod
     def _set(self, data: Any) -> None:
         pass
         
     def using(self, data: Any) -> Any:
+        if self._condition is not None:
+            condition = conjure(self._condition, data)
+            if not condition:
+                return data
+
         new_data = data
         if self._expression is not None:
             new_data = conjure(self._expression, data)
@@ -213,6 +224,10 @@ class FaeVar(ContainerBase):
         
         self._value.value = data
 
+    @property
+    def is_empty(self) -> bool:
+        return self._value.empty
+    
     @property
     def is_appendable(self) -> bool:
         return False

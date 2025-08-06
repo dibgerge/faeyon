@@ -172,6 +172,29 @@ class TestFaeVar:
         assert fae_var._value.value == 2
         assert out == 2
 
+    def test_if_on_X(self):
+        fae_var = FaeVar(strict=True)
+        data = [1, 2, 3]
+        out = data >> fae_var.if_(X[0] > 1) @ X[1]
+        assert data is out
+        assert fae_var.is_empty
+
+    @pytest.mark.parametrize("condition, expected", [
+        (True, 2),
+        (False, None),
+        (Op(X[0] == 1), 2),
+        (Op(X[0] != 1), None),
+    ])
+    def test_if_general(self, condition, expected):
+        fae_var = FaeVar(strict=True)
+        data = [1, 2, 3]
+        out = data >> fae_var.if_(condition) @ X[1]
+        assert data is out
+        if expected is None:
+            assert fae_var.is_empty
+        else:
+            assert +fae_var == expected
+
     def test_select_return_type(self):
         fae_var = FaeVar(strict=False)
         selectable = fae_var.select(X[1])
