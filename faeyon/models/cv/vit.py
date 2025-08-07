@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from typing import Optional
 from faeyon.utils import ImageSize
-from faeyon.nn import PosInterpEmbedding, TokenizedMask, FaeSequential
+from faeyon.nn import PosInterpEmbedding, TokenizedMask, FaeSequential, head_to_attn_mask
 from faeyon import FaeArgs, X, Op, FaeVar, FaeList
 
 
@@ -46,9 +46,8 @@ class ViTBlock(nn.Module):
             >> FaeArgs(X, X, X, need_weights=return_weights)
             >> self.attention
             >> weights.if_(return_weights) @ X[1]
-            >> Op(X[0]).if_(return_weights)
-            >> Op(X) + inputs
-            >> X + (
+            >> Op(X[0] + inputs)
+            >> Op(X) + (
                 self.lnorm_out
                 >> self.linear1
                 >> self.gelu
@@ -78,7 +77,7 @@ class ViT(nn.Module):
         heads: int,
         image_size: int | tuple[int, int],
         patch_size: int | tuple[int, int],
-        layers: int,
+        num_layers: int,
         embed_size: int,
         mlp_size: int,
         use_patch_mask: bool = False,
@@ -86,37 +85,46 @@ class ViT(nn.Module):
         dropout: float = 0.1,
         lnorm_eps: float = 1e-12,
     ):
+        super().__init__()
+        if isinstance(image_size, int):
+            image_size = (image_size, image_size)
+
+        if isinstance(patch_size, int):
+            patch_size = (patch_size, patch_size)
+
+        self.image_size = ImageSize(*image_size)
+        self.patch_size = ImageSize(*patch_size)
+        self.embed_size = embed_size
+        self.heads = heads
+        self.num_layers = num_layers
+
+        self.feature_count = ImageSize(
+            (self.image_size.height // self.patch_size.height),
+            (self.image_size.width // self.patch_size.width)
+        )
+
         self.patch_embedding = nn.Conv2d(
             in_channels=in_channels,
             out_channels=embed_size,
             kernel_size=patch_size,
             stride=patch_size
         )
-
         self.cls_token = nn.Parameter(torch.randn(1, 1, embed_size))
-
-        # if use_patch_mask:
-        #     self.mask_token = nn.Parameter(torch.zeros(1, 1, embed_size))
-
         self.mask_token = TokenizedMask(embed_size, enabled=use_patch_mask)
-
-        #self.pos_embeddings = nn.Parameter(torch.randn(1, self.total_patches + 1, embed_size))
         self.pos_embeddings = PosInterpEmbedding(
-            size=self.patch_count,
+            size=self.feature_count,
             embedding_dim=embed_size,
             interpolate="bicubic",
             non_positional=1,
             align_corners=False,
         )   
-
-        self.blocks = FaeSequential(*layers * ViTBlock(
+        self.blocks = FaeSequential(*num_layers * ViTBlock(
             num_heads=heads,
             embed_dim=embed_size,
             mlp_size=mlp_size,
             dropout=dropout,
             lnorm_eps=lnorm_eps,
         ))
-
         self.dropout = nn.Dropout(dropout)
         self.classifier = nn.Linear(embed_size, 1000)
         self.lnorm = nn.LayerNorm(embed_size, eps=lnorm_eps)
@@ -125,6 +133,9 @@ class ViT(nn.Module):
         self,
         img: torch.Tensor,
         patch_mask: Optional[torch.BoolTensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        return_attention_weights: bool = False,
+        return_hidden_states: bool = False,
         interpolate: bool = False,
     ) -> torch.Tensor:
         """
@@ -147,23 +158,36 @@ class ViT(nn.Module):
         """
         attention_weights = FaeList()
         hidden_states = FaeList()
+        cls_token = self.cls_token.expand(img.shape[0], -1, -1)
 
         return (
             img 
-            >> self.patch_embedding             # B, E, H, W
+            >> self.patch_embedding
             >> (self.pos_embeddings(X.shape[2:]) >> Op(X.mT)) + (
-                    Op(X.flatten(-2).mT) 
-                    >> FaeArgs(X, mask=patch_mask)
+                    FaeArgs(X, mask=patch_mask)
                     >> self.mask_token
-                    >> Op(torch.concat, [self.cls_token, X]) # TODO: this can't work since can't handle nested X within an argument
+                    >> Op(X.flatten(-2).mT)
+                    >> Op(torch.concat, Op(list, cls_token, X))
                 )
             >> self.dropout
-            >> self.blocks.wire()             #???
-            >> Op(X[0]).if_(return_weights)
+            >> FaeArgs(
+                X,
+                head_mask=Op(head_to_attn_mask, 
+                    head_mask, 
+                    X.shape[0], 
+                    X.shape[1], 
+                    X.shape[1], 
+                    num_layers=self.num_layers
+                ),
+                return_weights=return_attention_weights,
+                return_hidden_states=return_hidden_states,
+            )
+            >> self.blocks
+            >> Op(X[0]).if_(return_hidden_states or return_attention_weights)
             >> self.lnorm
             >> Op(X[..., 0, :])
             >> self.classifier
-        )  # type: ignore
+        )
 
         # input_size = ImageSize(height, width)
         # cls_token = self.cls_token.expand(batch_size, -1, -1)  # (B, 1, E)
