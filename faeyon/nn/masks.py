@@ -49,12 +49,12 @@ class TokenizedMask(nn.Module):
 
 
 def head_to_attn_mask(
-    head_mask: torch.BoolTensor, 
+    head_mask: Optional[torch.BoolTensor], 
     batch_size: int,
     src_len: int, 
     tgt_len: int, 
     num_layers: Optional[int] = None
-) -> torch.Tensor:
+) -> torch.Tensor | list[None] | None:
     """
     Applies selective masks to the attention weights of a multihead attention layer. This allows using masks for particular heads and reshapes the head to 
     the correct shape based on expected sequence shape.
@@ -69,6 +69,11 @@ def head_to_attn_mask(
     torch.Tensor
         Tensor of shape (num_hidden_layers, num_heads, src_len, tgt_len)
     """
+    if head_mask is None:
+        if num_layers is None:
+            return None
+        return [None] * num_layers
+    
     shape = head_mask.shape
 
     if len(shape) not in (1, 2):

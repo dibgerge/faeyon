@@ -229,6 +229,7 @@ class Faek(metaclass=Singleton):
 
     # Note: `__mul__` is a special case, since it can operate on integers and module types.
     delayed_binary_methods = [
+        "__rshift__",
         "__add__",
         "__sub__",
         "__matmul__",

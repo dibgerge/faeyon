@@ -2,8 +2,14 @@ import torch
 from torch import nn
 from typing import Optional
 from faeyon.utils import ImageSize
-from faeyon.nn import PosInterpEmbedding, TokenizedMask, FaeSequential, head_to_attn_mask
-from faeyon import FaeArgs, X, Op, FaeVar, FaeList
+from faeyon.nn import (
+    PosInterpEmbedding, 
+    TokenizedMask, 
+    FaeSequential, 
+    head_to_attn_mask,
+    Concat
+)
+from faeyon import FaeArgs, X, Op, FaeVar, FaeList, Wiring
 
 
 class ViTBlock(nn.Module):
@@ -36,15 +42,23 @@ class ViTBlock(nn.Module):
         self, 
         inputs: torch.Tensor, 
         head_mask: Optional[torch.Tensor] = None, 
-        return_weights: bool = False
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        return_weights: bool = False,
+        return_hidden_states: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """
+        inputs: torch.Tensor
+            Shape (B, P, E)
+        head_mask: Optional[torch.Tensor]
+            Shape (B, P, P)
+        return_weights: bool
+            Whether to return the attention weights
+        """
         weights = FaeVar()
-
+        hidden_states = FaeVar()
         out = (
             inputs 
             >> self.lnorm_in 
-            >> FaeArgs(X, X, X, need_weights=return_weights)
-            >> self.attention
+            >> self.attention(X, X, X, need_weights=return_weights)
             >> weights.if_(return_weights) @ X[1]
             >> Op(X[0] + inputs)
             >> Op(X) + (
@@ -55,9 +69,13 @@ class ViTBlock(nn.Module):
                 >> self.dropout
             )
         )
-
+        other = {}
         if return_weights:
-            return out, +weights
+            other["attention_weights"] = +weights
+        if return_hidden_states:
+            other["hidden_states"] = +hidden_states
+        if len(other) > 0:
+            return out, other
         return out
 
 
@@ -74,11 +92,11 @@ class ViT(nn.Module):
     
     def __init__(
         self,
+        embed_size: int,
         heads: int,
         image_size: int | tuple[int, int],
         patch_size: int | tuple[int, int],
         num_layers: int,
-        embed_size: int,
         mlp_size: int,
         use_patch_mask: bool = False,
         in_channels: int = 3,
@@ -128,6 +146,7 @@ class ViT(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.classifier = nn.Linear(embed_size, 1000)
         self.lnorm = nn.LayerNorm(embed_size, eps=lnorm_eps)
+        self.concat = Concat()
 
     def forward(
         self,
@@ -156,20 +175,20 @@ class ViT(nn.Module):
             Indicates which patches are masked (True) and which aren't (False).
             Should be of shape `(B, P)`.
         """
-        attention_weights = FaeList()
-        hidden_states = FaeList()
+        attention_weights = FaeList().if_(return_attention_weights)
+        hidden_states = FaeList().if_(return_hidden_states)
         cls_token = self.cls_token.expand(img.shape[0], -1, -1)
 
-        return (
+        out = (
             img 
             >> self.patch_embedding
             >> (self.pos_embeddings(X.shape[2:]) >> Op(X.mT)) + (
-                    FaeArgs(X, mask=patch_mask)
-                    >> self.mask_token
+                    self.mask_token(X, mask=patch_mask)
                     >> Op(X.flatten(-2).mT)
-                    >> Op(torch.concat, Op(list, cls_token, X))
+                    >> self.concat(cls_token, X, dim=1)
                 )
             >> self.dropout
+            >> hidden_states
             >> FaeArgs(
                 X,
                 head_mask=Op(head_to_attn_mask, 
@@ -180,18 +199,20 @@ class ViT(nn.Module):
                     num_layers=self.num_layers
                 ),
                 return_weights=return_attention_weights,
-                return_hidden_states=return_hidden_states,
+                return_hidden_states=return_hidden_states
             )
-            >> self.blocks
+            >> self.blocks.wire(
+                X[0] if return_hidden_states or return_attention_weights else X, head_mask=Wiring.Fanout).report(
+                hidden_states @ X[1]["hidden_states"], 
+                attention_weights @ X[1]["attention_weights"]
+            )
             >> Op(X[0]).if_(return_hidden_states or return_attention_weights)
             >> self.lnorm
             >> Op(X[..., 0, :])
             >> self.classifier
         )
 
-        # input_size = ImageSize(height, width)
-        # cls_token = self.cls_token.expand(batch_size, -1, -1)  # (B, 1, E)
-        # embeddings = torch.cat([cls_token, embeddings], dim=1)  # (B, P + 1, E)
+        return out
 
 
 # Define the pre-trained model configurations given by google

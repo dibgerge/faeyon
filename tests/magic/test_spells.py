@@ -90,17 +90,15 @@ class TestFaeArgs:
         with pytest.raises(TypeError):
             fae_args >> self.func_simple
 
-    def test_call_raisesValueError(self):
+    def test_call_unresolved(self):
         """ 
         When `FaeArgs` has unresolved arguments, an error is raised.
         """
         fae_args = FaeArgs(X[0])
-
-        with pytest.raises(ValueError):
-            fae_args.call(self.func_simple)
-
-        with pytest.raises(ValueError):
-            fae_args >> self.func_simple
+        delayed = fae_args >> self.func_simple
+        assert isinstance(delayed, Op)
+        res = [1, 2, 3] >> delayed
+        assert res == 2
 
     @pytest.mark.parametrize("args,kwargs", [
         ((), {}),
@@ -141,6 +139,14 @@ class TestFaeArgs:
 
 
 class TestFaeVar:
+
+    def test_getattr(self):
+        10 >> FaeVar.Y
+        20 >> FaeList.Z
+        30 >> FaeList.Z
+        print(FaeVar._instances)
+        print(FaeList._instances)
+        
     def test_rrshift(self):
         fae_var = FaeVar(strict=True)
         2 >> fae_var

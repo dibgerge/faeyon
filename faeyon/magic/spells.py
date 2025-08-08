@@ -53,9 +53,7 @@ class FaeArgs:
 
     def call(self, func: Callable[..., Any]) -> Any:
         if not self.is_resolved:
-            raise ValueError(
-                f"Cannot call {func} with unresolved arguments. add data into `FaeArgs` to resolve it."
-            )
+            return Op(func, *self.args, **self.kwargs)
         return func(*self.args, **self.kwargs)
 
     def __rshift__(self, func: Callable[..., Any]) -> Any:
@@ -75,6 +73,16 @@ class FaeArgs:
 
     def __rrshift__(self, data: Any) -> FaeArgs:
         return self.using(data)
+
+    def __repr__(self) -> str:
+        args, kwargs = "", ""
+        if self.args:
+            args = ", ".join(map(repr, self.args))
+            args += ", "
+
+        if self.kwargs:
+            kwargs = ", ".join(f"{k}={v!r}" for k, v in self.kwargs.items())
+        return f"FaeArgs({args}{kwargs})"
 
 
 class _Variable:
@@ -106,10 +114,26 @@ class _Variable:
         self.empty = False
 
     def __repr__(self):
-        return f"_Variable({self.value!r})"
+        if self.empty:
+            return ""
+        return f"{self.value!r}"
 
 
-class ContainerBase(ABC):
+class _ContainerMeta(ABC, type):
+    def __init__(self, name, bases, namespace):
+        super().__init__(name, bases, namespace)
+        self._instances = {}
+
+    def __getattr__(self, name):
+        print(f"requesting {name}")
+        if name in self._instances:
+            return self._instances[name]
+        instance = self()
+        self._instances[name] = instance
+        return instance
+
+
+class ContainerBase(metaclass=_ContainerMeta):
     _condition: Optional[bool | X | Op] = None
     
     def __init__(self, *args) -> None:
@@ -192,7 +216,7 @@ class ContainerBase(ABC):
         return self.shed()
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self._value.value})"
+        return f"{self.__class__.__name__}({self._value!r})"
     
 
 class FaeList(ContainerBase):

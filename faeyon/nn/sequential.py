@@ -70,7 +70,7 @@ class FaeSequential(nn.Module):
         return self
 
     def report[T: FaeSequential](self: T, *variables: ContainerBase) -> T:
-        self.reports.extend(variables)
+        self.reports = list(variables)
         return self
 
     def reset[T: FaeSequential](self: T) -> T:
@@ -84,6 +84,12 @@ class FaeSequential(nn.Module):
     def __mod__[T: FaeSequential](self: T, other: ContainerBase | FaeArgs) -> T:
         if isinstance(other, ContainerBase):
             return self.report(other)
+        elif isinstance(other, list | tuple):
+            if not all(isinstance(x, ContainerBase) for x in other):
+                raise TypeError(
+                    f"All elements in list must be instances of {ContainerBase.__name__}."
+                )
+            return self.report(*other)
         elif isinstance(other, FaeArgs):
             return self.wire(*other.args, **other.kwargs)
         else:
