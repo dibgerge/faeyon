@@ -182,11 +182,15 @@ class ViT(nn.Module):
         out = (
             img 
             >> self.patch_embedding
-            >> (self.pos_embeddings(X.shape[2:]) >> Op(X.mT)) + (
+            >> (
+                (self.pos_embeddings(X.shape[2:]) >> Op(X.mT)) 
+                + 
+                (
                     self.mask_token(X, mask=patch_mask)
                     >> Op(X.flatten(-2).mT)
                     >> self.concat(cls_token, X, dim=1)
                 )
+            )
             >> self.dropout
             >> hidden_states
             >> FaeArgs(
@@ -201,7 +205,7 @@ class ViT(nn.Module):
                 return_weights=return_attention_weights,
                 return_hidden_states=return_hidden_states
             )
-            >> self.blocks.wire(
+            >> self.blocks.reset().wire(
                 X[0] if return_hidden_states or return_attention_weights else X, head_mask=Wiring.Fanout).report(
                 hidden_states @ X[1]["hidden_states"], 
                 attention_weights @ X[1]["attention_weights"]
@@ -212,6 +216,8 @@ class ViT(nn.Module):
             >> self.classifier
         )
 
+        if return_hidden_states:
+            return out, +hidden_states
         return out
 
 

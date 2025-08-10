@@ -1,119 +1,80 @@
-from flax import nnx
 
-from faeyon.cv import ViT
-from transformers import FlaxViTForImageClassification, AutoImageProcessor
+import torch
+from faeyon import X, Op
+from faeyon.models import ViT
+from transformers import ViTForImageClassification, AutoImageProcessor
 from datasets import load_dataset
 
+
+
 repo = "google/vit-base-patch16-224"
-hf_model = FlaxViTForImageClassification.from_pretrained(repo)
+hf_model = ViTForImageClassification.from_pretrained(repo)
 image_processor = AutoImageProcessor.from_pretrained(repo)
 
 
 imagenet = load_dataset("ILSVRC/imagenet-1k", trust_remote_code=True)
 
 model = ViT(
+    embed_size=768,
     heads=12,
-    image_height=224,
-    image_width=224,
+    image_size=(224, 224),
     patch_size=16,
-    layers=12,
-    hidden_size=768,
-    mlp_size=3072,
-    rngs=nnx.Rngs(0)
+    num_layers=12,
+    mlp_size=3072
 )
+
 model.eval()
 
 inputs = image_processor(
     images=imagenet["train"][0]["image"],
     return_tensors="np"
 )
+hf_model.eval()
 
 
-def copy_values(copy_to, copy_from, keys=None, shape=None):
+hf_vit = hf_model.vit
 
-    if keys is None:
-        copy_to = {"data": copy_to}
-        copy_from = {"data": copy_from}
-        keys = ["data"]
+with torch.no_grad():
+    hf_patch_embedding = hf_vit.embeddings.patch_embeddings.projection
+    model.patch_embedding.weight.copy_(hf_patch_embedding.weight)
+    model.patch_embedding.bias.copy_(hf_patch_embedding.bias)
+    model.cls_token.copy_(hf_vit.embeddings.cls_token)
+    model.pos_embeddings.embeddings.copy_(hf_vit.embeddings.position_embeddings[:, 1:, :].reshape([1, 14, 14, -1]).permute(0, 3, 1, 2))
+    model.pos_embeddings.non_positional.copy_(hf_vit.embeddings.position_embeddings[:, 0, :].mT)
 
-    for key in keys:
+    model.lnorm.weight.copy_(hf_vit.layernorm.weight)
+    model.lnorm.bias.copy_(hf_vit.layernorm.bias)
+    model.classifier.weight.copy_(hf_model.classifier.weight)
+    model.classifier.bias.copy_(hf_model.classifier.bias)
+    blocks = model.blocks
+    for i in range(12):
+        hf_layer = hf_vit.encoder.layer[i]
+        hf_attn = hf_layer.attention.attention
+        hf_out = hf_layer.attention.output.dense
+        blocks.get_parameter(f"{i}.attention.in_proj_weight").copy_(torch.cat([
+            hf_attn.query.weight, 
+            hf_attn.key.weight, 
+            hf_attn.value.weight
+        ]))
+        blocks.get_parameter(f"{i}.attention.in_proj_bias").copy_(torch.cat([
+            hf_attn.query.bias, 
+            hf_attn.key.bias, 
+            hf_attn.value.bias
+        ]))
+        blocks.get_parameter(f"{i}.attention.out_proj.weight").copy_(hf_out.weight)
+        blocks.get_parameter(f"{i}.attention.out_proj.bias").copy_(hf_out.bias)
 
-        if shape is not None:
-            src = copy_from[key].reshape(shape)
-        else:
-            src = copy_from[key]
-        
-        if isinstance(copy_to, dict):
-            dest = copy_to[key]
-        else:
-            dest = getattr(copy_to, key)
-        
-        if dest.shape != src.shape:
-            raise ValueError(
-                f"{dest.__class__.__name__} and {src.__class__.__name__} must"
-                f" have the same shape. {dest.shape} != {src.shape}."
-            )
-        
-        dest.value = dest.value.at[:].set(src)
+        blocks.get_parameter(f"{i}.linear1.weight").copy_(hf_layer.intermediate.dense.weight)
+        blocks.get_parameter(f"{i}.linear1.bias").copy_(hf_layer.intermediate.dense.bias)
+        blocks.get_parameter(f"{i}.linear2.weight").copy_(hf_layer.output.dense.weight)
+        blocks.get_parameter(f"{i}.linear2.bias").copy_(hf_layer.output.dense.bias)
+        blocks.get_parameter(f"{i}.lnorm_in.weight").copy_(hf_layer.layernorm_before.weight)
+        blocks.get_parameter(f"{i}.lnorm_in.bias").copy_(hf_layer.layernorm_before.bias)
+        blocks.get_parameter(f"{i}.lnorm_out.weight").copy_(hf_layer.layernorm_after.weight)
+        blocks.get_parameter(f"{i}.lnorm_out.bias").copy_(hf_layer.layernorm_after.bias)
 
+img = torch.tensor(inputs["pixel_values"])
+y_hf  = hf_model(img, output_hidden_states=True)
+y  = model(img)
 
-def copy_dense(copy_to, copy_from, in_shape=None, out_shape=None):
-    kernel = copy_from["kernel"]
-    bias = copy_from["bias"]
-
-    if in_shape is not None and out_shape is not None:
-
-        if isinstance(in_shape, int):
-            in_shape = (in_shape,)
-
-        if isinstance(out_shape, int):
-            out_shape = (out_shape,)
-
-        kernel_shape = in_shape + out_shape
-        bias_shape = out_shape
-    else:
-        kernel_shape = None
-        bias_shape = None
-
-    copy_values(copy_to.kernel, kernel, shape=kernel_shape)
-    copy_values(copy_to.bias, bias, shape=bias_shape)
-
-
-hf_params = hf_model.params["vit"]
-hf_patch_embedding = hf_params["embeddings"]["patch_embeddings"]["projection"]
-
-patch_embedding = model.patch_embedding
-
-copy_values(model.cls_token, hf_params["embeddings"]["cls_token"])
-copy_dense(patch_embedding, hf_patch_embedding)
-
-copy_values(model.positional_embedding, hf_params["embeddings"]["position_embeddings"].squeeze())
-
-
-for i, hf_layer in hf_params["encoder"]["layer"].items():
-    i = int(i)
-    layer = model.layers[i]
-    attention = layer.attention
-    hf_attention = hf_layer["attention"]["attention"]
-
-    copy_dense(attention.key, hf_attention["key"], in_shape=768, out_shape=(12, 64))
-    copy_dense(attention.query, hf_attention["query"], in_shape=768, out_shape=(12, 64))
-    copy_dense(attention.value, hf_attention["value"], in_shape=768, out_shape=(12, 64))
-    copy_dense(attention.out, hf_layer["attention"]["output"]["dense"], in_shape=(12, 64), out_shape=768)
-
-    copy_values(layer.lnorm_in, hf_layer["layernorm_before"], keys=["scale", "bias"])
-    copy_values(layer.lnorm_out, hf_layer["layernorm_after"], keys=["scale", "bias"])
-
-    copy_dense(layer.linear1, hf_layer["intermediate"]["dense"])
-    copy_dense(layer.linear2, hf_layer["output"]["dense"])
-
-copy_values(model.lnorm, hf_params["layernorm"], keys=["scale", "bias"])
-copy_dense(model.classifier, hf_model.params["classifier"])
-
-
-x = inputs["pixel_values"].transpose((0, 2, 3, 1))
-y = model(x)
-hf_y = hf_model(**inputs)
-
-
-print(abs(hf_y.logits.squeeze() - y.squeeze()).mean())
+print(abs(y -  y_hf.logits).sum())
