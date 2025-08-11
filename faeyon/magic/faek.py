@@ -15,7 +15,7 @@ def _new_instance(cls, *args, **kwargs):
     bound = sig.bind(instance, *args, **kwargs)
     bound.apply_defaults()
     del bound.arguments["self"]
-    instance._arguments = bound
+    super(cls, instance).__setattr__("_arguments", bound)
     return instance
 
 
