@@ -6,16 +6,30 @@ from torch import nn
 from typing import Any, overload
 from collections.abc import Callable
 
-from .spells import Op, FList, FDict, A, X
+from .spells import Op, FList, FDict, A, X, FVar
 
 
 class FState:
+    """ A simple container which generate fVar on demand. """
     def __init__(self):
-        self._states = {}
+        self._states_ = {}
     
     def __getattr__(self, name):
-        pass
-        
+        if name in self._states_:
+            return self._states_[name]
+        fvar = FVar()
+        self._states_[name] = fvar
+        return fvar
+
+    def reset(self):
+        self._states_.clear()
+    
+    def __iter__(self):
+        return iter(self._states_.items())
+    
+    def collect(self):
+        return {k: +v for k, v in self}
+
 
 def _new_instance(cls, *args, **kwargs):
     instance = object.__new__(cls)
@@ -49,40 +63,40 @@ def __new__(cls, *args, **kwargs):
         kwargs_keys, kwargs_values = [], []
     
     raveled_args = []
-    num_faelist = 0
-    num_faedict = 0
-    fae_keys = None
-    fae_len = None
+    num_flist = 0
+    num_fdict = 0
+    fkeys = None
+    flen = None
     for arg in itertools.chain(args, kwargs_values):
         if isinstance(arg, FList):
-            num_faelist += 1
+            num_flist += 1
             arg_value = arg.shed()
 
-            if fae_len is None:
-                fae_len = len(arg_value)
-            elif fae_len != len(arg_value):
+            if flen is None:
+                flen = len(arg_value)
+            elif flen != len(arg_value):
                 raise ValueError("All arguments of type `FList` must have the same length.")
 
             raveled_args.append(arg_value)
         elif isinstance(arg, FDict):
-            num_faedict += 1
+            num_fdict += 1
             arg_value = arg.shed()
 
-            if fae_keys is None:
-                fae_keys = list(arg_value.keys())
-                fae_len = len(fae_keys)
+            if fkeys is None:
+                fkeys = list(arg_value.keys())
+                flen = len(fkeys)
             else:
-                if set(fae_keys) != set(arg_value.keys()):
+                if set(fkeys) != set(arg_value.keys()):
                     raise ValueError("All arguments of type `FDict` must have the same keys.")
 
-            raveled_args.append([arg_value[k] for k in fae_keys])
+            raveled_args.append([arg_value[k] for k in fkeys])
         else:
             raveled_args.append(itertools.repeat(arg))
 
-    if num_faelist > 0 and num_faedict > 0:
+    if num_flist > 0 and num_fdict > 0:
         raise ValueError("Cannot mix `FList` and `FDict` arguments. Choose one.")
 
-    num_fae = max(num_faelist, num_faedict)
+    num_fae = max(num_flist, num_fdict)
 
     # No argument parametrization, return a regular nn.Module instance
     if num_fae == 0:
@@ -101,8 +115,8 @@ def __new__(cls, *args, **kwargs):
         cls.__init__(inst, *c_args, **c_kwargs)
         out.append(inst)
     
-    if fae_keys is not None:
-        out = dict(zip(fae_keys, out))
+    if fkeys is not None:
+        out = dict(zip(fkeys, out))
 
     return out
 
@@ -186,12 +200,17 @@ def clone[T: nn.Module](self: T, *args: Any, **kwargs: Any) -> T:
     return cls(*new_bound.args, **new_bound.kwargs)
 
 
+def _resolved_call(self, *args, **kwargs):
+    self.fstate.reset()
+    return faek.module__call__(self, *args, **kwargs)
+
+
 def __call__(self, *args, **kwargs):
     fargs = A(*args, **kwargs)
     if fargs.is_resolved:
-        return faek.module__call__(self, *args, **kwargs)
+        return _resolved_call(self, *args, **kwargs)
     
-    return Op(faek.module__call__, self, *args, **kwargs)
+    return Op(_resolved_call, self, *args, **kwargs)
 
     
 def delayed_unary_method[T: nn.Module](op_name: str) -> Callable[[T], Op]:

@@ -234,3 +234,57 @@ def test_module_delayed_unary(op, expected):
     assert isinstance(delayed, Op)
     res = x >> delayed
     torch.testing.assert_close(res, torch.tensor(expected))
+
+
+class ModelWithFstate(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layer1 = nn.Linear(in_features=5, out_features=4)
+        self.layer2 = nn.Linear(in_features=4, out_features=4)
+        self.layer3 = nn.Linear(in_features=4, out_features=4)
+        self.layer4 = nn.Linear(in_features=4, out_features=2)
+
+    def forward(self, x):
+        return (
+            self.layer1(x) 
+            >> self.fstate.Y 
+            >> self.layer2 
+            >> self.fstate.Y 
+            >> self.layer3
+            >> self.fstate.Z["foo"]
+            >> self.layer4
+        )
+
+
+def test_fstate():
+    model = ModelWithFstate()
+    x = torch.randn(1, 5)
+    y = model(x)
+    assert y.shape == (1, 2)
+    assert isinstance(model.fstate.Y, FList)
+    assert isinstance(model.fstate.Z, FDict)
+
+
+def test_fstate_collect():
+    model = ModelWithFstate()    
+    x = torch.randn(1, 5)
+    y = model(x)
+
+    fstates = model.fstate.collect()
+    assert isinstance(fstates, dict)
+    assert set(fstates.keys()) == {"Y", "Z"}
+
+
+def test_fstate_reset():
+    model = ModelWithFstate()    
+    x = torch.randn(1, 5)
+    y1 = model(x)
+    fstates1 = model.fstate.collect()
+
+    x = torch.randn(1, 5)
+    y2 = model(x)
+    fstates2 = model.fstate.collect()
+
+    for item1, item2 in zip(fstates1["Y"], fstates2["Y"]):
+        assert not torch.isclose(item1, item2).all()
+    assert not torch.isclose(fstates2["Z"]["foo"], fstates1["Z"]["foo"]).all()
