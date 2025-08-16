@@ -2,7 +2,7 @@ import pytest
 import torch
 from torch import nn
 from faeyon.nn import FaeSequential
-from faeyon import X, Wiring, FaeArgs, FaeVar, FaeList, FaeDict, FaeMultiMap
+from faeyon import A, X, Wiring, FVar, FList, FDict, FMMap
 
 
 @pytest.fixture
@@ -52,7 +52,7 @@ class TestFaeSequential:
         mask = torch.tensor([1.0, 0.0])
 
         out = (
-            FaeArgs(x, y, mask=mask) 
+            A(x, y, mask=mask) 
             >> advanced_model
                 .wire(x=X[0], y=Wiring.Fanout)
         )
@@ -65,12 +65,12 @@ class TestFaeSequential:
     @pytest.mark.parametrize(
         "var,expected",
         [
-            (FaeVar(), torch.tensor([1.4, 0.0])),
-            (FaeList(), [torch.tensor([1.1, 0.0]), torch.tensor([1.4, 0.0])]),
-            (FaeDict(), {"0": torch.tensor([1.1, 0.0]), "1": torch.tensor([1.4, 0.0])}),
-            (FaeDict()["foo"], {"foo": torch.tensor([1.4, 0.0])}),
-            (FaeMultiMap()["foo"], {"foo": [torch.tensor([1.1, 0.0]), torch.tensor([1.4, 0.0])]}),
-            (FaeMultiMap(), {"0": [torch.tensor([1.1, 0.0])], "1": [torch.tensor([1.4, 0.0])]}),
+            (FVar(), torch.tensor([1.4, 0.0])),
+            (FList(), [torch.tensor([1.1, 0.0]), torch.tensor([1.4, 0.0])]),
+            (FDict(), {"0": torch.tensor([1.1, 0.0]), "1": torch.tensor([1.4, 0.0])}),
+            (FDict()["foo"], {"foo": torch.tensor([1.4, 0.0])}),
+            (FMMap()["foo"], {"foo": [torch.tensor([1.1, 0.0]), torch.tensor([1.4, 0.0])]}),
+            (FMMap(), {"0": [torch.tensor([1.1, 0.0])], "1": [torch.tensor([1.4, 0.0])]}),
         ]
     )
     def test_forward_with_reports(sef, advanced_model, var, expected):
@@ -78,7 +78,7 @@ class TestFaeSequential:
         y = torch.tensor([[0.1, 0.2], [0.3, 0.4]])
         mask = torch.tensor([1.0, 0.0])
         out = (
-            FaeArgs(x, y, mask=mask) 
+            A(x, y, mask=mask) 
             >> advanced_model
                 .wire(x=X[0], y=Wiring.Fanout)
                 .report(var @ X[0])
@@ -89,11 +89,11 @@ class TestFaeSequential:
         x = torch.tensor([1.0, 2.0])
         y = torch.tensor([[0.1, 0.2], [0.3, 0.4]])
         mask = torch.tensor([1.0, 0.0])
-        var = FaeVar()
+        var = FVar()
         out = (
-            FaeArgs(x, y, mask=mask) 
+            A(x, y, mask=mask) 
             >> advanced_model
-                % FaeArgs(x=X[0], y=Wiring.Fanout)
+                % A(x=X[0], y=Wiring.Fanout)
                 % (var @ X[1])
         )
 

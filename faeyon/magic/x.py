@@ -84,8 +84,8 @@ def _x_method[T](name: str) -> Callable[..., T]:
     def _getattr_(self, key: str) -> Any:
         # Bypass IPython's internal check for the _ipython_canary_method_should_not_exist_ attribute
         # This is required to make IPython display the object's contents
-        if is_ipython() and key == "_ipython_canary_method_should_not_exist_":
-            return self
+        # if is_ipython() and key == "_ipython_canary_method_should_not_exist_":
+        #     return self
         return method(self, key)
 
     if name == "__getattr__":

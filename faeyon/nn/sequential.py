@@ -4,7 +4,7 @@ from torch import nn
 from typing import Any, Optional, overload, Iterator
 from collections import OrderedDict
 
-from faeyon.magic.spells import ContainerBase, Wire, X, FaeArgs
+from faeyon.magic.spells import ContainerBase, Wire, X, A
 
 
 class FaeSequential(nn.Module):
@@ -81,7 +81,7 @@ class FaeSequential(nn.Module):
     def __iter__(self) -> Iterator[nn.Module]:
         return iter(self._modules.values())  # type: ignore
 
-    def __mod__[T: FaeSequential](self: T, other: ContainerBase | FaeArgs) -> T:
+    def __mod__[T: FaeSequential](self: T, other: ContainerBase | A) -> T:
         if isinstance(other, ContainerBase):
             return self.report(other)
         elif isinstance(other, list | tuple):
@@ -90,7 +90,7 @@ class FaeSequential(nn.Module):
                     f"All elements in list must be instances of {ContainerBase.__name__}."
                 )
             return self.report(*other)
-        elif isinstance(other, FaeArgs):
+        elif isinstance(other, A):
             return self.wire(*other.args, **other.kwargs)
         else:
             raise TypeError(

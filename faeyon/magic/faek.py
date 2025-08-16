@@ -6,15 +6,31 @@ from torch import nn
 from typing import Any, overload
 from collections.abc import Callable
 
-from .spells import Op, FaeList, FaeDict, FaeArgs, X
+from .spells import Op, FList, FDict, A, X
 
+
+class FState:
+    def __init__(self):
+        self._states = {}
+    
+    def __getattr__(self, name):
+        pass
+        
 
 def _new_instance(cls, *args, **kwargs):
     instance = object.__new__(cls)
     sig = inspect.signature(cls.__init__)
-    bound = sig.bind(instance, *args, **kwargs)
-    bound.apply_defaults()
-    del bound.arguments["self"]
+
+    # Bypass Dynamo's GraphModule, which overrides __new__, but does not pass arguments to super...
+    # TODO: File a bug report/PR to PyTorch
+    try:
+        bound = sig.bind(instance, *args, **kwargs)
+        bound.apply_defaults()
+        del bound.arguments["self"]
+    except TypeError:
+        bound = None
+    
+    super(cls, instance).__setattr__("fstate", FState())
     super(cls, instance).__setattr__("_arguments", bound)
     return instance
 
@@ -24,7 +40,7 @@ def __new__(cls, *args, **kwargs):
     Allow `nn.Module` to save constructor arguments passed to it, so that the could be used 
     later for cloning modules.
 
-    When any of the arguments is of type `FaeList` or `FaeDict`, special handing is applied to 
+    When any of the arguments is of type `FList` or `FDict`, special handing is applied to 
     generate clones.
     """
     try:
@@ -38,17 +54,17 @@ def __new__(cls, *args, **kwargs):
     fae_keys = None
     fae_len = None
     for arg in itertools.chain(args, kwargs_values):
-        if isinstance(arg, FaeList):
+        if isinstance(arg, FList):
             num_faelist += 1
             arg_value = arg.shed()
 
             if fae_len is None:
                 fae_len = len(arg_value)
             elif fae_len != len(arg_value):
-                raise ValueError("All arguments of type `FaeList` must have the same length.")
+                raise ValueError("All arguments of type `FList` must have the same length.")
 
             raveled_args.append(arg_value)
-        elif isinstance(arg, FaeDict):
+        elif isinstance(arg, FDict):
             num_faedict += 1
             arg_value = arg.shed()
 
@@ -57,14 +73,14 @@ def __new__(cls, *args, **kwargs):
                 fae_len = len(fae_keys)
             else:
                 if set(fae_keys) != set(arg_value.keys()):
-                    raise ValueError("All arguments of type `FaeDict` must have the same keys.")
+                    raise ValueError("All arguments of type `FDict` must have the same keys.")
 
             raveled_args.append([arg_value[k] for k in fae_keys])
         else:
             raveled_args.append(itertools.repeat(arg))
 
     if num_faelist > 0 and num_faedict > 0:
-        raise ValueError("Cannot mix `FaeList` and `FaeDict` arguments. Choose one.")
+        raise ValueError("Cannot mix `FList` and `FDict` arguments. Choose one.")
 
     num_fae = max(num_faelist, num_faedict)
 
@@ -98,6 +114,7 @@ def __default_new__(cls, *args, **kwargs):
     we cannot restore the old one. As a workaround, we define a default __new__ method that 
     matches the signature of the default __new__ method in `nn.Module`, but calls the parent object 
     without any arguments.
+    See: https://stackoverflow.com/questions/79716674/why-does-monkey-patching-a-classs-new-not-always-work/79717493#79717493
     """
     return object.__new__(cls)
 
@@ -141,7 +158,7 @@ def __rmul__[T: nn.Module](self: T, other: int | nn.Module) -> list[T] | Op:
 def __rrshift__[T: nn.Module](self: T, other: Any) -> Any:
     """
     This is an alias for `__call__`. The limitation here is that it only works for 
-    single inputs. If you need to pass multiple inputs, use the `FaeArgs` class.
+    single inputs. If you need to pass multiple inputs, use the `A` class.
     """
     return self(other)
 
@@ -169,9 +186,9 @@ def clone[T: nn.Module](self: T, *args: Any, **kwargs: Any) -> T:
     return cls(*new_bound.args, **new_bound.kwargs)
 
 
-def __call__[T: nn.Module](self: T, *args: Any, **kwargs: Any) -> Any:
-    fae_args = FaeArgs(*args, **kwargs)
-    if fae_args.is_resolved:
+def __call__(self, *args, **kwargs):
+    fargs = A(*args, **kwargs)
+    if fargs.is_resolved:
         return faek.module__call__(self, *args, **kwargs)
     
     return Op(faek.module__call__, self, *args, **kwargs)
@@ -265,7 +282,7 @@ class Faek(metaclass=Singleton):
         current_module = sys.modules[__name__]
         for method in self.methods:
             setattr(nn.Module, method, getattr(current_module, method))
-
+        
         nn.Module.__new__ = staticmethod(__new__)
         for method in Faek.delayed_binary_methods:
             setattr(nn.Module, method, delayed_binary_method(method))

@@ -4,7 +4,7 @@ import enum
 import itertools
 import operator
 from collections.abc import Callable, Iterator
-from typing import Any, Optional
+from typing import Any, Optional, overload
 from abc import ABC, abstractmethod
 from collections import defaultdict
 
@@ -33,9 +33,9 @@ def conjure(x: Any, data: Any) -> Any:
         else:
             data = getattr(data, name)(*args, **kwargs)
     return data
-        
 
-class FaeArgs:
+
+class A:
     """
     A placeholder for mapping next operation's arguments to the left side of the >> operator.
 
@@ -63,15 +63,15 @@ class FaeArgs:
     def is_resolved(self) -> bool:
         return self._is_resolved
          
-    def using(self, data: Any) -> FaeArgs:
+    def using(self, data: Any) -> A:
         if self.is_resolved:
             return self
         
         resolved_args = tuple(conjure(arg, data) for arg in self.args)
         resolved_kwargs = {k: conjure(v, data) for k, v in self.kwargs.items()}
-        return FaeArgs(*resolved_args, **resolved_kwargs)
+        return A(*resolved_args, **resolved_kwargs)
 
-    def __rrshift__(self, data: Any) -> FaeArgs:
+    def __rrshift__(self, data: Any) -> A:
         return self.using(data)
 
     def __repr__(self) -> str:
@@ -82,64 +82,57 @@ class FaeArgs:
 
         if self.kwargs:
             kwargs = ", ".join(f"{k}={v!r}" for k, v in self.kwargs.items())
-        return f"FaeArgs({args}{kwargs})"
+        return f"A({args}{kwargs})"
+
+
+class _NoValue:
+    """A unique sentinel to represent empty."""
+    @property
+    def value(self):
+        return self
+
+    def __repr__(self):
+        return "<NO_VALUE>"
+    
+    def __str__(self):
+        return "<NO_VALUE>"
 
 
 class _Variable:
     """
     A wrappert to hold a container value so that it can be passed by reference across different
     Container selections.
-    """
-    _value: Any
-    
+    """    
     def __init__(self, *args) -> None:
-        self.empty = False
-
         if len(args) == 1:
-            self._value = args[0]
+            self.value = args[0]
         elif len(args) > 1:
             raise ValueError("`_Variable` can only be initialized with one or no arguments.")
         else:
-            self.empty = True
-    
-    @property
-    def value(self) -> Any:
-        if self.empty:
-            raise ValueError("No value.")
-        return self._value
+            self.value = _NoValue()
 
-    @value.setter
-    def value(self, val: Any) -> None:
-        self._value = val
-        self.empty = False
+    def has_value(self) -> bool:
+        return not isinstance(self.value, _NoValue)
 
-    def __repr__(self):
-        if self.empty:
-            return ""
+    def __repr__(self) -> str:
         return f"{self.value!r}"
 
 
-class _ContainerMeta(ABC, type):
-    def __init__(self, name, bases, namespace):
-        super().__init__(name, bases, namespace)
-        self._instances = {}
-
-    def __getattr__(self, name):
-        print(f"requesting {name}")
-        if name in self._instances:
-            return self._instances[name]
-        instance = self()
-        self._instances[name] = instance
-        return instance
-
-
-class ContainerBase(metaclass=_ContainerMeta):
-    _condition: Optional[bool | X | Op] = None
+class ContainerBase(ABC):
+    _condition: Optional[bool | X | Op]
     
     def __init__(self, *args) -> None:
-        self._value: Any = _Variable(*args)
         self._expression: Optional[X | Op] = None
         self._condition = None
+        self._value = _Variable(*args)
+
+    @property
+    def value(self) -> Any:
+        return self._value.value
+    
+    @value.setter
+    def value(self, val: Any) -> None:
+        self._value.value = val
     
     def select[T: ContainerBase](self: T, expression: X | Op) -> T:
         if self._expression is not None:
@@ -161,11 +154,22 @@ class ContainerBase(metaclass=_ContainerMeta):
     def __matmul__[T: ContainerBase](self: T, expression: X | Op) -> T:
         return self.select(expression)
 
-    def _copy[T: ContainerBase](self: T) -> T:
-        out = type(self)()
-        for k, v in self.__dict__.items():
-            setattr(out, k, v)
-        return out
+    @overload
+    def _copy[T: ContainerBase](self: T, target: None = None) -> T: ...
+
+    @overload
+    def _copy(self, target: ContainerBase) -> ContainerBase: ...
+
+    def _copy[T: ContainerBase](
+        self: T, 
+        target: Optional[ContainerBase] = None
+    ) -> T | ContainerBase:
+        if target is None:
+            target = type(self)()
+        
+        for k, v in target.__dict__.items():
+            setattr(target, k, getattr(self, k, None))
+        return target
 
     def if_[T: ContainerBase](self: T, condition: Any) -> T:
         out = self._copy()
@@ -192,6 +196,11 @@ class ContainerBase(metaclass=_ContainerMeta):
         return self.using(data)
 
     @property
+    @abstractmethod
+    def is_empty(self) -> bool:
+        pass
+
+    @property
     def is_selected(self) -> bool:
         return self._expression is not None
 
@@ -202,74 +211,99 @@ class ContainerBase(metaclass=_ContainerMeta):
 
     @property
     def sheddable(self) -> bool:
-        return not self._value.empty and not self.is_selected
+        return not isinstance(self.value, _NoValue) and not self.is_selected
+
+    def _shedder(self) -> Any:
+        """ Overridable method to do shallow copy of value based on subclass type."""
+        return self.value
 
     def shed(self) -> Any:
         if not self.sheddable:
             raise ValueError(
-                "Cannot shed value from {self.__class__.__name__} with no value or a "
-                "pending select."
+                f"Cannot shed value from {self.__class__.__name__} with no value or a "
+                f"pending select."
             )
-        return self._value.value
+        return self._shedder()
 
     def __pos__(self) -> Any:
         return self.shed()
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self._value!r})"
+        return f"{self.__class__.__name__}({self.value!r})"
     
 
-class FaeList(ContainerBase):
-    def __init__(self, *args) -> None:
-        super().__init__(list(args))
-        
-    def _set(self, data: Any) -> None:
-        self._value.value.append(data)
-
-    def __len__(self):
-        return len(self._value.value)
-
-    @property
-    def is_appendable(self) -> bool:
-        return True
-    
-
-class FaeVar(ContainerBase):
-    def __init__(self, strict: bool = True) -> None:
+class FVar(ContainerBase):
+    """
+    `FVar` holds a single value. If it is morphable, then it can be converted to a `FList` or `FDict` if requesting a key when it is empty, or adding a new value if another already exists.
+    """
+    def __init__(self, morphable: bool = True) -> None:
         super().__init__()
-        self.strict = strict
+        self.morphable = morphable
+
+    def __getitem__(self, key: str):
+        if not self.is_empty:
+            raise ValueError("Cannot promote FVar to FDict from non-empty FVar.")
+        self.value = {}
+        self._key = None
+        self.__class__ = FDict  # type: ignore[assignment]
+        return self[key]
         
     def _set(self, data: Any) -> None:
-        if not self._value.empty:
-            if self.strict:
-                raise ValueError(
-                    "Cannot bind a value to a strict FaeVar with existing value."
-                )
-        
-        self._value.value = data
+        if self.morphable and not self.is_empty:
+            self.value = [self.value]
+            self.__class__ = FList  # type: ignore[assignment]
+            self._set(data)
+        else:
+            self.value = data
 
     @property
     def is_empty(self) -> bool:
-        return self._value.empty
+        return not self._value.has_value()
     
     @property
     def is_appendable(self) -> bool:
         return False
 
 
+class FList(ContainerBase):
+    def __init__(self, *args) -> None:
+        super().__init__(list(args))
+    
+    def _set(self, data: Any) -> None:
+        self.value.append(data)
+
+    def __len__(self):
+        return len(self.value)
+
+    def _shedder(self) -> Any:
+        return list(self.value)
+
+    @property
+    def is_empty(self) -> bool:
+        return len(self) == 0
+    
+    @property
+    def is_appendable(self) -> bool:
+        return True
+
+
 class KeyedContainer(ContainerBase):
     def __init__(self, **kwargs):
         super().__init__(kwargs)
         self._key = None
+        # parent is used when morphing a FDict to an FMMap, we need to make sure parent is 
+        # morphed too.
+        self._parent = None
 
     def __getitem__(self, key: str):
         if self._key is not None:
             raise KeyError(
-                "Key has already been assigned to {self.__class__.__name__} and no data used yet."
+                f"Key has already been assigned to {self.__class__.__name__} and no data used yet."
             )
 
         out = self._copy()
         out._key = key
+        out._parent = self
         return out
 
     @abstractmethod
@@ -279,49 +313,61 @@ class KeyedContainer(ContainerBase):
     def _set(self, data: Any) -> None:
         if self._key is None:
             raise KeyError(
-                "No key has been provided {self.__class__.__name__}, cannot set value."
+                f"No key has been provided {self.__class__.__name__}, cannot set value."
             )
 
         self._set_item(data)
 
     def __len__(self):
-        return len(self._value.value)
+        return len(self.value)
+
+    @property
+    def is_empty(self) -> bool:
+        return len(self) == 0
 
 
-class FaeDict(KeyedContainer):
-    def __init__(self, strict: bool = True, **kwargs) -> None:
+class FDict(KeyedContainer):
+    def __init__(self, morphable: bool = True, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.strict = strict
+        self.morphable = morphable
 
     def _set_item(self, data: Any) -> None:
-        if self._key in self._value.value:
-            if self.strict:
-                raise ValueError(
-                    "Cannot bind a value to a strict FaeDict with existing key."
-                )
-        self._value.value[self._key] = data
+        if self._key in self.value and self.morphable:
+            mmap = defaultdict(list)
+            for k, v in self.value.items():
+                mmap[k].append(v)
+            self.value = mmap
+            self.__class__ = FMMap  # type: ignore[assignment]
+            self._parent.__class__ = FMMap
+            self._set_item(data)
+        else:
+            self.value[self._key] = data
+
+    def _shedder(self) -> Any:
+        return dict(self.value)
 
     @property
     def is_appendable(self) -> bool:
         return self._key is None
 
 
-class FaeMultiMap(KeyedContainer):
+class FMMap(KeyedContainer):
     def __init__(self, **kwargs) -> None:
         for value in kwargs.values():
             if not isinstance(value, list):
-                raise ValueError(
-                    "All values in FaeMultiMap must be lists."
-                )
+                raise ValueError("All values in FMMap must be lists.")
 
         super().__init__(**kwargs)
-        self._value.value = defaultdict(list, self._value.value)
+        self.value = defaultdict(list, self.value)
 
     def _set_item(self, data: Any) -> None:
-        self._value.value[self._key].append(data)
+        self.value[self._key].append(data)
 
-    def shed(self) -> Any:
-        return dict(super().shed())
+    def _shedder(self) -> Any:
+        out = {}
+        for k, v in self.value.items():
+            out[k] = list(v)
+        return out
 
     @property
     def is_appendable(self) -> bool:
@@ -555,7 +601,7 @@ class _OpCallable(_OpStrategy):
     """
     def __init__(self, op: Callable[..., Any], *args, **kwargs) -> None:
         self.op = op
-        self.args = FaeArgs(*args, **kwargs)
+        self.args = A(*args, **kwargs)
 
     def __call__(self, data: Any) -> Any:
         resolved = data >> self.args
@@ -613,7 +659,7 @@ class Wire:
         self._fanout = {}
         self._current_wire = None
     
-    def init(self, sig: inspect.Signature, *args, **kwargs) -> FaeArgs:
+    def init(self, sig: inspect.Signature, *args, **kwargs) -> A:
         self.reset()
         bound = sig.bind(*args, **kwargs)
         bound.apply_defaults()
@@ -636,9 +682,9 @@ class Wire:
                     given_wire.arguments[k] = v
 
         self._current_wire = given_wire
-        return FaeArgs(*bound.args, **bound.kwargs)
+        return A(*bound.args, **bound.kwargs)
 
-    def step(self, data: Any) -> FaeArgs:
+    def step(self, data: Any) -> A:
         if self._current_wire is None:
             raise ValueError("No wire has been initialized.")
         
@@ -650,7 +696,7 @@ class Wire:
             else:
                 self._current_wire.arguments[k] = v
                 
-        return data >> FaeArgs(*self._current_wire.args, **self._current_wire.kwargs)
+        return data >> A(*self._current_wire.args, **self._current_wire.kwargs)
 
-    def __rrshift__(self, data: Any) -> FaeArgs:
+    def __rrshift__(self, data: Any) -> A:
         return self.step(data)

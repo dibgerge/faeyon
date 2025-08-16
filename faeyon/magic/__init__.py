@@ -1,9 +1,9 @@
 from .spells import (
-    FaeArgs, 
-    FaeDict, 
-    FaeList,
-    FaeMultiMap,
-    FaeVar,
+    A, 
+    FDict, 
+    FList,
+    FMMap,
+    FVar,
     Op,
     Wire,
     Wiring

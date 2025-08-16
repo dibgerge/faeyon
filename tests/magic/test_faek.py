@@ -5,7 +5,7 @@ import math
 import pytest
 import torch
 from torch import nn
-from faeyon import faek, FaeArgs, FaeList, FaeDict, Op, X
+from faeyon import faek, A, FList, FDict, Op, X
 from tests.common import ConstantLayer
 
 
@@ -46,14 +46,14 @@ def test_faek_as_context_manager():
     faek.on()
 
 
-def test_new_with_faelist():
+def test_new_with_flist():
     out_features = [1, 2, 3]
     in_features = [[10, 10, 10], [10, 10, 10], [10, 10, 10], [10, 11, 12]]
     models = [
-        nn.Linear(in_features=10, out_features=FaeList(1, 2, 3)),
-        nn.Linear(10, FaeList(1, 2, 3)),
-        nn.Linear(10, out_features=FaeList(1, 2, 3)),
-        nn.Linear(FaeList(10, 11, 12), FaeList(1, 2, 3)),
+        nn.Linear(in_features=10, out_features=FList(1, 2, 3)),
+        nn.Linear(10, FList(1, 2, 3)),
+        nn.Linear(10, out_features=FList(1, 2, 3)),
+        nn.Linear(FList(10, 11, 12), FList(1, 2, 3)),
     ]
 
     for expected_in_feats, model in zip(in_features, models):
@@ -65,15 +65,15 @@ def test_new_with_faelist():
             assert layer.out_features == out_features[i]
 
 
-def test_new_with_faelist_error():
+def test_new_with_flist_error():
     """ Cannot have parametrized arguments with different lengths. """
     with pytest.raises(ValueError):
-        model = nn.Linear(in_features=FaeList(10, 11), out_features=FaeList(1, 2, 3))
+        model = nn.Linear(in_features=FList(10, 11), out_features=FList(1, 2, 3))
 
 
-def test_new_with_faedict():
+def test_new_with_fdict():
     out_features = {"a": 1, "b": 2, "c": 3}
-    model = nn.Linear(in_features=10, out_features=FaeDict(**out_features))
+    model = nn.Linear(in_features=10, out_features=FDict(**out_features))
     assert isinstance(model, dict)
     assert len(model) == 3
     assert set(model.keys()) == set(out_features.keys())
@@ -83,21 +83,21 @@ def test_new_with_faedict():
         assert layer.out_features == out_features[k]
 
 
-def test_new_with_faedict_error():
+def test_new_with_fdict_error():
     """ Cannot have parametrized arguments with different keys. """
     with pytest.raises(ValueError):
         model = nn.Linear(
-            in_features=FaeDict(a=10, b=11, d=12),
-            out_features=FaeDict(a=1, b=2, c=3)
+            in_features=FDict(a=10, b=11, d=12),
+            out_features=FDict(a=1, b=2, c=3)
         )
 
 
 def test_new_with_dict_list_error():
-    """ Cannot have parametrized with mixed FaeDict/FaeList arguments. """
+    """ Cannot have parametrized with mixed FDict/FList arguments. """
     with pytest.raises(ValueError):
         model = nn.Linear(
-            in_features=FaeDict(a=10, b=11, d=12),
-            out_features=FaeList(1, 2, 3)
+            in_features=FDict(a=10, b=11, d=12),
+            out_features=FList(1, 2, 3)
         )
 
 
@@ -155,11 +155,11 @@ def test_rrshift():
 
 def test_rrshift_with_faeargs():
     """ 
-    This is added here for extra assurance that FaeArgs rshift will be called instead of the 
+    This is added here for extra assurance that `A` rshift will be called instead of the 
     faek nn.Module rrshift operator. 
     """
     model = nn.Linear(in_features=10, out_features=2)
-    x = FaeArgs(torch.randn(1, 10))
+    x = A(torch.randn(1, 10))
     y = x >> model
     assert y.shape == (1, 2)
 

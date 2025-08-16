@@ -9,7 +9,7 @@ from faeyon.nn import (
     head_to_attn_mask,
     Concat
 )
-from faeyon import FaeArgs, X, Op, FaeVar, FaeList, Wiring
+from faeyon import A, X, Op, FDict, FList, Wiring
 
 
 class ViTBlock(nn.Module):
@@ -53,13 +53,14 @@ class ViTBlock(nn.Module):
         return_weights: bool
             Whether to return the attention weights
         """
-        weights = FaeVar()
-        hidden_states = FaeVar()
-        out = (
+        outputs = FDict()
+
+        result = (
             inputs 
+            >> outputs["hidden_states"].if_(return_hidden_states)
             >> self.lnorm_in 
             >> self.attention(X, X, X, need_weights=return_weights)
-            >> weights.if_(return_weights) @ X[1]
+            >> outputs["attention_weights"].if_(return_weights) @ X[1]
             >> Op(X[0] + inputs)
             >> Op(X) + (
                 self.lnorm_out
@@ -69,24 +70,20 @@ class ViTBlock(nn.Module):
                 >> self.dropout
             )
         )
-        other = {}
-        if return_weights:
-            other["attention_weights"] = +weights
-        if return_hidden_states:
-            other["hidden_states"] = +hidden_states
-        if len(other) > 0:
-            return out, other
-        return out
+        
+        if outputs.is_empty:
+            return result
+        
+        return result, +outputs
 
 
 class ViT(nn.Module):
     """
     TODO:
     - [ ] Weight initialize
-    - [ ] parameter saving and adding parameters to constructor
+    - [x] parameter saving and adding parameters to constructor
     - [ ] checkpointing
     - [ ] Loading pre-trained model
-    - [ ] Figure out how to handle the `rngs` arguments correctly and cleanly.
     """
     # mask_token: Optional[nn.Parameter] = None
     
@@ -175,33 +172,30 @@ class ViT(nn.Module):
             Indicates which patches are masked (True) and which aren't (False).
             Should be of shape `(B, P)`.
         """
-        attention_weights = FaeList().if_(return_attention_weights)
-        hidden_states = FaeList().if_(return_hidden_states)
+        attention_weights = FList().if_(return_attention_weights)
+        hidden_states = FList().if_(return_hidden_states)
         cls_token = self.cls_token.expand(img.shape[0], -1, -1)
-
+        head_mask = Op(
+            head_to_attn_mask, 
+            head_mask, 
+            X.shape[0], 
+            X.shape[1], 
+            X.shape[1], 
+            num_layers=self.num_layers
+        )
         out = (
             img 
             >> self.patch_embedding
-            >> (
-                (self.pos_embeddings(X.shape[2:]) >> Op(X.mT)) 
-                + 
-                (
-                    self.mask_token(X, mask=patch_mask)
-                    >> Op(X.flatten(-2).mT)
-                    >> self.concat(cls_token, X, dim=1)
-                )
+            >> (self.pos_embeddings(X.shape[2:]) >> Op(X.mT)) + (
+                self.mask_token(X, mask=patch_mask)
+                >> Op(X.flatten(-2).mT)
+                >> self.concat(cls_token, X, dim=1)
             )
             >> self.dropout
             >> hidden_states
-            >> FaeArgs(
+            >> A(
                 X,
-                head_mask=Op(head_to_attn_mask, 
-                    head_mask, 
-                    X.shape[0], 
-                    X.shape[1], 
-                    X.shape[1], 
-                    num_layers=self.num_layers
-                ),
+                head_mask=head_mask,
                 return_weights=return_attention_weights,
                 return_hidden_states=return_hidden_states
             )

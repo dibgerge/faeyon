@@ -78,3 +78,8 @@ y_hf  = hf_model(img, output_hidden_states=True)
 y  = model(img)
 
 print(abs(y -  y_hf.logits).sum())
+
+
+exported_program = torch.export.export(hf_model, (img,), strict=False)
+
+print(exported_program)

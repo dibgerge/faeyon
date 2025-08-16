@@ -1,6 +1,6 @@
 import inspect
 import torch
-from faeyon import X, FaeArgs, FaeVar, FaeList, FaeDict, FaeMultiMap, Op, Wire, Wiring
+from faeyon import A, X, FVar, FList, FDict, FMMap, Op, Wire, Wiring
 from faeyon.magic.spells import conjure
 import pytest
 from tests.common import ConstantLayer
@@ -64,7 +64,7 @@ class TestX:
         assert repr(x) == "round(X('foo', k='bar')[0].a + 1)"
 
 
-class TestFaeArgs:
+class TestA:
 
     def func_simple(self, x):
         return x + 1
@@ -73,16 +73,16 @@ class TestFaeArgs:
         return x + y
     
     def test_init(self):
-        fae = FaeArgs(1, 2, 3)
-        assert isinstance(fae, FaeArgs)
+        fae = A(1, 2, 3)
+        assert isinstance(fae, A)
         assert fae.args == (1, 2, 3)
         assert fae.kwargs == {}
 
     def test_call_raisesTypeError(self):
         """ 
-        When `FaeArgs` does not match the callable's required number of arguments.
+        When `A` does not match the callable's required number of arguments.
         """
-        fae_args = FaeArgs(1, 2, 3)
+        fae_args = A(1, 2, 3)
 
         with pytest.raises(TypeError):
             fae_args.call(self.func_simple)
@@ -92,9 +92,9 @@ class TestFaeArgs:
 
     def test_call_unresolved(self):
         """ 
-        When `FaeArgs` has unresolved arguments, an error is raised.
+        When `A` has unresolved arguments, an error is raised.
         """
-        fae_args = FaeArgs(X[0])
+        fae_args = A(X[0])
         delayed = fae_args >> self.func_simple
         assert isinstance(delayed, Op)
         res = [1, 2, 3] >> delayed
@@ -107,15 +107,15 @@ class TestFaeArgs:
         ((1,), {"y": 10}),
     ])
     def test_call(self, args, kwargs):
-        """ Tests the call (FaeArgs >> callable) operator/method. """
-        fae_args = FaeArgs(*args, **kwargs)
+        """ Tests the call (A >> callable) operator/method. """
+        fae_args = A(*args, **kwargs)
         expected = self.func_multi(*args, **kwargs)
         assert fae_args.call(self.func_multi) == expected
         assert fae_args >> self.func_multi == expected
 
     def test_using_resolved(self):
-        """ Tests the bind (Any >> FaeArgs) operator when `FaeArgs` is already resolved. """
-        fae_args = FaeArgs(1, x="Bar")
+        """ Tests the bind (Any >> A) operator when `A` is already resolved. """
+        fae_args = A(1, x="Bar")
         data = "Foo"
         out_args = fae_args.using(data)
         assert out_args.args == (1,)
@@ -126,7 +126,7 @@ class TestFaeArgs:
         assert out_args.kwargs == {"x": "Bar"}
 
     def test_using_unresolved(self):
-        fea_args = FaeArgs(X[0], x="Bar", y=X[1])
+        fea_args = A(X[0], x="Bar", y=X[1])
         data = [10, 11, 12]
 
         out_args = fea_args.using(data)
@@ -138,52 +138,46 @@ class TestFaeArgs:
         assert out_args.kwargs == {"x": "Bar", "y": 11}
 
 
-class TestFaeVar:
-
-    def test_getattr(self):
-        10 >> FaeVar.Y
-        20 >> FaeList.Z
-        30 >> FaeList.Z
-        print(FaeVar._instances)
-        print(FaeList._instances)
+class TestFVar:
         
     def test_rrshift(self):
-        fae_var = FaeVar(strict=True)
-        2 >> fae_var
-        assert fae_var._value.value == 2
-
-    def test_rrshift_raisesValueError(self):
-        """ 
-        Cannot bind a value to a strict FaeVar with existing value.
-        """
-        fae_var = FaeVar(strict=True)
-        with pytest.raises(ValueError):
-            2 >> fae_var
-            3 >> fae_var
+        fvar = FVar()
+        2 >> fvar
+        assert +fvar == 2
 
     def test_rrshift_overwrite(self):
-        fae_var = FaeVar(strict=False)
-        out = 2 >> fae_var
-        assert fae_var._value.value == 2
+        """ 
+        Cannot bind a value to a strict FVar with existing value.
+        """
+        fvar = FVar(morphable=False)
+        2 >> fvar
+        3 >> fvar
+        assert +fvar == 3
+
+    def test_rrshift_morph(self):
+        fvar = FVar(morphable=True)
+        out = 2 >> fvar
+        assert +fvar == 2
         assert out == 2
 
-        out = 3 >> fae_var
-        assert fae_var._value.value == 3
+        out = 3 >> fvar
+        assert isinstance(fvar, FList)
+        assert fvar.value == [2, 3]
         assert out == 3
-
+        
     def test_using(self):
         """ `using` method is same as >> operator. """
-        fae_var = FaeVar(strict=True)
-        out = fae_var.using(2)
-        assert fae_var._value.value == 2
+        fvar = FVar(morphable=False)
+        out = fvar.using(2)
+        assert +fvar == 2
         assert out == 2
 
     def test_if_on_X(self):
-        fae_var = FaeVar(strict=True)
+        fvar = FVar(morphable=False)
         data = [1, 2, 3]
-        out = data >> fae_var.if_(X[0] > 1) @ X[1]
+        out = data >> fvar.if_(X[0] > 1) @ X[1]
         assert data is out
-        assert fae_var.is_empty
+        assert fvar.is_empty
 
     @pytest.mark.parametrize("condition, expected", [
         (True, 2),
@@ -192,195 +186,227 @@ class TestFaeVar:
         (Op(X[0] != 1), None),
     ])
     def test_if_general(self, condition, expected):
-        fae_var = FaeVar(strict=True)
+        fvar = FVar(morphable=False)
         data = [1, 2, 3]
-        out = data >> fae_var.if_(condition) @ X[1]
+        out = data >> fvar.if_(condition) @ X[1]
         assert data is out
         if expected is None:
-            assert fae_var.is_empty
+            assert fvar.is_empty
         else:
-            assert +fae_var == expected
+            assert +fvar == expected
 
     def test_select_return_type(self):
-        fae_var = FaeVar(strict=False)
-        selectable = fae_var.select(X[1])
-        assert isinstance(selectable, FaeVar)
-        assert selectable is not fae_var
+        fvar = FVar(morphable=False)
+        selectable = fvar.select(X[1])
+        assert isinstance(selectable, FVar)
+        assert selectable is not fvar
 
         [10, 20] >> selectable
-        assert selectable._value.value == 20
+        assert selectable.value == 20
 
-        [10, 20] >> fae_var
-        assert fae_var._value.value == [10, 20]
+        [10, 20] >> fvar
+        assert fvar.value == [10, 20]
     
     def test_select(self):
-        fae_var = FaeVar(strict=True)
+        fvar = FVar(morphable=False)
         data = [1, 2,  3]
-        out = data >> fae_var.select(X[1])
+        out = data >> fvar.select(X[1])
         assert data is out
-        assert fae_var._value.value == 2
+        assert fvar.value == 2
 
     def test_matmul(self):
         """ `matmul` (@) operator is same as select method. """
-        fae_var = FaeVar(strict=True)
+        fvar = FVar(morphable=False)
         data = [1, 2, 3]
-        out = data >> fae_var @ X[1]
+        out = data >> fvar @ X[1]
         assert data is out
-        assert fae_var._value.value == 2
+        assert fvar.value == 2
     
     def test_select_raisesValueError_multiple_calls(self):
         """ 
-        Can only call once
+        Can only call once select on a strict FVar. 
         """
-        fae_var = FaeVar(strict=True)
+        fvar = FVar(morphable=False)
         with pytest.raises(ValueError):
-            fae_var @ X[1] @ X[2]
+            fvar @ X[1] @ X[2]
             
     def test_select_raisesValueError_wrong_type(self):
         """ 
-        Cannot select an expression to a strict FaeVar with existing value.
+        Cannot select an expression to a strict FVar with existing value.
         """
-        fae_var = FaeVar(strict=True)
+        fvar = FVar(morphable=False)
         with pytest.raises(ValueError):
-            fae_var @ "foo"
+            fvar @ "foo"
 
     def test_shed(self):
-        fae_var = FaeVar()
-        [1, 2, 3] >> fae_var @ X[1:]
-        assert fae_var.shed() == [2, 3]
-        assert +fae_var == [2, 3]
+        fvar = FVar(morphable=False)
+        [1, 2, 3] >> fvar @ X[1:]
+        assert fvar.shed() == [2, 3]
+        assert +fvar == [2, 3]
 
     def test_shed_raisesValueError(self):
-        fae_var = FaeVar()
+        fvar = FVar()
         with pytest.raises(ValueError):
-            fae_var.shed()
+            fvar.shed()
 
         with pytest.raises(ValueError):
-            fae_var @ X[1]
-            fae_var.shed()
+            fvar @ X[1]
+            fvar.shed()
+
+    def test_morph_to_list(self):
+        fvar = FVar(morphable=True)
+        2 >> fvar
+        assert isinstance(fvar, FVar)
+        assert +fvar == 2
+
+        3 >> fvar
+        assert isinstance(fvar, FList)
+        assert +fvar == [2, 3]
+
+    def test_morph_to_dict(self):
+        fvar = FVar(morphable=True)
+        2 >> fvar["a"]
+        3 >> fvar["b"]
+        assert isinstance(fvar, FDict)
+        assert +fvar == {"a": 2, "b": 3}
+
+    def test_morph_to_dict_error(self):
+        """ Cannot morph to dict if value already exists """
+        fvar = FVar(morphable=True)
+        2 >> fvar
+        with pytest.raises(ValueError):
+            3 >> fvar["a"]
 
     def test_repr(self):
-        fae_var = FaeVar()
-        2 >> fae_var
-        assert str(fae_var) == "FaeVar(2)"
+        fvar = FVar()
+        2 >> fvar
+        assert str(fvar) == "FVar(2)"
 
     
-class TestFaeList:
+class TestFList:
     """ 
-    Some of the common methods and code paths with `FaeVar` are not tested here, especially that
+    Some of the common methods and code paths with `FVar` are not tested here, especially that
     the operator / method overloading are consistent, since this is implemented at the base class 
     level.
     """
     def test_init_no_args(self):
-        fae_list = FaeList()
-        assert +fae_list == []
+        flist = FList()
+        assert +flist == []
 
     def test_init_with_args(self):
-        fae_list = FaeList(1, 2, 3)
-        assert +fae_list == [1, 2, 3]
+        flist = FList(1, 2, 3)
+        assert +flist == [1, 2, 3]
     
     def test_rrshift(self):
-        fae_list = FaeList()
-        2 >> fae_list
-        3 >> fae_list
-        assert +fae_list == [2, 3]
+        flist = FList()
+        2 >> flist
+        3 >> flist
+        assert +flist == [2, 3]
 
     def test_general_usage(self):
         """ X Selector on left hand side does not work, must wrap it in Op. """
-        fae_list = FaeList()
-        [10, 20, 30] >> fae_list @ X[1] >> fae_list @ Op(X[2])
-        assert +fae_list == [20, 30]
+        flist = FList()
+        [10, 20, 30] >> flist @ X[1] >> flist @ Op(X[2])
+        assert +flist == [20, 30]
 
     def test_len(self):
-        fae_list = FaeList()
-        assert len(fae_list) == 0
-        1 >> fae_list
-        assert len(fae_list) == 1
+        flist = FList()
+        assert len(flist) == 0
+        1 >> flist
+        assert len(flist) == 1
 
 
-class TestFaeDict:
+class TestFDict:
     def test_init_no_args(self):
-        fae_dict = FaeDict()
-        assert +fae_dict == {}
+        fdict = FDict()
+        assert +fdict == {}
     
     def test_init_with_args(self):
         init_data = {"a": 1, "b": 2, "c": 3}
-        fae_dict = FaeDict(**init_data)
-        assert +fae_dict == init_data
+        fdict = FDict(**init_data)
+        assert +fdict == init_data
     
     def test_rrshift(self):
-        fae_dict = FaeDict(b=10)
-        2 >> fae_dict["a"]
-        assert +fae_dict == {"a": 2, "b": 10}
+        fdict = FDict(b=10)
+        2 >> fdict["a"]
+        assert +fdict == {"a": 2, "b": 10}
 
-    def test_rrshift_strict_raises(self):
+    def test_rrshift_overwrite(self):
         """ Raise error when overwriting existing key in strict mode. """
-        fae_dict = FaeDict(strict=True)
-        with pytest.raises(ValueError):
-            2 >> fae_dict["a"]
-            3 >> fae_dict["a"]
+        fdict = FDict(morphable=False)
+        2 >> fdict["a"]
+        assert +fdict == {"a": 2}
+        3 >> fdict["a"]
+        assert +fdict == {"a": 3}
         
-    def test_rrshift_nonstrict_overwrite(self):
-        fae_dict = FaeDict(strict=False)
-        2 >> fae_dict["a"]
-        assert +fae_dict == {"a": 2}
-        3 >> fae_dict["a"]
-        assert +fae_dict == {"a": 3}
-        4 >> fae_dict["b"]
-        assert +fae_dict == {"a": 3, "b": 4}
+    def test_rrshift_morph(self):
+        fdict = FDict(morphable=True)
+        2 >> fdict["a"]
+        assert +fdict == {"a": 2}
+        4 >> fdict["b"]
+        assert +fdict == {"a": 2, "b": 4}
+
+        3 >> fdict["a"]
+        assert +fdict == {"a": [2, 3], "b": [4]}
+        assert isinstance(fdict, FMMap)
+    
+        10 >> fdict["b"]
+        11 >> fdict["c"]
+        assert +fdict == {"a": [2, 3], "b": [4, 10], "c": [11]}
+        assert isinstance(fdict, FMMap)
     
     def test_raises_key_error(self):
-        fae_dict = FaeDict()
+        fdict = FDict()
         with pytest.raises(KeyError):
-            2 >> fae_dict
+            2 >> fdict
 
         # KeyError when accessing non-existent key. Make sure there is no 
         # side effects due to inplace operations.
         with pytest.raises(KeyError):
-            fae_dict["a"]
-            2 >> fae_dict
+            fdict["a"]
+            2 >> fdict
     
     def test_general_usage(self):
-        fae_dict = FaeDict()
-        [1, 2, 3] >> fae_dict["a"] @ X[1] >> fae_dict["b"]
-        assert +fae_dict == {"a": 2, "b": [1, 2, 3]}
+        fdict = FDict()
+        [1, 2, 3] >> fdict["a"] @ X[1] >> fdict["b"]
+        assert +fdict == {"a": 2, "b": [1, 2, 3]}
 
     def test_len(self):
-        fae_dict = FaeDict()
-        assert len(fae_dict) == 0
-        1 >> fae_dict["a"]
-        assert len(fae_dict) == 1
+        fdict = FDict()
+        assert len(fdict) == 0
+        1 >> fdict["a"]
+        assert len(fdict) == 1
 
 
-class TestFaeMultiMap:
+class TestFMMap:
     def test_init_no_args(self):
-        fae_multimap = FaeMultiMap()
-        assert +fae_multimap == {}
+        fmmap = FMMap()
+        assert +fmmap == {}
     
     def test_init_with_args(self):
-        fae_multimap = FaeMultiMap(a=[1, 2, 3], b=[4, 5, 6])
-        assert +fae_multimap == {"a": [1, 2, 3], "b": [4, 5, 6]}
+        fmmap = FMMap(a=[1, 2, 3], b=[4, 5, 6])
+        assert +fmmap == {"a": [1, 2, 3], "b": [4, 5, 6]}
         
     def test_init_value_error(self):
         with pytest.raises(ValueError):
-            FaeMultiMap(a=[1, 2, 3], b=4)
+            FMMap(a=[1, 2, 3], b=4)
     
     def test_general_usage(self):
-        fae_multimap = FaeMultiMap()
+        fmmap = FMMap()
         out = (
             [1, 2, 3] 
-            >> fae_multimap["a"] @ X[1] 
-            >> fae_multimap["a"] @ X[2] 
-            >> fae_multimap["b"] @ X[0]
+            >> fmmap["a"] @ X[1] 
+            >> fmmap["a"] @ X[2] 
+            >> fmmap["b"] @ X[0]
         )
-        assert +fae_multimap == {"a": [2, 3], "b": [1]}
-        
+        assert +fmmap == {"a": [2, 3], "b": [1]}
+
 
 class Test_Variable:
     def test_repr(self):
         from faeyon.magic.spells import _Variable
         var = _Variable(10)
-        assert str(var) == "_Variable(10)"
+        assert str(var) == "10"
 
 
 class TestOp:
@@ -717,7 +743,7 @@ class TestWire:
         wire = Wire(X)
         out = wire.init(sig, 1, 2)
         assert wire._fanout == {}
-        assert isinstance(out, FaeArgs)
+        assert isinstance(out, A)
         assert out.args == (1, 2)
         assert out.kwargs == {}
     
