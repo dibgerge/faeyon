@@ -1,10 +1,10 @@
 import inspect
-
+import torch
 from torch import nn
 from typing import Any, Optional, overload, Iterator
 from collections import OrderedDict
 
-from faeyon.magic.spells import ContainerBase, Wire, X, A
+from faeyon.magic.spells import ContainerBase, Wire, X, A, Op
 
 
 class FaeSequential(nn.Module):
@@ -96,3 +96,40 @@ class FaeSequential(nn.Module):
             raise TypeError(
                 f"Unsupported type for pipe operator with {self.__class__.__name__} | {type(other)}"
             )
+
+
+class OpCollection(Op):
+    pass
+
+
+class FaeModuleList(nn.Module):
+    def __init__(self, module: nn.Module, repeats: int) -> None:
+        super().__init__()
+        self.mlist = nn.ModuleList(module * repeats)
+        
+    def __rshift__(self, other: Any) -> Any:
+        if isinstance(other, FaeBlock): pass
+
+    def forward(self, *args: Any, **kwargs: Any) -> Any:
+        
+        pass        
+
+
+class FaeBlock(nn.Module):
+    """ 
+    TODO: Handling non-module components will require ways to re-initialize them. Maybe for 
+    `Parameter`/`Buffer` type, give the generator method instead of the tensor itself...
+    """
+    def __init__(self, components: dict[str, nn.Module], repeats: int) -> None:
+        if repeats < 1:
+            raise ValueError("Repeats must be at least 1.")
+
+        super().__init__()
+        for key, component in components.items():
+            if isinstance(component, nn.Module):
+                self.add_module(key, FaeModuleList(component, repeats))
+            else:
+                # TODO: Handle non-module components
+                raise NotImplementedError("Non-module components are not supported yet.")
+
+        

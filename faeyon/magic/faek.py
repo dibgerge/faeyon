@@ -6,7 +6,7 @@ from torch import nn
 from typing import Any, overload
 from collections.abc import Callable
 
-from .spells import Op, FList, FDict, A, X, FVar
+from .spells import Op, FList, FDict, A, X, FVar, binary_operators, unary_operators
 
 
 class FState:
@@ -205,6 +205,9 @@ def _resolved_call(self, *args, **kwargs):
     return faek.module__call__(self, *args, **kwargs)
 
 
+_resolved_call.__name__ = "Module.__call__"
+
+
 def __call__(self, *args, **kwargs):
     fargs = A(*args, **kwargs)
     if fargs.is_resolved:
@@ -222,11 +225,11 @@ def delayed_unary_method[T: nn.Module](op_name: str) -> Callable[[T], Op]:
 def delayed_binary_method[T: nn.Module](op_name: str) -> Callable[[T, nn.Module], Op]:
     """
     This method only handles arithmetic on two modules, e.g. module1 + module2. Thus we expect
-    to implement only the left versions of the operators. If that failed, will manually call the 
-    left type 
-
+    to implement only the left versions of the operators. If that failed, will call the 
+    right type's operator.
     """
     def func(self: T, other: nn.Module) -> Op:
+        print("----- here", op_name, other)
         if isinstance(other, nn.Module):
             return getattr(self(X), op_name)(other(X))
         
@@ -254,36 +257,6 @@ class Faek(metaclass=Singleton):
     This is a singleton class intended to be used as a context manager or as a general tool
     to enable the `ModuleMixin` functionality by Monkey patching the `nn.Module` in PyTorch.
     """
-
-    methods = [
-        "__call__",
-        "__mul__",
-        "__rmul__",
-        "__rrshift__",
-        "clone",
-    ]
-
-    # Note: `__mul__` is a special case, since it can operate on integers and module types.
-    delayed_binary_methods = [
-        "__rshift__",
-        "__add__",
-        "__sub__",
-        "__matmul__",
-        "__truediv__",
-        "__floordiv__",
-        "__mod__",
-        "__pow__",
-        "__and__",
-        "__or__",
-        "__xor__",
-    ]
-    delayed_unary_methods = [
-        "__neg__",
-        "__pos__",
-        "__abs__",
-        "__invert__"
-    ]
-
     def __init__(self):
         self._is_on = False
         self.module__call__ = nn.Module.__call__
@@ -299,14 +272,23 @@ class Faek(metaclass=Singleton):
             return
 
         current_module = sys.modules[__name__]
-        for method in self.methods:
-            setattr(nn.Module, method, getattr(current_module, method))
-        
         nn.Module.__new__ = staticmethod(__new__)
-        for method in Faek.delayed_binary_methods:
-            setattr(nn.Module, method, delayed_binary_method(method))
-        for method in Faek.delayed_unary_methods:
-            setattr(nn.Module, method, delayed_unary_method(method))
+        nn.Module.__call__ = __call__
+        nn.Module.clone = clone
+
+        for method in itertools.chain.from_iterable(binary_operators.values()):
+            setattr(
+                nn.Module, 
+                method, 
+                getattr(current_module, method, delayed_binary_method(method))
+            )
+                
+        for method in unary_operators.values():
+            setattr(
+                nn.Module, 
+                method, 
+                getattr(current_module, method, delayed_unary_method(method))
+            )
 
         self._is_on = True
 
@@ -314,11 +296,12 @@ class Faek(metaclass=Singleton):
         if not self._is_on:
             return
         
-        for method in self.methods:
+        for method in itertools.chain(*binary_operators.values(), unary_operators.values()):
             delattr(nn.Module, method)
 
         nn.Module.__new__ = staticmethod(__default_new__)
         nn.Module.__call__ = self.module__call__
+        delattr(nn.Module, "clone")
         self._is_on = False
 
 
