@@ -4,7 +4,7 @@ import enum
 import itertools
 import operator
 from collections.abc import Callable, Iterator
-from typing import Any, Optional, overload
+from typing import Any, Optional, overload, ForwardRef, Union
 from abc import ABC, abstractmethod
 from collections import defaultdict
 
@@ -28,12 +28,15 @@ binary_operators = {
     operator.xor: ("__xor__", "__rxor__"),
 }
 
-unary_operators = {
+unary_operators: dict[Callable[[Any], Any], str] = {
     operator.abs: "__abs__",
     operator.invert: "__invert__",
     operator.neg: "__neg__",
     operator.pos: "__pos__",
 }
+
+OMType = Union["Op", nn.Module]
+OMXType = Union[OMType, X]
 
 
 def conjure(x: Any, data: Any) -> Any:
@@ -400,52 +403,41 @@ class FMMap(KeyedContainer):
 
 class Op:
     strategy: _OpStrategy
-    # _condition: Optional[X | Op | bool]
-    # _else_: Optional[X | Op]
 
-    def __init__(self, op: X | Callable[..., Any] | Op | list[Op], *args,  **kwargs) -> None:
+    def __init__(
+        self, 
+        op: Callable[..., Any] | OMXType | list[OMType], 
+        *args,  
+        **kwargs
+    ) -> None:
         # Note: X is callable, but not vice versa.
         if isinstance(op, X):
             if len(args) > 0 or len(kwargs) > 0:
                 raise ValueError(
                     "`op` cannot be an instance of `X` if `args` or `kwargs` are provided.")
             self.strategy = _OpX(op)
-        elif isinstance(op, Op):
+        elif isinstance(op, Op | nn.Module):
             if len(kwargs) > 0:
-                raise ValueError("Cannot have keyword arguments if given instances of `Op`.")
+                raise ValueError("Cannot have keyword arguments if given instances of `Op` or `nn.Module`.")
             self.strategy = _OpSerial(op, *args)
         elif isinstance(op, list):
-            self.strategy = _OpParallel(op, *args)
+            if len(args) > 0 or len(kwargs) > 0:
+                raise ValueError("`op` cannot be a `list` if `args` or `kwargs` are provided.")
+            self.strategy = _OpParallel(*op)
         elif isinstance(op, Callable):  # type: ignore[arg-type]
+            # Need to resolve arguments first to check if they have any parallel Ops
+
             self.strategy = _OpCallable(op, *args, **kwargs)
         else:
             raise ValueError("Arguments should be of type `X`, `Op`, or Callable.")
-
-        # This indicates that the op is ready to be executed when it is resolvable and data is fed.
-        # Sometimes we want to delay the execution of the op until it is needed, for example when  
-        # defining parallel ops. This is is useful so we can feed in data without the need for 
-        # parentheses. 
-        self.final = False
 
     @classmethod
     def from_strategy(cls, strategy: _OpStrategy) -> Op:
         out = cls.__new__(cls)
         out.strategy = strategy
-        # out._condition = None
-        # out._else_ = None
         return out
             
     def using(self, data: Any) -> Any:
-        # if self._condition is not None:
-        #     condition = conjure(self._condition, data)
-        #     if condition:
-        #         return self.strategy(data)
-            
-        #     if self._else_ is not None:
-        #         return conjure(self._else_, data)
-        #     else:
-        #         return data
-
         return self.strategy(data)
 
     def if_(self, condition: bool | X | Op, else_: Optional[X | Op] = None) -> Op:
@@ -458,137 +450,63 @@ class Op:
         """
         strategy = self.strategy.if_(condition, else_)
         out = self.from_strategy(strategy)
-        out.final = self.final
-        # out._condition = condition
-        # out._else_ = else_
         return out
         
-    def __rshift__(self, data: Op | nn.Module) -> Op:
-        if isinstance(data, Op):
-            return Op(self, data)
-        elif isinstance(data, nn.Module):
-            return Op(self, data(X))
-        
-        return NotImplemented
+    def __rshift__(self, data: OMType) -> Op:
+        if not isinstance(data, Op | nn.Module):
+            return NotImplemented
+        return Op(self, data)
+        # return self.strategy >> data
         
     def __rrshift__(self, data: Any) -> Any:
-        if isinstance(data, nn.Module):
-            return Op(data(X), self)
-
+        if isinstance(data, nn.Module | Op):
+            return Op(data, self)
         return self.using(data)
+        # return data >> self.strategy
 
-    # def __add__(self, other: Any) -> Op:
-    #     if isinstance(other, nn.Module):
-    #         other = other(X)        
-    #     return Op(operator.add, self, other)
+    def __lshift__(self, data: OMType) -> Op:
+        if isinstance(data, nn.Module):
+            return self << data(X)
 
-    # def __radd__(self, other: Any) -> Op:
-    #     return self.__add__(other)
-    
-    # def __sub__(self, other: Any) -> Op:
-    #     if isinstance(other, nn.Module):
-    #         other = other(X)
-    #     return Op(operator.sub, self, other)
-    
-    # def __rsub__(self, other: Any) -> Op:
-    #     if isinstance(other, nn.Module):
-    #         other = other(X)
-    #     return Op(operator.sub, other, self)
-    
-    # def __mul__(self, other: Any) -> Op:
-    #     if isinstance(other, nn.Module):
-    #         other = other(X)
-    #     return Op(operator.mul, self, other)
+        out = self.strategy.lparallelize(data)
 
-    # def __rmul__(self, other: Any) -> Op:
-    #     return self.__mul__(other)
+        if out is NotImplemented:
+            if isinstance(data, Op):
+                return data.strategy.rparallelize(self)
+        else:
+            return out
+        
+        return NotImplemented
+            
 
-    # def __truediv__(self, other: Any) -> Op:
-    #     if isinstance(other, nn.Module):
-    #         other = other(X)
-    #     return Op(operator.truediv, self, other)
-    
-    # def __rtruediv__(self, other: Any) -> Op:
-    #     if isinstance(other, nn.Module):
-    #         other = other(X)
-    #     return Op(operator.truediv, other, self)
-    
-    # def __floordiv__(self, other: Any) -> Op:
-    #     if isinstance(other, nn.Module):
-    #         other = other(X)
-    #     return Op(operator.floordiv, self, other)
-    
-    # def __rfloordiv__(self, other: Any) -> Op:
-    #     if isinstance(other, nn.Module):
-    #         other = other(X)
-    #     return Op(operator.floordiv, other, self)
-    
-    # def __mod__(self, other: Any) -> Op:
-    #     if isinstance(other, nn.Module):
-    #         other = other(X)
-    #     return Op(operator.mod, self, other)
-    
-    # def __rmod__(self, other: Any) -> Op:
-    #     if isinstance(other, nn.Module):
-    #         other = other(X)
-    #     return Op(operator.mod, other, self)
+        # if isinstance(self.strategy, _OpX | _OpCallable):
+            
+        # if isinstance(self.strategy, (_OpCallable, _OpX)):
+        #     left = Op([self])
+        # elif isinstance(self.strategy, _OpSerial):
+        #     last = Op([self.strategy.ops[-1]])
 
-    # def __matmul__(self, other: Any) -> Op:
-    #     if isinstance(other, nn.Module):
-    #         other = other(X)
-    #     return Op(operator.matmul, self, other)
-    
-    # def __rmatmul__(self, other: Any) -> Op:
-    #     if isinstance(other, nn.Module):
-    #         other = other(X)
-    #     return Op(operator.matmul, other, self)
-    
-    # def __pow__(self, other: Any) -> Op:
-    #     if isinstance(other, nn.Module):
-    #         other = other(X)
-    #     return Op(operator.pow, self, other)
-    
-    # def __rpow__(self, other: Any) -> Op:
-    #     if isinstance(other, nn.Module):
-    #         other = other(X)
-    #     return Op(operator.pow, other, self)
-    
-    # def __and__(self, other: Any) -> Op:
-    #     if isinstance(other, nn.Module):
-    #         other = other(X)
-    #     return Op(operator.and_, self, other)
-    
-    # def __rand__(self, other: Any) -> Op:
-    #     return self.__and__(other)
-    
-    # def __or__(self, other: Any) -> Op:
-    #     if isinstance(other, nn.Module):
-    #         other = other(X)
-    #     return Op(operator.or_, self, other)
-    
-    # def __ror__(self, other: Any) -> Op:
-    #     return self.__or__(other)
-    
-    # def __xor__(self, other: Any) -> Op:
-    #     if isinstance(other, nn.Module):
-    #         other = other(X)
-    #     return Op(operator.xor, self, other)
-    
-    # def __rxor__(self, other: Any) -> Op:
-    #     return self.__xor__(other)
-    
-    # def __pos__(self) -> Op:
-    #     return Op(operator.pos, self)
-    
-    # def __neg__(self) -> Op:
-    #     return Op(operator.neg, self)
+        #     if len(self.strategy) > 1:
+        #         first = self.strategy.ops[:-1]
 
-    # def __abs__(self) -> Op:
-    #     return Op(operator.abs, self)
+        
 
-    # def __invert__(self) -> Op:
-    #     return Op(operator.invert, self)
+        # if isinstance(data, nn.Module):
+        #     right = Op([data])
 
+        # if isinstance(self.strategy, (_OpParallel, _OpX)):
+        #     return Op([self]) << data
+            
+        # return Op([self]) << data
+
+        # return self.strategy << data
+
+    def __rlshift__(self, data: nn.Module) -> Op:
+        if isinstance(data, nn.Module):
+            return data(X) << self
+            
+        return NotImplemented
+            
     def __repr__(self):
         return f"Op({self.strategy!r})"
 
@@ -614,19 +532,18 @@ def op_binary_method[T: Op](oper: Callable[[T, T], T], is_right: bool) -> Callab
     return rfunc if is_right else func
 
 
-for oper, (method, rmethod) in binary_operators.items():
+for bin_op, (method, rmethod) in binary_operators.items():
     if method in ("__rshift__", "__lshift__"):
         continue
 
-    setattr(Op, method, op_binary_method(oper, False))
-    setattr(Op, rmethod, op_binary_method(oper, True))
+    setattr(Op, method, op_binary_method(bin_op, False))
+    setattr(Op, rmethod, op_binary_method(bin_op, True))
 
-for oper, method in unary_operators.items():    
-    setattr(Op, method, op_unary_method(oper))
+for uni_op, method in unary_operators.items():    
+    setattr(Op, method, op_unary_method(uni_op))
 
 
 class _OpStrategy(ABC):
-
     _condition: Optional[X | Op | bool]
     _else_: Optional[X | Op]
 
@@ -654,6 +571,39 @@ class _OpStrategy(ABC):
         out._else_ = else_
         return out
 
+    # def __rshift__(self, data: OMType) -> Op:
+    #     """
+    #     self >> (op | nn.Module)   : A new op with Serial strategy. 
+    #     """
+    #     if not isinstance(data, Op | nn.Module):
+    #         return NotImplemented
+    #     return Op(Op.from_strategy(self), data)
+
+    # def __rrshift__(self, data: Any) -> Any:
+    #     """
+    #     (module | Op) >> self   : A new `op` with serial strategy.
+    #     any >> self             : Consider this as data and resolve the op.
+    #     """
+    #     if isinstance(data, nn.Module | Op):
+    #         return Op(data, Op.from_strategy(self))
+    #     return self(data)
+
+    # @abstractmethod
+    # def __lshift__(self, data: OMType) -> Op:
+    #     raise NotImplementedError
+
+    # @abstractmethod
+    # def __rlshift__(self, data: Any) -> Any:
+    #     raise NotImplementedError
+
+    @abstractmethod
+    def lparallelize(self, data: OMType) -> Op:
+        pass
+
+    @abstractmethod
+    def rparallelize(self, data: OMType) -> Op:
+        pass
+
     @abstractmethod
     def _copy(self):
         pass
@@ -661,7 +611,7 @@ class _OpStrategy(ABC):
     @abstractmethod
     def using(self, data: Any) -> Any:
         pass
-    
+  
     @abstractmethod
     def __repr__(self):
         pass
@@ -676,21 +626,67 @@ class _OpX(_OpStrategy):
     ```
     """
     def __init__(self, op: X) -> None:
-        self.op = op
+        self._op = op
+
+    @property
+    def op(self) -> Op:
+        return Op.from_strategy(self)
+
+    # def __rshift__(self, data: OMType) -> Op:
+    #     if not isinstance(data, Op | nn.Module):
+    #         return NotImplemented
+    #     return Op(self.op, data)
+
+    # def __rrshift__(self, data: Any) -> Any:
+    #     if isinstance(data, nn.Module | Op):
+    #         return Op(data, self.op)
+
+    #     return self(data)
+
+    def lparallelize(self, data: OMType) -> Op:
+        return Op([self.op]) << data
+    
+    def rparallelize(self, data: OMType) -> Op:
+        return data << Op([self.op])
+
+    # def __lshift__(self, data: OMType) -> Op:
+    #     """
+    #     self << (op | nn.Module)   : A new op with parallel strategy, which has a single element. 
+    #         This makes the new op broadcastable to other parallel strategies.
+    #         Note if data is an `op` with parallel strategy, this should not be called and the right hand side implementation should be called instead.
+    #     """
+    #     if not isinstance(data, nn.Module | Op):            
+    #         return NotImplemented
+    #     return Op([self.op]) << data
+        
+    # def __rlshift__(self, data: nn.Module) -> Op:
+    #     """
+    #     module << self    : A new `op` with parallel strategy (`Op([module >> self])`).
+    #     op << self        : Same as module, possibly reachable if Op has a different strategy.
+    #     any << self       : Currently not supported
+    #     """
+    #     if not isinstance(data, nn.Module | Op):
+    #         return NotImplemented
+    #     return data << Op([self.op])
 
     def _copy(self):
-        return type(self)(self.op)
+        out = type(self)(self._op)
+        out._condition = self._condition
+        out._else_ = self._else_
+        return out
 
     def using(self, data: Any) -> Any:
-        return conjure(self.op, data)
+        return conjure(self._op, data)
 
     def __repr__(self):
-        return f"{self.op!r}"
+        return f"{self._op!r}"
 
 
 class _OpCallable(_OpStrategy):
     """ 
-    Op Strategy when `op` is a Callable. E.g.:
+    Op Strategy when `op` is a Callable.out._condition = self._condition
+        out._else_ = self._else_
+        return out E.g.:
     
     ```python
     data >> Op(torch.cat, [X[0], X[1]], dim=1)
@@ -700,8 +696,31 @@ class _OpCallable(_OpStrategy):
         self.op = op
         self.args = A(*args, **kwargs)
 
+    def lparallelize(self, data: OMType) -> Op:
+        return Op([Op.from_strategy(self)]) << data
+
+    def rparallelize(self, data: OMType) -> Op:
+        return data << Op([Op.from_strategy(self)])
+
+    # def __lshift__(self, data: OMType) -> Op:
+    #     """ Same logic as `_OpX`."""
+    #     if not isinstance(data, nn.Module | Op):
+    #         return NotImplemented
+
+    #     return Op([Op.from_strategy(self)]) << data
+        
+    # def __rlshift__(self, data: OMType) -> Op:
+    #     """ Same logic as `_OpX`."""
+    #     if not isinstance(data, nn.Module | Op):
+    #         return NotImplemented
+
+    #     return data << Op([Op.from_strategy(self)])
+
     def _copy(self):
-        return type(self)(self.op, *self.args.args, **self.args.kwargs)
+        out = type(self)(self.op, *self.args.args, **self.args.kwargs)
+        out._condition = self._condition
+        out._else_ = self._else_
+        return out
     
     def using(self, data: Any) -> Any:
         resolved = data >> self.args
@@ -737,28 +756,76 @@ class _OpSerial(_OpStrategy):
 
     which is the same as `Op(linear1, linear2)`. This calls each op in sequence.
     """
-    def __init__(self, *args: Op) -> None:
+    def __init__(self, *args: OMType) -> None:
+        ops = []
         for op in args:
-            if not isinstance(op, Op):
-                raise ValueError("All arguments must be of type `Op`.")
-        self.ops = args
+            if isinstance(op, nn.Module):
+                op = op(X)
+            elif not isinstance(op, Op):
+                raise ValueError("All arguments must be of type `Op`, `nn.Module`.")
+            ops.append(op)
 
-    def _copy(self):
-        return type(self)(*self.ops)
+        self.ops = ops
+
+    def lparallelize(self, data: OMType) -> Op:
+        if self._condition is not None:
+            raise ValueError("Cannot parallelize op bound to a Serial op with condition.")
+
+        if len(self.ops) == 1:
+            return self.ops[0] << data
+            
+        left = self._copy(self.ops[:-1])
+        right = self.ops[-1]
+        return Op(Op.from_strategy(left), right << data)
+
+    def rparallelize(self, data: OMType) -> Op:
+        if self._condition is not None:
+            raise ValueError("Cannot parallelize op bound to a Serial op with condition.")
+
+        if len(self.ops) == 1:
+            return data << self.ops[0]
+        
+        right = self._copy(self.ops[1:])
+        left = Op(self.ops[0])
+        return Op(data << left, Op.from_strategy(right))
+
+        
+    # def __rlshift__(self, data: OMType) -> Op:
+    #     if not isinstance(data, Op | nn.Module):
+    #         return NotImplemented
+
+    #     right = self._copy(self.ops[1:])
+    #     left = Op(self.ops[0])
+
+    #     if self._condition is not None:
+    #         left = left.if_(self._condition, self._else_)
+        
+    #     return Op(data << left, right)
+
+    def _copy(self, ops: Optional[list[Op]] = None):
+        if ops is None:
+            ops = self.ops
+        out = type(self)(*ops)
+        out._condition = self._condition
+        out._else_ = self._else_
+        return out
     
     def using(self, data: Any) -> Any:
         for op in self.ops:
             data = op.using(data)
         return data
 
-    def __rshift__(self, data: Op) -> _OpSerial:
-        return _OpSerial(*self.ops, data)
+    def __iter__(self):
+        return iter(self.ops)
+    
+    def __len__(self):
+        return len(self.ops)
 
     def __repr__(self):
         return f"\n  {'\n  >> '.join(map(repr, self.ops))}\n"
 
 
-class _OpParallel(_OpStrategy):
+class _OpParallel(_OpSerial):
     """ 
     Apply consecutive ops in parallel. When an op is added to the list, 
 
@@ -768,37 +835,38 @@ class _OpParallel(_OpStrategy):
 
     which is the same as `Op(linear1, linear2)`. This calls each op in parallel.
     """
-    def __init__(self, *args: list[Op]) -> None:
-        for arg in args:
-            if not isinstance(arg, Op) or not all(isinstance(item, Op) for item in arg):
-                raise ValueError("All arguments must be of a list of type `Op`.")
+    def lparallelize(self, data: OMType) -> Op:
+        """
+        If `data` is of type `Op`, only know how to handle other `Op` with parallel strategy.
+        """
+        if isinstance(data, Op):
+            if not isinstance(data.strategy, _OpParallel):
+                return NotImplemented
+        else:
+            return NotImplemented
+                    
+        right = list(data.strategy)
+        if len(right) == 1:
+            right = right * len(self)
 
-        lengths = {len(arg) for arg in args}
-        lengths.discard(1)
-        if len(lengths) != 1:
-            raise ValueError(
-                "All arguments to `Op/_OpParallel` strategy must have the same length."
-            )
-            
-        self.ops = args
-
-    def _copy(self):
-        pass
-
-    def using(self, data: Any) -> Any:
-        if self.wire is None:
-            raise ValueError("`wire` must be provided to `Op/_OpParallel` strategy.")
+        left = list(self)
+        if len(left) == 1:
+            left = left * len(right)
         
-        for serial_ops in zip(*self.ops):
-            for op in serial_ops:
-                data = op.using(data)
-        
-            data >> self.wire
-            data = op.using(data)
-        return data
+        if len(left) != len(right):
+            raise ValueError("`<<` must have ops with broadcastable sizes.")
 
+        out = self._copy([l >> r for l, r in zip(left, right)])
+        return Op.from_strategy(out)
+    
+    def rparallelize(self, data: nn.Module) -> Op:  # type: ignore[override]
+        """
+        This should never be reached
+        """            
+        return NotImplemented        
+    
     def __repr__(self):
-        pass
+        return f"\n  {'\n  << '.join(map(repr, self.ops))}\n"
 
 
 class Wiring(enum.Enum):

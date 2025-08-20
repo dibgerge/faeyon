@@ -4,6 +4,7 @@ from faeyon import A, X, FVar, FList, FDict, FMMap, Op, Wire, Wiring
 from faeyon.magic.spells import conjure
 import pytest
 from tests.common import ConstantLayer
+from faeyon.magic.spells import _OpParallel, _OpCallable
 
 
 class TestX:
@@ -316,7 +317,7 @@ class TestFList:
         assert len(flist) == 1
 
 
-class TestFDict:
+class TestFDict:    
     def test_init_no_args(self):
         fdict = FDict()
         assert +fdict == {}
@@ -410,6 +411,9 @@ class Test_Variable:
 
 
 class TestOp:
+    @staticmethod
+    def func(x: list) -> list:
+        return [i + 1 for i in x]
 
     def test_init_error1(self):
         """ Cannot initialize Op with more than one argument if first argument is X. """
@@ -444,6 +448,116 @@ class TestOp:
         out = data >> Op(X[1:])
         assert out == [2, 3]
 
+    def test_usage_callable(self):
+        expected = torch.tensor([1, 2, 3])
+        out = [1, 2, 3] >> Op(torch.tensor, X)
+        torch.testing.assert_close(out, expected)
+
+    def test_lshift_opx_opx(self):
+        data = [1, 2, 3]
+        delayed = Op(X[1:]) << Op(X[1:])
+        assert isinstance(delayed, Op)
+        assert isinstance(delayed.strategy, _OpParallel)
+        out = data >> delayed
+        assert out == [3]
+
+    def test_lshift_opx_opcallable(self):
+        out = [1, 2, 3] >> (Op(X[1:]) << Op(self.func, X))
+        assert out == [3, 4]
+
+    def test_lshift_opx_opserial(self):
+        delayed = Op(X[1:]) << (Op(self.func, X) >> Op(X + [10]))
+        out = [1, 2, 3] >> delayed
+        assert out == [3, 4, 10]
+
+    def test_lshift_opx_oparallel(self):
+        """
+        Op(X) << OP([X1, X2]) ---> X >> X1 >> X >> X2
+        """
+        delayed = (
+            Op(X[1:]) 
+            << Op([
+                Op(self.func, X) >> Op(self.func, X),
+                Op(self.func, X) >> Op(X + [10]),
+            ])
+        )
+        out = [1, 2, 3] >> delayed
+        assert out == [6, 10]
+
+    def test_lshift_opserial_opx(self):
+        delayed = Op(X[1:]) >> Op(self.func, X + [10]) << Op(X[1:])
+        out = [1, 2, 3] >> delayed
+        assert out == [4, 11]
+    
+    def test_lshift_opserial_opserial(self):
+        delayed1 = Op(X[1:]) >> Op(self.func, X + [10])
+        delayed2 = Op(X[1:]) >> Op(self.func, X + [20])
+
+        out = [1, 2, 3] >> (delayed1 << delayed2)
+        assert out == [5, 12, 21]
+    
+    def test_lshift_opserial_opparallel(self):
+        delayed = (
+            Op(X[1:]) 
+            >> Op(self.func, X + [10])
+            << Op([Op(self.func, X), Op(self.func, X)]))
+
+        out = [1, 2, 3] >> delayed
+        assert out == [6, 7, 14, 12]
+    
+    def test_lshift_opparallel_opx(self):
+        delayed = Op([Op(self.func, X), Op(self.func, X)]) << Op(X[1:])
+        out = [1, 2, 3] >> delayed
+        assert out == [5]
+        
+    def test_lshift_opparallel_opserial(self):
+        """f(x) >> X[1:] >> f(x) >> X[1:] >> f(x + [10])"""
+        delayed = (
+            Op([Op(self.func, X), Op(self.func, X)])
+            << (
+                Op(X[1:]) 
+                >> Op(self.func, X + [10])
+            )
+        )
+        out = [1, 2, 3] >> delayed
+        assert out == [6, 11]
+
+    def test_lshift_opparallel_opparallel(self):
+        """f(x) >> X[1:] >> f(x) >> f(x + [10])"""
+        delayed = (
+            Op([Op(self.func, X), Op(self.func, X)])
+            << Op([Op(X[1:]), Op(self.func, X + [10])])
+        )
+        out = [1, 2, 3] >> delayed
+        assert out == [5, 6, 11] 
+
+    def test_lshift_opparallel_opparallel_broadcast(self):
+        """ f(x) >> X[1:] >> f(x) >> f(x + [10])"""
+        delayed = (
+            Op([Op(self.func, X)])
+            << Op([Op(X[1:]), Op(self.func, X + [10])])
+        )
+        out = [1, 2, 3] >> delayed
+        assert out == [5, 6, 11] 
+
+    def test_lshift_opparallel_opparallel_err(self):
+        """ Cannot have incompatible sizes """
+        with pytest.raises(ValueError):
+            delayed = (
+                Op([Op(X[1:]), Op(X + [10])]) 
+                << Op([Op(X[1:]), Op(self.func, X), Op(X[1:])])
+            )
+
+    def test_lshift_module_op(self):
+        delayed = ConstantLayer(3, value=1.0) << Op(X[1:])
+        out = torch.tensor([1, 2, 3]) >> delayed
+        torch.testing.assert_close(out, torch.tensor([2., 3.]))
+
+    def test_lshift_op_module(self):
+        delayed = Op(X[1:]) << ConstantLayer(2, value=1.0)
+        out = torch.tensor([1, 2, 3]) >> delayed
+        torch.testing.assert_close(out, torch.tensor([2., 3.]))
+ 
     @pytest.mark.parametrize("condition,else_,expected", [
         (True, None, [2, 3]),
         (False, None, [1, 2, 3]),
@@ -454,7 +568,8 @@ class TestOp:
     ])
     def test_if_(self, condition, else_, expected):
         data = [1, 2, 3]
-        out = data >> Op(X[1:]).if_(condition, else_=else_)
+        delayed = Op(X[1:]).if_(condition, else_=else_)
+        out = data >> delayed
         assert out == expected
 
     def test_delayed_op_op(self):
@@ -728,6 +843,18 @@ class TestOp:
     def test_repr(self):
         op = Op(X[1].a)
         assert str(op) == "Op(X[1].a)"
+
+
+class Test_OpCallable:
+    def test_repr(self):
+        def func(x):
+            return x
+        op = _OpCallable(func, X[2])
+        assert str(op) == "func(X[2])"
+
+    def test_repr_module(self):
+        op = _OpCallable(ConstantLayer(2, value=1.0), X[2])
+        assert str(op) == "ConstantLayer()(X[2])"
 
 
 class TestWire:

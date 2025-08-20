@@ -133,3 +133,4 @@ scratch/
 /.test_coverage/
 /stubs/
 .VSCodeCounter/
+try*.py

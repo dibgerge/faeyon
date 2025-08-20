@@ -229,7 +229,6 @@ def delayed_binary_method[T: nn.Module](op_name: str) -> Callable[[T, nn.Module]
     right type's operator.
     """
     def func(self: T, other: nn.Module) -> Op:
-        print("----- here", op_name, other)
         if isinstance(other, nn.Module):
             return getattr(self(X), op_name)(other(X))
         
