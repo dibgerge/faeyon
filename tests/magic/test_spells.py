@@ -557,7 +557,23 @@ class TestOp:
         delayed = Op(X[1:]) << ConstantLayer(2, value=1.0)
         out = torch.tensor([1, 2, 3]) >> delayed
         torch.testing.assert_close(out, torch.tensor([2., 3.]))
- 
+
+    def test_lshift_data_error(self):
+        """ No support for << with data input"""
+        with pytest.raises(TypeError):
+            [1, 2, 3] << Op(X)
+
+    def test_lshift_if_error(self):
+        """ Cannot have condition when using << on Serial Op"""
+        with pytest.raises(ValueError):
+            sop = (Op(X[1:]) >> Op(X[1:])).if_(Op(X[0] > 1))
+            sop << Op(X[1:])
+
+    def test_lshift_if_ok(self):
+         delayed = Op([Op(self.func, X), Op(self.func, X)]) << Op(X[1:]).if_(False)
+         out = [1, 2, 3] >> delayed
+         assert out == [3, 4, 5]
+         
     @pytest.mark.parametrize("condition,else_,expected", [
         (True, None, [2, 3]),
         (False, None, [1, 2, 3]),

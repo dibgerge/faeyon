@@ -425,8 +425,6 @@ class Op:
                 raise ValueError("`op` cannot be a `list` if `args` or `kwargs` are provided.")
             self.strategy = _OpParallel(*op)
         elif isinstance(op, Callable):  # type: ignore[arg-type]
-            # Need to resolve arguments first to check if they have any parallel Ops
-
             self.strategy = _OpCallable(op, *args, **kwargs)
         else:
             raise ValueError("Arguments should be of type `X`, `Op`, or Callable.")
@@ -456,13 +454,11 @@ class Op:
         if not isinstance(data, Op | nn.Module):
             return NotImplemented
         return Op(self, data)
-        # return self.strategy >> data
         
     def __rrshift__(self, data: Any) -> Any:
         if isinstance(data, nn.Module | Op):
             return Op(data, self)
         return self.using(data)
-        # return data >> self.strategy
 
     def __lshift__(self, data: OMType) -> Op:
         if isinstance(data, nn.Module):
@@ -477,29 +473,6 @@ class Op:
             return out
         
         return NotImplemented
-            
-
-        # if isinstance(self.strategy, _OpX | _OpCallable):
-            
-        # if isinstance(self.strategy, (_OpCallable, _OpX)):
-        #     left = Op([self])
-        # elif isinstance(self.strategy, _OpSerial):
-        #     last = Op([self.strategy.ops[-1]])
-
-        #     if len(self.strategy) > 1:
-        #         first = self.strategy.ops[:-1]
-
-        
-
-        # if isinstance(data, nn.Module):
-        #     right = Op([data])
-
-        # if isinstance(self.strategy, (_OpParallel, _OpX)):
-        #     return Op([self]) << data
-            
-        # return Op([self]) << data
-
-        # return self.strategy << data
 
     def __rlshift__(self, data: nn.Module) -> Op:
         if isinstance(data, nn.Module):
@@ -571,31 +544,6 @@ class _OpStrategy(ABC):
         out._else_ = else_
         return out
 
-    # def __rshift__(self, data: OMType) -> Op:
-    #     """
-    #     self >> (op | nn.Module)   : A new op with Serial strategy. 
-    #     """
-    #     if not isinstance(data, Op | nn.Module):
-    #         return NotImplemented
-    #     return Op(Op.from_strategy(self), data)
-
-    # def __rrshift__(self, data: Any) -> Any:
-    #     """
-    #     (module | Op) >> self   : A new `op` with serial strategy.
-    #     any >> self             : Consider this as data and resolve the op.
-    #     """
-    #     if isinstance(data, nn.Module | Op):
-    #         return Op(data, Op.from_strategy(self))
-    #     return self(data)
-
-    # @abstractmethod
-    # def __lshift__(self, data: OMType) -> Op:
-    #     raise NotImplementedError
-
-    # @abstractmethod
-    # def __rlshift__(self, data: Any) -> Any:
-    #     raise NotImplementedError
-
     @abstractmethod
     def lparallelize(self, data: OMType) -> Op:
         pass
@@ -632,42 +580,11 @@ class _OpX(_OpStrategy):
     def op(self) -> Op:
         return Op.from_strategy(self)
 
-    # def __rshift__(self, data: OMType) -> Op:
-    #     if not isinstance(data, Op | nn.Module):
-    #         return NotImplemented
-    #     return Op(self.op, data)
-
-    # def __rrshift__(self, data: Any) -> Any:
-    #     if isinstance(data, nn.Module | Op):
-    #         return Op(data, self.op)
-
-    #     return self(data)
-
     def lparallelize(self, data: OMType) -> Op:
         return Op([self.op]) << data
     
     def rparallelize(self, data: OMType) -> Op:
         return data << Op([self.op])
-
-    # def __lshift__(self, data: OMType) -> Op:
-    #     """
-    #     self << (op | nn.Module)   : A new op with parallel strategy, which has a single element. 
-    #         This makes the new op broadcastable to other parallel strategies.
-    #         Note if data is an `op` with parallel strategy, this should not be called and the right hand side implementation should be called instead.
-    #     """
-    #     if not isinstance(data, nn.Module | Op):            
-    #         return NotImplemented
-    #     return Op([self.op]) << data
-        
-    # def __rlshift__(self, data: nn.Module) -> Op:
-    #     """
-    #     module << self    : A new `op` with parallel strategy (`Op([module >> self])`).
-    #     op << self        : Same as module, possibly reachable if Op has a different strategy.
-    #     any << self       : Currently not supported
-    #     """
-    #     if not isinstance(data, nn.Module | Op):
-    #         return NotImplemented
-    #     return data << Op([self.op])
 
     def _copy(self):
         out = type(self)(self._op)
@@ -701,20 +618,6 @@ class _OpCallable(_OpStrategy):
 
     def rparallelize(self, data: OMType) -> Op:
         return data << Op([Op.from_strategy(self)])
-
-    # def __lshift__(self, data: OMType) -> Op:
-    #     """ Same logic as `_OpX`."""
-    #     if not isinstance(data, nn.Module | Op):
-    #         return NotImplemented
-
-    #     return Op([Op.from_strategy(self)]) << data
-        
-    # def __rlshift__(self, data: OMType) -> Op:
-    #     """ Same logic as `_OpX`."""
-    #     if not isinstance(data, nn.Module | Op):
-    #         return NotImplemented
-
-    #     return data << Op([Op.from_strategy(self)])
 
     def _copy(self):
         out = type(self)(self.op, *self.args.args, **self.args.kwargs)
@@ -789,19 +692,6 @@ class _OpSerial(_OpStrategy):
         left = Op(self.ops[0])
         return Op(data << left, Op.from_strategy(right))
 
-        
-    # def __rlshift__(self, data: OMType) -> Op:
-    #     if not isinstance(data, Op | nn.Module):
-    #         return NotImplemented
-
-    #     right = self._copy(self.ops[1:])
-    #     left = Op(self.ops[0])
-
-    #     if self._condition is not None:
-    #         left = left.if_(self._condition, self._else_)
-        
-    #     return Op(data << left, right)
-
     def _copy(self, ops: Optional[list[Op]] = None):
         if ops is None:
             ops = self.ops
@@ -860,9 +750,7 @@ class _OpParallel(_OpSerial):
         return Op.from_strategy(out)
     
     def rparallelize(self, data: nn.Module) -> Op:  # type: ignore[override]
-        """
-        This should never be reached
-        """            
+        """ This should never be reached. """
         return NotImplemented        
     
     def __repr__(self):

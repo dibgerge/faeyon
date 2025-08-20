@@ -164,6 +164,14 @@ def test_rrshift_with_faeargs():
     assert y.shape == (1, 2)
 
 
+def test_lshift():
+    layer1 = nn.Linear(in_features=10, out_features=2)
+    layer2 = nn.Linear(in_features=2, out_features=2)
+    x = torch.randn(1, 10)
+    y = x >> (layer1 << layer2)
+    assert y.shape == (1, 2)
+
+
 @pytest.mark.parametrize("op,expected", [
     ("add", [[2.0, 2.0]]), 
     ("sub", [[0.0, 0.0]]),
