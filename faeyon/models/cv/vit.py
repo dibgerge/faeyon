@@ -9,7 +9,7 @@ from faeyon.nn import (
     head_to_attn_mask,
     Concat
 )
-from faeyon import A, X, Op, FDict, FList, Wiring
+from faeyon import A, X, W, Op, FDict, FList
 
 
 class ViTBlock(nn.Module):
@@ -140,6 +140,22 @@ class ViT(nn.Module):
             dropout=dropout,
             lnorm_eps=lnorm_eps,
         ))
+
+        self.blocks2 = FaeBlock({
+            "lnorm_in": nn.LayerNorm(embed_size, eps=lnorm_eps),
+            "lnorm_out": nn.LayerNorm(embed_size, eps=lnorm_eps),
+            "linear1": nn.Linear(embed_size, mlp_size),
+            "linear2": nn.Linear(mlp_size, embed_size),
+            "dropout": nn.Dropout(dropout),
+            "attention": nn.MultiheadAttention(
+                embed_dim=embed_size,
+                num_heads=heads,
+                batch_first=True,
+                dropout=dropout,
+            ),
+            "gelu": nn.GELU(),
+        }, repeat=num_layers)
+
         self.dropout = nn.Dropout(dropout)
         self.classifier = nn.Linear(embed_size, 1000)
         self.lnorm = nn.LayerNorm(embed_size, eps=lnorm_eps)
@@ -200,7 +216,7 @@ class ViT(nn.Module):
                 return_hidden_states=return_hidden_states
             )
             >> self.blocks.reset().wire(
-                X[0] if return_hidden_states or return_attention_weights else X, head_mask=Wiring.Fanout).report(
+                X[0] if return_hidden_states or return_attention_weights else X, head_mask=W.Fanout).report(
                 hidden_states @ X[1]["hidden_states"], 
                 attention_weights @ X[1]["attention_weights"]
             )

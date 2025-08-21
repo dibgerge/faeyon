@@ -1,8 +1,8 @@
 import pytest
 import torch
 from torch import nn
-from faeyon.nn import FaeSequential
-from faeyon import A, X, Wiring, FVar, FList, FDict, FMMap
+from faeyon.nn import FaeSequential, FaeModuleList, FaeBlock
+from faeyon import A, X, W, FVar, FList, FDict, FMMap
 
 
 @pytest.fixture
@@ -54,7 +54,7 @@ class TestFaeSequential:
         out = (
             A(x, y, mask=mask) 
             >> advanced_model
-                .wire(x=X[0], y=Wiring.Fanout)
+                .wire(x=X[0], y=W.Fanout)
         )
 
         assert isinstance(out, tuple)
@@ -80,7 +80,7 @@ class TestFaeSequential:
         out = (
             A(x, y, mask=mask) 
             >> advanced_model
-                .wire(x=X[0], y=Wiring.Fanout)
+                .wire(x=X[0], y=W.Fanout)
                 .report(var @ X[0])
         )
         torch.testing.assert_close(+var, expected)
@@ -93,7 +93,7 @@ class TestFaeSequential:
         out = (
             A(x, y, mask=mask) 
             >> advanced_model
-                % A(x=X[0], y=Wiring.Fanout)
+                % A(x=X[0], y=W.Fanout)
                 % (var @ X[1])
         )
 
@@ -102,3 +102,27 @@ class TestFaeSequential:
         torch.testing.assert_close(out[0], torch.tensor([1.4, 0.0]))
         torch.testing.assert_close(out[1], torch.tensor([1.0, 1.0]))
         torch.testing.assert_close(+var, torch.tensor([1.0, 1.0]))
+
+
+class TestFaeModuleList:
+    def test_forward(self):
+        model = FaeModuleList(nn.Linear(2, 2), 2)
+        x = torch.randn(1, 2)
+        out = x >> model(X)
+        assert out.shape == (1, 2)
+
+    def test_forward_with_mux(self):
+        model = FaeModuleList(nn.Linear(2, 2), 2)
+        out = [1, torch.randn(1, 2)] >> model(W.Mux(X[1], X))
+        assert out.shape == (1, 2)
+
+
+class TestFaeBlock:
+    def test_usage(self):
+        block = FaeBlock({
+            "linear1": nn.Linear(3, 2),
+            "linear2": nn.Linear(2, 3)
+        }, repeats=2)
+        x = torch.randn(1, 3)
+        out = x >> (block.linear1 << block.linear2)
+        assert out.shape == (1, 3)

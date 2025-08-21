@@ -4,7 +4,7 @@ from torch import nn
 from typing import Any, Optional, overload, Iterator
 from collections import OrderedDict
 
-from faeyon.magic.spells import ContainerBase, Wire, X, A, Op
+from faeyon.magic.spells import ContainerBase, Wire, X, A, Op, Wiring
 
 
 class FaeSequential(nn.Module):
@@ -106,13 +106,17 @@ class FaeModuleList(nn.Module):
     def __init__(self, module: nn.Module, repeats: int) -> None:
         super().__init__()
         self.mlist = nn.ModuleList(module * repeats)
-        
-    def __rshift__(self, other: Any) -> Any:
-        if isinstance(other, FaeBlock): pass
-
-    def forward(self, *args: Any, **kwargs: Any) -> Any:
-        
-        pass        
+    
+    def __call__(self, *args: Any, **kwargs: Any) -> Op:
+        ops = []
+        for i, layer in enumerate(self.mlist):
+            layer_args = [arg[i] if isinstance(arg, Wiring) else arg for arg in args]
+            layer_kwargs = {
+                k: arg[i] if isinstance(arg, Wiring) else arg 
+                for k, arg in kwargs.items()
+            }
+            ops.append(layer(*layer_args, **layer_kwargs))
+        return Op(ops)
 
 
 class FaeBlock(nn.Module):
@@ -131,5 +135,3 @@ class FaeBlock(nn.Module):
             else:
                 # TODO: Handle non-module components
                 raise NotImplementedError("Non-module components are not supported yet.")
-
-        

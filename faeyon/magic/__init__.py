@@ -6,7 +6,7 @@ from .spells import (
     FVar,
     Op,
     Wire,
-    Wiring
+    W
 )
 from .faek import faek
 from .x import X

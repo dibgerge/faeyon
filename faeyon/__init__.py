@@ -8,7 +8,7 @@ from .magic import (
     FVar,
     Op,
     Wire,
-    Wiring,
+    W,
 )
 
 from . import models

@@ -1,10 +1,11 @@
 from __future__ import annotations
+import sys
 import inspect
 import enum
 import itertools
 import operator
 from collections.abc import Callable, Iterator
-from typing import Any, Optional, overload, ForwardRef, Union
+from typing import Any, Optional, overload, Union
 from abc import ABC, abstractmethod
 from collections import defaultdict
 
@@ -757,17 +758,50 @@ class _OpParallel(_OpSerial):
         return f"\n  {'\n  << '.join(map(repr, self.ops))}\n"
 
 
-class Wiring(enum.Enum):
+class W(enum.Enum):
     Fanout = "Fanout"
-    Passthru = "Passthru"
-    InOut = "InOut"
+    Pass = "Pass"
+    Mux = "Mux"
 
-    def __getitem__(self, key: str) -> Any:
-        pass
-    
     def __call__(self, *args, **kwargs) -> Any:
+        cls = getattr(sys.modules[__name__], f"_{self.name}")
+        return cls(*args, **kwargs)
+
+
+class Wiring(ABC):
+    @abstractmethod
+    def __getitem__(self, key: int) -> Any:
         pass
+
+
+class _Fanout(Wiring):
+    def __init__(self, obj: Any) -> None:
+        self.obj = obj
+
+    def __getitem__(self, key: int) -> Any:
+        """ Basic usage of Fanout only needs to support integer keys, and no slices."""
+        return self.obj[key]
+
+
+class _Pass(Wiring):
+    def __init__(self, obj: Any) -> None:
+        self.obj = obj
+
+    def __getitem__(self, key: int) -> Any:
+        return self.obj
+
+
+class _Mux(Wiring):
+    def __init__(self, s0: Any, s1: Any) -> None:
+        self.s0 = s0
+        self.s1 = s1
+
+    def __getitem__(self, key: int) -> Any:
+        if key == 0:
+            return self.s0
         
+        return self.s1
+
 
 class Wire:
     _fanout: dict[str, Iterator]
@@ -794,14 +828,14 @@ class Wire:
         for k, v in bound.arguments.items():
             if k not in given_wire.arguments:
                 given_wire.arguments[k] = v
-            elif not isinstance(given_wire.arguments[k], Wiring):
+            elif not isinstance(given_wire.arguments[k], W):
                 continue
                 
             match(given_wire.arguments[k]):
-                case Wiring.Fanout:
+                case W.Fanout:
                     self._fanout[k] = iter(v)
                     bound.arguments[k] = next(self._fanout[k])
-                case Wiring.Passthru:
+                case W.Pass:
                     given_wire.arguments[k] = v
 
         self._current_wire = given_wire

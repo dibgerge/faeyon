@@ -1,6 +1,6 @@
 import inspect
 import torch
-from faeyon import A, X, FVar, FList, FDict, FMMap, Op, Wire, Wiring
+from faeyon import A, X, FVar, FList, FDict, FMMap, Op, Wire, W
 from faeyon.magic.spells import conjure
 import pytest
 from tests.common import ConstantLayer
@@ -891,14 +891,14 @@ class TestWire:
         assert out.kwargs == {}
     
     def test_init_with_fanout(self, sig):
-        wire = Wire(x=X, y=Wiring.Fanout)
+        wire = Wire(x=X, y=W.Fanout)
         out = wire.init(sig, 1, y=[10, 11])
         assert set(wire._fanout.keys()) == {"y"}
         assert out.args == (1, 10)
         assert out.kwargs == {}
 
     def test_init_with_passthru(self, sig):
-        wire = Wire(x=Wiring.Passthru, y=Wiring.Passthru)
+        wire = Wire(x=W.Pass, y=W.Pass)
         out = wire.init(sig, 1, 2)
         assert wire._fanout == {}
         assert out.args == (1, 2)
@@ -916,7 +916,7 @@ class TestWire:
         assert out.kwargs == {}
 
     def test_step_with_fanout(self, sig):
-        wire = Wire(x=X, y=Wiring.Fanout)
+        wire = Wire(x=X, y=W.Fanout)
         wire.init(sig, 1, y=[10, 11])
         out = wire.step(2)        
         assert out.args == (2, 11)
@@ -935,7 +935,7 @@ class TestWire:
             wire.step(1)
 
     def test_step_with_fanout_overflow(self, sig):
-        wire = Wire(x=X, y=Wiring.Fanout)
+        wire = Wire(x=X, y=W.Fanout)
         wire.init(sig, 1, y=[10, 11])
         with pytest.raises(ValueError):
             wire.step(2)
