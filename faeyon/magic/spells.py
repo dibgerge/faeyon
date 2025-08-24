@@ -215,7 +215,14 @@ class ContainerBase(Delayable, ABC):
     def __init__(self, *args) -> None:
         self._expression: Optional[X | Op] = None
         self._value = _Variable(*args)
+        # parent is used when morphing to higher type container, we need to make sure parent is morphed too. Current setup has only two level tree (fvar -> fdict/flist, )
+        self._parents: list[ContainerBase] = []
 
+    def morph(self, tobj: type[ContainerBase]) -> None:
+        self.__class__ = tobj
+        for parent in self._parents:
+            parent.morph(tobj)
+        
     @property
     def value(self) -> Any:
         return self._value.value
@@ -256,10 +263,23 @@ class ContainerBase(Delayable, ABC):
     ) -> T | ContainerBase:
         if target is None:
             target = type(self)()
-        
+
         for k, v in target.__dict__.items():
-            setattr(target, k, getattr(self, k, None))
+            if k == "_parents":
+                target._parents = list(self._parents)
+            else:
+                setattr(target, k, getattr(self, k, None))
+        
         return target
+
+    def if_(
+        self, 
+        condition: bool | X | Delayable, 
+        else_: Optional[Delayable] = None
+    ) -> ContainerBase:
+        out = super().if_(condition, else_)
+        out._parents.append(self)
+        return out
         
     @abstractmethod
     def _set(self, data: Any) -> None:
@@ -314,7 +334,9 @@ class ContainerBase(Delayable, ABC):
 
 class FVar(ContainerBase):
     """
-    `FVar` holds a single value. If it is morphable, then it can be converted to a `FList` or `FDict` if requesting a key when it is empty, or adding a new value if another already exists.
+    `FVar` holds a single value. If it is morphable, then it can be converted to a `FList` 
+    or `FDict` if requesting a key when it is empty, or adding a new value if another already
+    exists.
     """
     def __init__(self, morphable: bool = True) -> None:
         super().__init__()
@@ -325,13 +347,14 @@ class FVar(ContainerBase):
             raise ValueError("Cannot promote FVar to FDict from non-empty FVar.")
         self.value = {}
         self._key = None
-        self.__class__ = FDict  # type: ignore[assignment]
+        self.morph(FDict)
+        # self.__class__ = FDict  # type: ignore[assignment]
         return self[key]
         
     def _set(self, data: Any) -> None:
         if self.morphable and not self.is_empty:
             self.value = [self.value]
-            self.__class__ = FList  # type: ignore[assignment]
+            self.morph(FList)
             self._set(data)
         else:
             self.value = data
@@ -371,19 +394,15 @@ class KeyedContainer(ContainerBase):
     def __init__(self, **kwargs):
         super().__init__(kwargs)
         self._key = None
-        # parent is used when morphing a FDict to an FMMap, we need to make sure parent is 
-        # morphed too.
-        self._parent = None
 
     def __getitem__(self, key: str):
         if self._key is not None:
             raise KeyError(
                 f"Key has already been assigned to {self.__class__.__name__} and no data used yet."
             )
-
         out = self.copy()
         out._key = key
-        out._parent = self
+        out._parents.append(self)
         return out
 
     @abstractmethod
@@ -417,8 +436,9 @@ class FDict(KeyedContainer):
             for k, v in self.value.items():
                 mmap[k].append(v)
             self.value = mmap
-            self.__class__ = FMMap  # type: ignore[assignment]
-            self._parent.__class__ = FMMap
+            self.morph(FMMap)
+            # self.__class__ = FMMap  # type: ignore[assignment]
+            # self._parent.__class__ = FMMap
             self._set_item(data)
         else:
             self.value[self._key] = data

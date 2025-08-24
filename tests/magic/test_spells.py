@@ -247,6 +247,20 @@ class TestFVar:
             assert fvar.is_empty
         else:
             assert +fvar == expected
+    
+    def test_if_consistent(self):
+        """ 
+        Using if_ returns a copy of the fvar, but keeps the same underlying data, so 
+        the parent data will change also. However, with morphable objects, the current 
+        object might be morphed, but not the parent one, which might sometimes give wrong results, e.g. append to list can result in list of lists. Thus, we keep track of all parents from if and morph them too.
+        """
+        fvar = FVar(morphable=True)
+        2 >> fvar.if_(True)
+        3 >> fvar.if_(True)
+        4 >> fvar.if_(True)
+        5 >> fvar.if_(False)
+        assert isinstance(fvar, FList)
+        assert +fvar == [2, 3, 4] 
 
     def test_select_return_type(self):
         fvar = FVar(morphable=False)

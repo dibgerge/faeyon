@@ -28,7 +28,13 @@ class FState:
         return iter(self._states_.items())
     
     def collect(self):
-        return {k: +v for k, v in self}
+        out = {}
+        for k, v in self:
+            try:
+                out[k] = +v
+            except ValueError:
+                pass
+        return out
 
 
 def _new_instance(cls, *args, **kwargs):
