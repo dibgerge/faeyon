@@ -5,7 +5,6 @@ from transformers import ViTForImageClassification, AutoImageProcessor
 from datasets import load_dataset
 
 
-
 repo = "google/vit-base-patch16-224"
 hf_model = ViTForImageClassification.from_pretrained(repo)
 image_processor = AutoImageProcessor.from_pretrained(repo)
@@ -82,6 +81,3 @@ print(abs(y -  y_hf.logits).sum())
 print("\n Saved states")
 print(model.fstate.collect())
 
-# exported_program = torch.export.export(hf_model, (img,), strict=False)
-
-# print(exported_program)

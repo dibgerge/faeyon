@@ -52,22 +52,40 @@ def head_to_attn_mask(
     head_mask: Optional[torch.BoolTensor], 
     batch_size: int,
     src_len: int, 
-    tgt_len: int, 
+    tgt_len: int,
+    ravel: bool = False,
     num_layers: Optional[int] = None
 ) -> torch.Tensor | list[None] | None:
     """
     Applies selective masks to the attention weights of a multihead attention layer. This allows using masks for particular heads and reshapes the head to 
     the correct shape based on expected sequence shape.
 
+    H: Number of heads
+    L: Number of layers
+    B: Batch size
+    S: Source sequence length
+    T: Target sequence length
+
     Parameters
     ----------
     head_mask: torch.Tensor
-        Indicates which heads are masked and which aren't.
-        Should be of shape `(num_heads,)` or `(num_hidden_layers, num_heads)`.
+        Indicates which heads are masked and which aren't. Should be of shape `(H,)` or `(L, H)`.
+    
     Returns
     -------
+    list[None]
+        If `head_mask` is None and `num_layers` is given. The list has `num_layers` elements, 
+        all of which are `None`.
+    
+    None
+        If `head_mask` is None and `num_layers` is not given.
+
     torch.Tensor
-        Tensor of shape (num_hidden_layers, num_heads, src_len, tgt_len)
+        Tensor of transformed mask with the following possible shapes:
+        (L, B, H, S, T) : if number of layers if given or can be deduced from `head_mask`.
+        (B, H, S, T) : If number of layers is not known.
+        (L, B * H, S, T) if ravel is True and number of layers is known.
+        (B * H, S, T) otherwise
     """
     if head_mask is None:
         if num_layers is None:
@@ -89,6 +107,8 @@ def head_to_attn_mask(
             raise ValueError(
                 "Given `num_layers` does not match the first dimension of `head_mask`."
             )
+        if num_layers is None:
+            num_layers = shape[0]
             
     out = head_mask.view(-1, 1, num_heads, 1, 1).expand(-1, batch_size, num_heads, src_len, tgt_len)
 
@@ -97,5 +117,11 @@ def head_to_attn_mask(
             out = out.squeeze(0)
         else:
             out = out.expand(num_layers, *out.shape[1:])
+    
+    if ravel:
+        if num_layers is not None:
+            out = out.reshape(num_layers, -1, src_len, tgt_len)
+        else:
+            out = out.reshape(-1, src_len, tgt_len)
     
     return out

@@ -9,7 +9,7 @@ from faeyon.nn import (
     head_to_attn_mask,
     Concat
 )
-from faeyon import X, Op    
+from faeyon import W, X, Op    
 
 
 class ViT(nn.Module):
@@ -20,8 +20,6 @@ class ViT(nn.Module):
     - [ ] checkpointing
     - [ ] Loading pre-trained model
     """
-    # mask_token: Optional[nn.Parameter] = None
-    
     def __init__(
         self,
         embed_size: int,
@@ -96,7 +94,6 @@ class ViT(nn.Module):
         head_mask: Optional[torch.Tensor] = None,
         keep_attn_weights: bool = False,
         keep_hidden: bool = False,
-        interpolate: bool = False,
     ) -> torch.Tensor:
         """
         Let the sizes be:
@@ -115,6 +112,10 @@ class ViT(nn.Module):
         patch_mask: torch.BoolTensor
             Indicates which patches are masked (True) and which aren't (False).
             Should be of shape `(B, P)`.
+        
+        head_mask: torch.Tensor
+            Indicates which heads are masked. Should be of shape `(num_heads,)` 
+            or `(num_hidden_layers, num_heads)`.
         """
         cls_token = self.cls_token.expand(img.shape[0], -1, -1)
         attn_mask = Op(
@@ -122,15 +123,17 @@ class ViT(nn.Module):
             head_mask, 
             X.shape[0], 
             X.shape[1], 
-            X.shape[1], 
+            X.shape[1],
+            ravel=True,
             num_layers=self.num_layers
         )
+
         return (
             img 
             >> self.patch_embedding
-            >> (self.pos_embeddings(X.shape[2:]) >> Op(X.mT)) + (
+            >> (self.pos_embeddings(X.shape[2:]) >> X.mT) + (
                 self.mask_token(X, mask=patch_mask)
-                >> Op(X.flatten(-2).mT)
+                >> X.flatten(-2).mT
                 >> self.concat(cls_token, X, dim=1)
             )
             >> self.dropout
@@ -138,7 +141,11 @@ class ViT(nn.Module):
             >> (
                 Op(X) + (
                     self.blocks.lnorm_in
-                    << self.blocks.attention(X, X, X, need_weights=keep_attn_weights)
+                    << self.blocks.attention(
+                        X, X, X, 
+                        attn_mask=W.Fanout(attn_mask), 
+                        need_weights=keep_attn_weights
+                    )
                     << self.fstate.attn_weights.if_(keep_attn_weights) @ X[1]
                     << X[0]
                 )

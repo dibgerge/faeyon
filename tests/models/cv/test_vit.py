@@ -61,3 +61,8 @@ class TestViT:
         out = model(x, keep_attn_weights=True, keep_hidden=True)
         assert len(model.fstate.attn_weights) == 2
         assert len(model.fstate.hidden) == 3
+
+    def test_head_mask(self, model, x):
+        head_mask = torch.tensor([True, False])
+        out = model(x, head_mask=head_mask)
+        assert out.shape == (2, 1000)

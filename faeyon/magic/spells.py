@@ -776,6 +776,9 @@ class _Fanout(Wiring):
 
     def __getitem__(self, key: int) -> Any:
         """ Basic usage of Fanout only needs to support integer keys, and no slices."""
+        if isinstance(self.obj, Delayable):
+            return self.obj >> X[key]
+
         return self.obj[key]
 
 
