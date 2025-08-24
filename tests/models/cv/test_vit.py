@@ -26,13 +26,7 @@ def x():
 class TestViT:
     def test_vit_forward(self, model, x):
         out = model(x)
-        assert out.shape == (2, 1000)        # self.blocks = FaeSequential(*num_layers * ViTBlock(
-        #     num_heads=heads,
-        #     embed_dim=embed_size,
-        #     mlp_size=mlp_size,
-        #     dropout=dropout,
-        #     lnorm_eps=lnorm_eps,
-        # ))
+        assert out.shape == (2, 1000)        
 
     def test_vit_forward_hidden_states(self, model, x):
         out = model(x, keep_hidden=True)
