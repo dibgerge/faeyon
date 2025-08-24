@@ -1,10 +1,9 @@
 import inspect
 import torch
-from faeyon import A, X, FVar, FList, FDict, FMMap, Op, Wire, W
+from faeyon import A, X, FVar, FList, FDict, FMMap, Op, Wire, W, Serials, Parallels
 from faeyon.magic.spells import conjure
 import pytest
 from tests.common import ConstantLayer
-from faeyon.magic.spells import _OpParallel, _OpCallable
 
 
 class TestX:
@@ -56,6 +55,37 @@ class TestX:
         x = round(X[0] + 1)
         all_ops = [op[0] for op in x]
         assert all_ops == ["__getitem__", "__add__", "__round__"]
+
+    def test_rshift(self):
+        delayed = X >> X[1] + 1
+        assert isinstance(delayed, Serials)
+        assert len(delayed) == 2
+
+    @pytest.mark.parametrize("data,expected", [
+        ([1, 2, 3], 2),
+        (torch.tensor([1, 2, 3]), torch.tensor(2)),
+    ])
+    def test_rrshift(self, data, expected):
+        res = data >> X[1]
+        assert res == expected
+
+    def test_lshift(self):
+        delayed = X << X[1] + 1
+        assert isinstance(delayed, Parallels)
+        assert len(delayed) == 1
+        res = [1, 2, 3] >> delayed
+        assert res == 3
+
+    def test_rlshift(self):
+
+        def func(a):
+            return a + [10]
+
+        delayed = Op(func, X) << X[1] + 1
+        assert isinstance(delayed, Parallels)
+        assert len(delayed) == 1
+        res = [1, 2, 3] >> delayed
+        assert res == 3
 
     def test_repr_noops(self):
         assert str(X) == "X"
@@ -140,7 +170,12 @@ class TestA:
 
 
 class TestFVar:
-        
+    
+    def test_delayed(self):
+        fvar = FVar()
+        delayed = Op(X) >> fvar
+        assert isinstance(delayed, Serials)
+    
     def test_rrshift(self):
         fvar = FVar()
         2 >> fvar
@@ -165,7 +200,24 @@ class TestFVar:
         assert isinstance(fvar, FList)
         assert fvar.value == [2, 3]
         assert out == 3
+
+    def test_lshift(self):
+        fvar = FVar(morphable=True)
+        out = 2 >> (X << fvar)
+        assert +fvar == 2
         
+    def test_lshift_parallels(self):
+        fvar = FVar(morphable=True)
+        out = 2 >> (Parallels([X + 1, X + 1]) << fvar)
+        assert isinstance(fvar, FList)
+        assert +fvar == [3, 4]
+
+    def test_lshift_parallels_strict(self):
+        fvar = FVar(morphable=False)
+        out = 2 >> (Parallels([X + 1, X + 1]) << fvar)
+        assert isinstance(fvar, FVar)
+        assert +fvar == 4
+
     def test_using(self):
         """ `using` method is same as >> operator. """
         fvar = FVar(morphable=False)
@@ -225,7 +277,7 @@ class TestFVar:
     
     def test_select_raisesValueError_multiple_calls(self):
         """ 
-        Can only call once select on a strict FVar. 
+        Can only call once select on a non-morphable FVar. 
         """
         fvar = FVar(morphable=False)
         with pytest.raises(ValueError):
@@ -423,66 +475,42 @@ class TestOp:
         with pytest.raises(ValueError):
             Op(X, a=2)
     
-    def test_init_error2(self):
-        """ If first argument is `Op`, all arguments must be `Op` as well. """
-        with pytest.raises(ValueError):
-            Op(Op(X), 1)
-        
-    def test_init_error3(self):
-        """ Cannot have kwargs ig Op arugments are given """
-        with pytest.raises(ValueError):
-            Op(Op(X), Op(X), a=1)
-    
     def test_init_error4(self):
         """ Unsupported argument type"""
         with pytest.raises(ValueError):
             Op(1)
     
-    def test_usage(self):
-        data = [1, 2, 3]
-        out = data >> Op(X)
-        assert out == data
+    def test_rshift(self):
+        delayed = Op(X[1:]) >> Op(X[1:])
+        out = torch.tensor([1, 2, 3]) >> delayed
+        assert isinstance(delayed, Serials)
+        torch.testing.assert_close(out, torch.tensor([3]))
 
-    def test_usage2(self):
+    def test_rrshift_x(self):
         data = [1, 2, 3]
         out = data >> Op(X[1:])
         assert out == [2, 3]
-
-    def test_usage_callable(self):
+    
+    def test_rrshift_callable(self):
         expected = torch.tensor([1, 2, 3])
         out = [1, 2, 3] >> Op(torch.tensor, X)
         torch.testing.assert_close(out, expected)
 
-    def test_lshift_opx_opx(self):
+    def test_lshift_x_x(self):
         data = [1, 2, 3]
         delayed = Op(X[1:]) << Op(X[1:])
-        assert isinstance(delayed, Op)
-        assert isinstance(delayed.strategy, _OpParallel)
+        assert isinstance(delayed, Parallels)
         out = data >> delayed
         assert out == [3]
 
-    def test_lshift_opx_opcallable(self):
+    def test_lshift_x_callable(self):
         out = [1, 2, 3] >> (Op(X[1:]) << Op(self.func, X))
         assert out == [3, 4]
 
-    def test_lshift_opx_opserial(self):
+    def test_lshift_x_serials(self):
         delayed = Op(X[1:]) << (Op(self.func, X) >> Op(X + [10]))
         out = [1, 2, 3] >> delayed
         assert out == [3, 4, 10]
-
-    def test_lshift_opx_oparallel(self):
-        """
-        Op(X) << OP([X1, X2]) ---> X >> X1 >> X >> X2
-        """
-        delayed = (
-            Op(X[1:]) 
-            << Op([
-                Op(self.func, X) >> Op(self.func, X),
-                Op(self.func, X) >> Op(X + [10]),
-            ])
-        )
-        out = [1, 2, 3] >> delayed
-        assert out == [6, 10]
 
     def test_lshift_opserial_opx(self):
         delayed = Op(X[1:]) >> Op(self.func, X + [10]) << Op(X[1:])
@@ -496,84 +524,11 @@ class TestOp:
         out = [1, 2, 3] >> (delayed1 << delayed2)
         assert out == [5, 12, 21]
     
-    def test_lshift_opserial_opparallel(self):
-        delayed = (
-            Op(X[1:]) 
-            >> Op(self.func, X + [10])
-            << Op([Op(self.func, X), Op(self.func, X)]))
-
-        out = [1, 2, 3] >> delayed
-        assert out == [6, 7, 14, 12]
-    
-    def test_lshift_opparallel_opx(self):
-        delayed = Op([Op(self.func, X), Op(self.func, X)]) << Op(X[1:])
-        out = [1, 2, 3] >> delayed
-        assert out == [5]
-        
-    def test_lshift_opparallel_opserial(self):
-        """f(x) >> X[1:] >> f(x) >> X[1:] >> f(x + [10])"""
-        delayed = (
-            Op([Op(self.func, X), Op(self.func, X)])
-            << (
-                Op(X[1:]) 
-                >> Op(self.func, X + [10])
-            )
-        )
-        out = [1, 2, 3] >> delayed
-        assert out == [6, 11]
-
-    def test_lshift_opparallel_opparallel(self):
-        """f(x) >> X[1:] >> f(x) >> f(x + [10])"""
-        delayed = (
-            Op([Op(self.func, X), Op(self.func, X)])
-            << Op([Op(X[1:]), Op(self.func, X + [10])])
-        )
-        out = [1, 2, 3] >> delayed
-        assert out == [5, 6, 11] 
-
-    def test_lshift_opparallel_opparallel_broadcast(self):
-        """ f(x) >> X[1:] >> f(x) >> f(x + [10])"""
-        delayed = (
-            Op([Op(self.func, X)])
-            << Op([Op(X[1:]), Op(self.func, X + [10])])
-        )
-        out = [1, 2, 3] >> delayed
-        assert out == [5, 6, 11] 
-
-    def test_lshift_opparallel_opparallel_err(self):
-        """ Cannot have incompatible sizes """
-        with pytest.raises(ValueError):
-            delayed = (
-                Op([Op(X[1:]), Op(X + [10])]) 
-                << Op([Op(X[1:]), Op(self.func, X), Op(X[1:])])
-            )
-
-    def test_lshift_module_op(self):
-        delayed = ConstantLayer(3, value=1.0) << Op(X[1:])
-        out = torch.tensor([1, 2, 3]) >> delayed
-        torch.testing.assert_close(out, torch.tensor([2., 3.]))
-
-    def test_lshift_op_module(self):
-        delayed = Op(X[1:]) << ConstantLayer(2, value=1.0)
-        out = torch.tensor([1, 2, 3]) >> delayed
-        torch.testing.assert_close(out, torch.tensor([2., 3.]))
-
     def test_lshift_data_error(self):
         """ No support for << with data input"""
         with pytest.raises(TypeError):
             [1, 2, 3] << Op(X)
 
-    def test_lshift_if_error(self):
-        """ Cannot have condition when using << on Serial Op"""
-        with pytest.raises(ValueError):
-            sop = (Op(X[1:]) >> Op(X[1:])).if_(Op(X[0] > 1))
-            sop << Op(X[1:])
-
-    def test_lshift_if_ok(self):
-         delayed = Op([Op(self.func, X), Op(self.func, X)]) << Op(X[1:]).if_(False)
-         out = [1, 2, 3] >> delayed
-         assert out == [3, 4, 5]
-         
     @pytest.mark.parametrize("condition,else_,expected", [
         (True, None, [2, 3]),
         (False, None, [1, 2, 3]),
@@ -588,289 +543,195 @@ class TestOp:
         out = data >> delayed
         assert out == expected
 
-    def test_delayed_op_op(self):
-        data = [1, 2, 3]
-        delayed = Op(X[1:]) >> Op(X[1:])
-        assert isinstance(delayed, Op)
-        out = data >> delayed
-        assert out == [3]
-
-    def test_delayed_module_op(self):
-        data = torch.tensor([1.0, 2.0, 3.0])
-        delayed = ConstantLayer(3, value=1.0) >> Op(X[1])
-        assert isinstance(delayed, Op)
-        out = data >> delayed
-        torch.testing.assert_close(out, torch.tensor(2.0))
-
-    def test_delayed_op_module(self):
-        data = torch.tensor([1.0, 2.0, 3.0])
-        delayed = Op(X[1:]) >> ConstantLayer(2, value=1.0)
-        assert isinstance(delayed, Op)
-        out = data >> delayed
-        torch.testing.assert_close(out, torch.tensor([2.0, 3.0]))
-
-    @pytest.mark.parametrize("op,expected", [
-        ("add", [3, 5]),
-        ("sub", [1, 1]),
-        ("mul", [2, 6]),
-        ("truediv", [2.0, 1.5]),
-        ("floordiv", [2, 1]),
-        ("mod", [0, 1]),
-        ("pow", [2, 9]),
+    @pytest.mark.parametrize("delayed,expected,data", [
+        (Op(X[1:]) + Op(X[:-1]), [3, 5], [1, 2, 3]),
+        (Op(X[1:]) - Op(X[:-1]), [1, 1], [1, 2, 3]),
+        (Op(X[1:]) * Op(X[:-1]), [2, 6], [1, 2, 3]),
+        (Op(X[1:]) / Op(X[:-1]), [2.0, 1.5], [1, 2, 3]),
+        (Op(X[1:]) // Op(X[:-1]), [2, 1], [1, 2, 3]),
+        (Op(X) @ (ConstantLayer(2, value=2.0) >> Op(X[None].T)), [10.], [1.0, 2.0]),
+        (Op(X[1:]) % Op(X[:-1]), [0, 1], [1, 2, 3]),
+        (Op(X[1:]) ** Op(X[:-1]), [2, 9], [1, 2, 3]),
+        (Op(X[1:]) & Op(X[:-1]), [0, 2], [1, 2, 3]),
+        (Op(X[1:]) | Op(X[:-1]), [3, 3], [1, 2, 3]),
+        (Op(X[1:]) ^ Op(X[:-1]), [3, 1], [1, 2, 3])
     ])
-    def test_delayed_op_op_arithmetic(self, op, expected):
-        data = torch.tensor([1, 2, 3])
-        delayed = getattr(Op(X[1:]), f"__{op}__")(Op(X[:-1]))
+    def test_binary_operators_oo(self, delayed, expected, data):
+        """ math operator between two `Op` objects"""
         assert isinstance(delayed, Op)
-        out = data >> delayed
+        out = torch.tensor(data) >> delayed
         torch.testing.assert_close(out, torch.tensor(expected))
 
-    @pytest.mark.parametrize("op,expected", [
-        ("and", [0, 2]),
-        ("or", [3, 3]),
-        ("xor", [3, 1]),
+    @pytest.mark.parametrize("delayed,expected", [
+        (-Op(X), [-1, -2, 3]),
+        (+Op(X), [1, 2, -3]),
+        (abs(Op(X)), [1, 2, 3]),
+        (~Op(X), [-2, -3, 2]),
     ])
-    def test_delayed_op_op_bitwise(self, op, expected):
-        data = torch.tensor([1, 2, 3], dtype=torch.int64)
-        delayed = getattr(Op(X[1:]), f"__{op}__")(Op(X[:-1]))
-        assert isinstance(delayed, Op)
-        out = data >> delayed
-        torch.testing.assert_close(out, torch.tensor(expected))
-
-    @pytest.mark.parametrize("op,expected", [
-        ("neg", [-1, -2, 3]),
-        ("pos", [1, 2, -3]),
-        ("abs", [1, 2, 3]),
-        ("invert", [-2, -3, 2]),
-    ])
-    def test_delayed_op_op_unary(self, op, expected):
+    def test_unary_operators_oo(self, delayed, expected):
         data = torch.tensor([1, 2, -3], dtype=torch.int64)
-        delayed = getattr(Op(X), f"__{op}__")()
-        assert isinstance(delayed, Op)
         out = data >> delayed
+        assert isinstance(delayed, Op)
         torch.testing.assert_close(out, torch.tensor(expected))
-
-    @pytest.mark.parametrize("op,expected", [
-        ("add", [3.0, 6.0]),
-        ("sub", [-1.0, -2.0]),
-        ("mul", [2.0, 8.0]),
-        ("truediv", [0.5, 0.5]),
-        ("floordiv", [0., 0.]),
-        ("mod", [1., 2.]),
-        ("pow", [1.0, 16.0]),
-    ])
-    def test_delayed_op_module_arithmetic(self, op, expected):
-        """
-        layer(x) = [2, 2] * [1, 2] = [2, 4]
-        """
-        layer = ConstantLayer(2, value=2.0)
-        data = torch.tensor([1.0, 2.0])
-        delayed = getattr(Op(X), f"__{op}__")(layer)
-        assert isinstance(delayed, Op)
-        out = data >> delayed
-        torch.testing.assert_close(out, torch.tensor(expected))
-
-    def test_delayed_op_module_matmul(self):
-        """
-        As column vectors
-        layer(x) = [2, 2] * [1, 2] = [2, 4]
-        layer(x) @ [1, 2] = 10
-        """
-        layer = ConstantLayer((2, 1), value=2.0)
-        data = torch.tensor([[1.0], [2.0]])
-        delayed = Op(X.T) @ layer
-        assert isinstance(delayed, Op)
-        out = data >> delayed
-        torch.testing.assert_close(out, torch.tensor([[10.0]]))
-
-    def test_delayed_op_op_matmul(self):
-        """
-        layer(x) = [2, 2] * [1, 2] = [2, 4]
-        layer(x) @ [1, 2] = 10
-        """
-        layer = ConstantLayer(2, value=2.0)
-        data = torch.tensor([1.0, 2.0])
-        delayed = Op(X) @ (layer >> Op(X[None].T))
-        assert isinstance(delayed, Op)
-        out = data >> delayed
-        torch.testing.assert_close(out, torch.tensor([10.0]))
-
-    @pytest.mark.parametrize("op,expected", [
-        ("and", [0, 0, 0]),
-        ("or", [3, 3, 3]),
-        ("xor", [3, 3, 3]),
-    ])
-    def test_delayed_op_module_bitwise(self, op, expected):
-        """
-        layer output is [2, 2, 2] * [1, 1, 1] = [2, 2, 2]
-
-            data         layer out
-        [01, 01, 01] & [10, 10, 10] = [0, 0, 0]
-        [01, 01, 01] | [10, 10, 10] = [11, 11, 11]
-        [01, 01, 01] ^ [10, 10, 10] = [11, 11, 11]
-        """
-        layer = ConstantLayer(3, value=2, dtype=torch.int64)
-        data = torch.tensor([1, 1, 1], dtype=torch.int64)
-        delayed = getattr(Op(X), f"__{op}__")(layer)
-        assert isinstance(delayed, Op)
-        out = data >> delayed
-        torch.testing.assert_close(out, torch.tensor(expected, dtype=torch.int64))
     
-    def test_delayed_module_op_add(self):
-        """
-        The layer comes on the right hand side of the operator. I cannot call layer.__add__, 
-        because the python interpreter will not catch the NotImplemented return and call b.__radd__.
-        I must use the `+` for this to happen.
-        """
-        expected = torch.tensor([3.0, 6.0])
-        layer = ConstantLayer(2, value=2.0)
-        data = torch.tensor([1.0, 2.0])
-        delayed = layer + Op(X)
-        assert isinstance(delayed, Op)
-        out = data >> delayed
-        torch.testing.assert_close(out, expected)
-
-    def test_delayed_module_op_sub(self):
-        """
-        layer(x) = [2, 2] * [1, 2] = [2, 4]
-        layer(x) - [1, 2] = [2, 4] - [1, 2] = [1, 2]
-        """
-        expected = torch.tensor([1.0, 2.0])
-        layer = ConstantLayer(2, value=2.0)
-        data = torch.tensor([1.0, 2.0])
-        delayed = layer - Op(X)
-        assert isinstance(delayed, Op)
-        out = data >> delayed
-        torch.testing.assert_close(out, expected)
-
-    def test_delayed_module_op_mul(self):
-        """
-        layer(x) = [2, 2] * [1, 2] = [2, 4]
-        layer(x) * [1, 2] = [2, 4] * [1, 2] = [2, 8]
-        """
-        expected = torch.tensor([2.0, 8.0])
-        layer = ConstantLayer(2, value=2.0)
-        data = torch.tensor([1.0, 2.0])
-        delayed = layer * Op(X)
-        assert isinstance(delayed, Op)
-        out = data >> delayed
-        torch.testing.assert_close(out, expected)
-
-    def test_delayed_module_op_truediv(self):
-        """
-        layer(x) = [2, 2] * [1, 2] = [2, 4]
-        layer(x) / [1, 2] = [2, 4] / [1, 2] = [2, 2]
-        """
-        expected = torch.tensor([2.0, 2.0])
-        layer = ConstantLayer(2, value=2.0)
-        data = torch.tensor([1.0, 2.0])
-        delayed = layer / Op(X)
-        assert isinstance(delayed, Op)
-        out = data >> delayed
-        torch.testing.assert_close(out, expected)
-
-    def test_delayed_module_op_floordiv(self):
-        """
-        layer(x) = [2, 2] * [1, 2] = [2, 4]
-        layer(x) // [1, 2] = [2, 4] // [1, 2] = [2, 2]
-        """
-        expected = torch.tensor([2.0, 2.0])
-        layer = ConstantLayer(2, value=2.0)
-        data = torch.tensor([1.0, 2.0])
-        delayed = layer // Op(X)
-        assert isinstance(delayed, Op)
-        out = data >> delayed
-        torch.testing.assert_close(out, expected)
-
-    def test_delayed_module_op_mod(self):
-        """
-        layer(x) = [2, 2] * [1, 2] = [2, 4]
-        layer(x) % [1, 2] = [2, 4] % [1, 2] = [0, 0]
-        """
-        expected = torch.tensor([0.0, 0.0])
-        layer = ConstantLayer(2, value=2.0)
-        data = torch.tensor([1.0, 2.0])
-        delayed = layer % Op(X)
-        assert isinstance(delayed, Op)
-        out = data >> delayed
-        torch.testing.assert_close(out, expected)
-
-    def test_delayed_module_op_pow(self):
-        """
-        layer(x) = [2, 2] * [1, 2] = [2, 4]
-        layer(x) ** [1, 2] = [2, 4] ** [1, 2] = [2, 16]
-        """
-        expected = torch.tensor([2.0, 16.0])
-        layer = ConstantLayer(2, value=2.0)
-        data = torch.tensor([1.0, 2.0])
-        delayed = layer ** Op(X)
-        assert isinstance(delayed, Op)
-        out = data >> delayed
-        torch.testing.assert_close(out, expected)
-
-    def test_delayed_module_op_matmul(self):
-        """
-        layer(x) = [2, 2] * [1, 2] = [2, 4]
-        layer(x) @ [1, 2] = 10
-        """
-        layer = ConstantLayer(2, value=2.0)
-        data = torch.tensor([1.0, 2.0])
-        delayed = layer @ Op(X[None].T)
-        assert isinstance(delayed, Op)
-        out = data >> delayed
-        torch.testing.assert_close(out, torch.tensor([10.0]))
-
-    def test_delayed_op_module_and(self):
-        """
-        layer(x) = [2, 2, 2]
-        layer(x) & Op(x) = [10, 10, 10] & [01, 01, 01] = [0, 0, 0]
-        """
-        layer = ConstantLayer(3, value=2, dtype=torch.int64)
-        data = torch.tensor([1, 1, 1], dtype=torch.int64)
-        delayed = layer & Op(X)
-        assert isinstance(delayed, Op)
-        out = data >> delayed
-        torch.testing.assert_close(out, torch.tensor([0, 0, 0]))
-
-    def test_delayed_op_module_or(self):
-        """
-        layer(x) = [2, 2, 2]
-        layer(x) & Op(x) = [10, 10, 10] | [01, 01, 01] = [3, 3, 3]
-        """
-        layer = ConstantLayer(3, value=2, dtype=torch.int64)
-        data = torch.tensor([1, 1, 1], dtype=torch.int64)
-        delayed = layer | Op(X)
-        assert isinstance(delayed, Op)
-        out = data >> delayed
-        torch.testing.assert_close(out, torch.tensor([3, 3, 3]))
-
-    def test_delayed_op_module_xor(self):
-        """
-        layer(x) = [2, 2, 2]
-        layer(x) & Op(x) = [10, 10, 10] ^ [01, 01, 01] = [3, 3, 3]
-        """
-        layer = ConstantLayer(3, value=2, dtype=torch.int64)
-        data = torch.tensor([1, 1, 1], dtype=torch.int64)
-        delayed = layer ^ Op(X)
-        assert isinstance(delayed, Op)
-        out = data >> delayed
-        torch.testing.assert_close(out, torch.tensor([3, 3, 3]))
-
     def test_repr(self):
         op = Op(X[1].a)
         assert str(op) == "Op(X[1].a)"
 
 
-class Test_OpCallable:
-    def test_repr(self):
-        def func(x):
-            return x
-        op = _OpCallable(func, X[2])
-        assert str(op) == "func(X[2])"
+class TestParallels:
+    @pytest.mark.parametrize("delayed,expected", [
+        # simple input ok
+        (Parallels([X, X], X), [1, 2, 3]),
+        # same size lists of ops
+        (Parallels([Op(2 * X), Op(3 * X)], [Op(X[1:]), Op(X / 2)]), [6.0, 9.0]),
+        # broadcastable types
+        (Parallels([Op(2 * X), Op(3 * X)], [Op(X[1:])]), [18]),
+        (Parallels([Op(2 * X), Op(3 * X)], Op(X[1:])), [18]),
+        (Parallels([Op(2 * X), Op(3 * X)], X[1:]), [18]),
+        (Parallels([Op(2 * X), Op(3 * X)], ConstantLayer(3, value=2.0)), [24.0, 48.0, 72.0]),
+        # Mixed types in list
+        (Parallels([Op(2 * X), 3 * X], [Op(X[1:]), ConstantLayer(2, value=0.5)]), [6.0, 9.0]),
+        # Parallels
+        (Parallels(
+            Parallels([Op(2 * X), Op(3 * X)], [Op(X[1:]), Op(X / 2)]), X + 1), [8.5, 11.5]),
+        # Parallels with size 1 (broadcasted)
+        (Parallels(Parallels(Op(2 * X), Op(X[1:])), [X + 1, X + 2]), [16]),
 
-    def test_repr_module(self):
-        op = _OpCallable(ConstantLayer(2, value=1.0), X[2])
-        assert str(op) == "ConstantLayer()(X[2])"
+        # Parallels with custom function
+         (Parallels([Op(2 * X), Op(3 * X)], Op(X + 1), func=lambda a, b: a + b), [17, 29, 41]),
+    ])
+    def test_init(self, delayed, expected):
+        """ List of ops with same size. """
+        out = torch.tensor([1, 2, 3]) >> delayed
+        assert len(delayed) == 2
+        torch.testing.assert_close(out, torch.tensor(expected))
+           
+    @pytest.mark.parametrize("args", [
+        # unbroadcastable sizes
+        ([Op(2 * X), Op(3 * X)], [Op(X), Op(X), X]),
+        # unknown types
+        ([Op(X)], [1, 2, 3]),
+        (10, X)
+    ])
+    def test_init_error(self, args):
+        """ """
+        with pytest.raises(ValueError):
+            Parallels(*args)
+
+    @pytest.mark.parametrize("delayed,expected", [
+        # X << Parallels
+        (X + 1 << Parallels([2 * X, 3 * X], [X + 1, X[1:]]), [24, 30]),
+        # OpX << Parallels
+        (Op(X + 1) << Parallels([2 * X, 3 * X], [X + 1, X[1:]]), [24, 30]),
+        # OpCallable << Parallels
+        (Op(lambda x: x + 1, X) << Parallels([2 * X, 3 * X], [X + 1, X[1:]]), [24, 30]),
+        # Serials << Parallels
+        (Op(X + 2) >> Op(X - 1) << Parallels([2 * X, 3 * X], [X + 1, X[1:]]), [24, 30]),
+        # Parallels << Parallels
+        (Parallels(Op(X + 2), Op(X - 1)) << Parallels([2 * X, 3 * X], [X + 1, X[1:]]), [24, 30]),
+        
+        # Parallels << X
+        ( Parallels([2 * X, 3 * X], [X + 1, X[1:]]) << X + 1, [19, 25]),
+        # OpX << Parallels
+        (Parallels([2 * X, 3 * X], [X + 1, X[1:]]) << Op(X + 1), [19, 25]),
+        # # OpCallable << Parallels
+        (Parallels([2 * X, 3 * X], [X + 1, X[1:]]) << Op(lambda x: x + 1, X), [19, 25]),
+        # # Serials << Parallels
+        (Parallels([2 * X, 3 * X], [X + 1, X[1:]]) << (Op(X + 2) >> Op(X - 1)), [19, 25]),
+        # # Parallels << Parallels
+        (Parallels([2 * X, 3 * X], [X + 1, X[1:]]) << Parallels(Op(X + 2), Op(X - 1)), [19, 25]),
+    ])
+    def test_lshift(self, delayed, expected):
+        """
+        X << OP([X1, X2]) ---> X >> X1 >> X >> X2
+        """
+        out = torch.tensor([1, 2, 3]) >> delayed
+        assert isinstance(delayed, Parallels)
+        assert len(delayed) == 2
+        torch.testing.assert_close(out, torch.tensor(expected))
+
+    @pytest.mark.parametrize("delayed,expected", [
+        (-Parallels([2 * X, X - 1], X[1:]), [7]),
+        (+Parallels([2 * X, X - 1], X[1:]), [5]),
+        (abs(Parallels([2 * X, X - 1], X[1:])), [5]),
+        (~Parallels([2 * X, X - 1], X[1:]), [7]),
+    ])
+    def test_unary_operators(self, delayed, expected):
+        out = torch.tensor([1, 2, 3]) >> delayed
+        assert isinstance(delayed, Parallels)
+        assert len(delayed) == 2
+        torch.testing.assert_close(out, torch.tensor(expected))
+
+    @pytest.mark.parametrize("delayed,expected", [
+        # Parallels with Parallels
+        (Parallels(2 * X[1:]) + Parallels([2 * X, X - 1], X[1:]), [35]),
+        (Parallels(2 * X[1:]) - Parallels([2 * X, X - 1], X[1:]), [1]),
+        (Parallels(2 * X[1:]) * Parallels([2 * X, X - 1], X[1:]), [2520]),
+        (Parallels(2 * X[1:]) / Parallels([2 * X, X + 1], X[1:]), [1.]),
+        (Parallels(2 * X[1:]) // Parallels([2 * X, X + 1], X[1:]), [1]),
+        (Parallels(2 * X[1:]) % Parallels([2 * X, X - 1], X[1:]), [0]),
+        (Parallels(2 * X[1:]) ** Parallels([X, X - 216.0], X[1:]), [1.0]),
+        (Parallels(2.0 * X[None]) @ Parallels([2 * X, X - 1], X / 2.0), [756.0]),
+        (Parallels(2 * X[1:]) | Parallels([2 * X, X - 1], X[1:]), [13]),
+        (Parallels(2 * X[1:]) ^ Parallels([2 * X, X - 1], X[1:]), [-1]),
+
+        # Ops with Parallels
+        (Op(2 * X[1:]) + Parallels([2 * X, X - 1], X[1:]), [35]),
+        (Op(2 * X[1:]) - Parallels([2 * X, X - 1], X[1:]), [1]),
+        (Op(2 * X[1:]) * Parallels([2 * X, X - 1], X[1:]), [2520]),
+        (Op(2 * X[1:]) / Parallels([2 * X, X + 1], X[1:]), [1.]),
+        (Op(2 * X[1:]) // Parallels([2 * X, X + 1], X[1:]), [1]),
+        (Op(2 * X[1:]) % Parallels([2 * X, X - 1], X[1:]), [0]),
+        (Op(2 * X[1:]) ** Parallels([X, X - 216.0], X[1:]), [1.0]),
+        (Op(2.0 * X[None]) @ Parallels([2 * X, X - 1], X / 2.0), [756.0]),
+        (Op(2 * X[1:]) & Parallels([2 * X, X - 1], X[1:]), [4]),
+        (Op(2 * X[1:]) | Parallels([2 * X, X - 1], X[1:]), [13]),
+        (Op(2 * X[1:]) ^ Parallels([2 * X, X - 1], X[1:]), [-1]),
+
+        # parallels with Ops
+        (Parallels([2 * X, X - 1], X[1:]) + Op(2 * X[1:]), [35]),
+        (Parallels([2 * X, X - 1], X[1:]) - Op(2 * X[1:]) , [-1]),
+        (Parallels([2 * X, X - 1], X[1:]) * Op(2 * X[1:]) , [2520]),
+        (Parallels([2 * X, X + 1], X[1:]) / Op(2 * X[1:]) , [1.0]),
+        (Parallels([2 * X, X + 1], X[1:]) // Op(2 * X[1:]) , [1]),
+        (Parallels([2 * X, X - 1], X[1:]) % Op(2 * X[1:] - 1) , [0]),
+        (Parallels([X, X - 728.0], X[1:]) ** Op(2 * X[1:]) , [1.]),
+        (Parallels([2 * X, X - 1], X / 2.0) @ Op(2.0 * X[None].T), [756.]),
+        (Parallels([2 * X, X - 1], X[1:]) & Op(2 * X[1:]), [4]),
+        (Parallels([2 * X, X - 1], X[1:]) | Op(2 * X[1:]), [13]),
+        (Parallels([2 * X, X - 1], X[1:]) ^ Op(2 * X[1:]), [-1]),
+    ])
+    def test_binary_operators(self, delayed, expected):
+        out = torch.tensor([1, 2, 3]) >> delayed
+        assert isinstance(delayed, Parallels)
+        assert len(delayed) == 2
+        torch.testing.assert_close(out, torch.tensor(expected))
+
+    @pytest.mark.parametrize("condition, else_, expected", [
+        (True, None, [8]),
+        (False, None, [1, 2, 3]),
+        (True, Parallels([X + 1, X]), [8]),
+        (False, Parallels([X + 1, X]), [2, 3, 4]),
+        (False, Parallels([Op(X + 1), Op(X + 2)]), [4, 5, 6]),
+    ])
+    def test_if(self, condition, else_, expected):
+        delayed = Parallels([Op(X + 1), Op(2 * X)], X[1:]).if_(condition, else_)
+        res = torch.tensor([1, 2, 3]) >> delayed
+        torch.testing.assert_close(res, torch.tensor(expected))
+
+    def test_if_nested(self):
+        delayed = Parallels(Parallels(Op(X + 1)).if_(False), Op(2 * X))
+        res = torch.tensor([1, 2, 3]) >> delayed
+        torch.testing.assert_close(res, torch.tensor([2, 4, 6]))
+
+    def test_if_nested_with_else(self):
+        delayed = Parallels(
+            Parallels([Op(X + 1), Op(X + 2)]).if_(False, Parallels([X + 1, X])), 
+            Op(2 * X)
+        )
+        res = torch.tensor([1, 2, 3]) >> delayed
+        torch.testing.assert_close(res, torch.tensor([8, 12, 16]))
 
 
 class TestWire:
@@ -951,4 +812,155 @@ def test_conjure():
     data = [Something(1), Something(2)]
     res = conjure(X[1].a, data)
     assert res == 2
+
+
+def test_conjure_with_non_x():
+    """Test conjure with non-X input returns the input as is"""
+    test_data = [1, 2, 3]
+    result = conjure(test_data, None)
+    assert result is test_data
+
+
+def test_conjure_with_nested_x():
+    """Test conjure with nested X operations"""
+    class NestedData:
+        def __init__(self, value):
+            self.value = value
+            self.items = [self.value * i for i in range(1, 4)]
+    
+    data = NestedData(10)
+    result = conjure(X.items[1], data)
+    assert result == 20
+
+
+class TestNoValue:
+    def test_value_property(self):
+        """Test that value property returns self"""
+        from faeyon.magic.spells import _NoValue
+        no_value = _NoValue()
+        assert no_value.value is no_value
+    
+    def test_repr(self):
+        """Test string representation of _NoValue"""
+        from faeyon.magic.spells import _NoValue
+        assert repr(_NoValue()) == "<NO_VALUE>"
+        assert str(_NoValue()) == "<NO_VALUE>"
+
+
+class TestVariable:
+    def test_init_no_args(self):
+        """Test _Variable initialization with no arguments"""
+        from faeyon.magic.spells import _Variable, _NoValue
+        var = _Variable()
+        assert isinstance(var.value, _NoValue)
+    
+    def test_init_one_arg(self):
+        """Test _Variable initialization with one argument"""
+        from faeyon.magic.spells import _Variable
+        test_value = "test_value"
+        var = _Variable(test_value)
+        assert var.value == test_value
+    
+    def test_init_multiple_args_raises(self):
+        """Test _Variable initialization with multiple arguments raises ValueError"""
+        from faeyon.magic.spells import _Variable
+        with pytest.raises(ValueError, match="can only be initialized with one or no arguments"):
+            _Variable(1, 2, 3)
+    
+    def test_has_value(self):
+        """Test has_value method of _Variable"""
+        from faeyon.magic.spells import _Variable, _NoValue
+        var1 = _Variable()
+        assert not var1.has_value()
+        
+        var2 = _Variable(42)
+        assert var2.has_value()
+    
+    def test_repr(self):
+        """Test string representation of _Variable"""
+        from faeyon.magic.spells import _Variable
+        var = _Variable("test")
+        assert repr(var) == "'test'"
+
+
+class TestWiring:
+    def test_wiring_abstract_base_class(self):
+        """Test that Wiring is an abstract base class"""
+        from faeyon.magic.spells import Wiring
+        with pytest.raises(TypeError, match="Can't instantiate abstract class"):
+            Wiring()  # type: ignore
+
+
+class TestFanout:
+    def test_fanout_getitem(self):
+        """Test _Fanout's __getitem__ method"""
+        from faeyon.magic.spells import _Fanout
+        test_list = [1, 2, 3, 4, 5]
+        fanout = _Fanout(test_list)
+        
+        for i in range(len(test_list)):
+            assert fanout[i] == test_list[i]
+        
+        # Test with negative indices
+        assert fanout[-1] == test_list[-1]
+
+
+class TestPass:
+    def test_pass_getitem(self):
+        """Test _Pass's __getitem__ always returns the same object"""
+        from faeyon.magic.spells import _Pass
+        test_obj = object()
+        passthrough = _Pass(test_obj)
+        
+        for i in range(5):
+            assert passthrough[i] is test_obj
+
+
+class TestMux:
+    def test_mux_getitem(self):
+        """Test _Mux's __getitem__ returns s0 for key 0, s1 otherwise"""
+        from faeyon.magic.spells import _Mux
+        s0 = object()
+        s1 = object()
+        mux = _Mux(s0, s1)
+        
+        assert mux[0] is s0
+        assert mux[1] is s1
+        assert mux[42] is s1
+        assert mux[-1] is s1
+
+
+class TestW:
+    def test_w_enum_values(self):
+        """Test W enum has expected values"""
+        from faeyon.magic.spells import W, _Fanout, _Pass, _Mux
+        
+        # Test enum values
+        assert W.Fanout.value == "Fanout"
+        assert W.Pass.value == "Pass"
+        assert W.Mux.value == "Mux"
+        
+        # Test __call__ returns correct class instances
+        assert isinstance(W.Fanout("test"), _Fanout)
+        assert isinstance(W.Pass("test"), _Pass)
+        
+        # Test _Mux requires exactly 2 arguments
+        with pytest.raises(TypeError):
+            W.Mux("test")  # type: ignore
+            
+        mux = W.Mux("s0", "s1")
+        assert isinstance(mux, _Mux)
+        assert mux.s0 == "s0"
+        assert mux.s1 == "s1"
+
+    def test_w_call_with_invalid_name(self):
+        """Test W.__call__ with invalid name raises AttributeError"""
+        from faeyon.magic.spells import W
+        
+        # Create a W instance with an invalid name
+        invalid_w = W.Fanout
+        invalid_w._name_ = "Invalid"  # type: ignore
+        
+        with pytest.raises(AttributeError):
+            invalid_w("test")
 

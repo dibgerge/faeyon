@@ -6,7 +6,7 @@ from torch import nn
 from typing import Any, overload
 from collections.abc import Callable
 
-from .spells import Op, FList, FDict, A, X, FVar, binary_operators, unary_operators
+from .spells import Op, FList, FDict, A, X, FVar, binary_operators, unary_operators, Delayable
 
 
 class FState:
@@ -137,15 +137,18 @@ def __default_new__(cls, *args, **kwargs):
 def __mul__[T: nn.Module](self: T, other: int) -> list[T]: ...
 
 @overload
-def __mul__[T: nn.Module](self: T, other: nn.Module) -> Op: ...
+def __mul__[T: nn.Module](self: T, other: nn.Module | Op) -> Op: ...
 
 
-def __mul__[T: nn.Module](self: T, other: int | nn.Module) -> list[T] | Op:
+def __mul__[T: nn.Module](self: T, other: int | nn.Module | Op) -> list[T] | Op:
     """
     Creates a ModuleList of `other` clones of this module.
     """
     if isinstance(other, nn.Module):
         return getattr(self(X), "__mul__")(other(X))
+    
+    if isinstance(other, Op):
+        return getattr(self(X), "__mul__")(other)
 
     if not isinstance(other, int):
         return NotImplemented
@@ -161,19 +164,30 @@ def __rmul__[T: nn.Module](self: T, other: int) -> list[T]: ...
 
 
 @overload
-def __rmul__[T: nn.Module](self: T, other: nn.Module) -> Op: ...
+def __rmul__[T: nn.Module](self: T, other: nn.Module | Op) -> Op: ...
 
 
-def __rmul__[T: nn.Module](self: T, other: int | nn.Module) -> list[T] | Op:
-    """ Multiplication is commutative!"""
+def __rmul__[T: nn.Module](self: T, other: int | nn.Module | Op) -> list[T] | Op:
+    """ Multiplication is commutative. """
     return self.__mul__(other)  # type: ignore
 
 
-def __rrshift__[T: nn.Module](self: T, other: Any) -> Any:
+@overload
+def __rrshift__[T: nn.Module](self: T, other: Delayable) -> Delayable: ...
+
+
+@overload
+def __rrshift__[T: nn.Module](self: T, other: Any) -> Any: ...
+
+
+def __rrshift__[T: nn.Module](self: T, other: Any | Delayable) -> Any | Delayable:
     """
     This is an alias for `__call__`. The limitation here is that it only works for 
     single inputs. If you need to pass multiple inputs, use the `A` class.
     """
+    if isinstance(other, Delayable):
+        return other >> self(X)
+        
     return self(other)
 
 
@@ -222,15 +236,28 @@ def delayed_unary_method[T: nn.Module](op_name: str) -> Callable[[T], Op]:
     return func
 
 
-def delayed_binary_method[T: nn.Module](op_name: str) -> Callable[[T, nn.Module], Op]:
+def delayed_binary_method[T: nn.Module](
+    op_name: str,
+    is_right: bool
+) -> Callable[[T, nn.Module | Delayable], Op]:
     """
     This method only handles arithmetic on two modules, e.g. module1 + module2. Thus we expect
     to implement only the left versions of the operators. If that failed, will call the 
     right type's operator.
     """
-    def func(self: T, other: nn.Module) -> Op:
+    def func(self: T, other: nn.Module | Delayable) -> Op:
         if isinstance(other, nn.Module):
-            return getattr(self(X), op_name)(other(X))
+            if is_right:
+                # This should not ever happen... 
+                return getattr(other(X), op_name.replace("r", "", count=1))(self(X))
+            else:
+                return getattr(self(X), op_name)(other(X))
+        
+        if isinstance(other, Delayable):
+            if is_right:
+                return getattr(other, op_name.replace("r", "", count=1))(self(X))
+            else:
+                return getattr(self(X), op_name)(other)
         
         return NotImplemented
     return func
@@ -275,11 +302,11 @@ class Faek(metaclass=Singleton):
         nn.Module.__call__ = __call__
         nn.Module.clone = clone
 
-        for method in itertools.chain.from_iterable(binary_operators.values()):
+        for i, method in enumerate(itertools.chain.from_iterable(binary_operators.values())):
             setattr(
                 nn.Module, 
                 method, 
-                getattr(current_module, method, delayed_binary_method(method))
+                getattr(current_module, method, delayed_binary_method(method, i % 2 == 1))
             )
                 
         for method in unary_operators.values():

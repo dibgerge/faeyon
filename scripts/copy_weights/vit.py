@@ -77,9 +77,57 @@ img = torch.tensor(inputs["pixel_values"])
 y_hf  = hf_model(img, output_hidden_states=True)
 y  = model(img)
 
-print(abs(y -  y_hf.logits).sum())
+print("-----------")
+print("Total error:", abs(y -  y_hf.logits).sum())
+print()
+
+print("Hidden states error:")
+print("--------------------")
+cls_token = model.cls_token.expand(img.shape[0], -1, -1)
+y1 = (  
+    img >> model.patch_embedding
+    >> (model.pos_embeddings(X.shape[2:]) >> Op(X.mT)) + (
+        model.mask_token(X, mask=None)
+        >> Op(X.flatten(-2).mT)
+        >> model.concat(cls_token, X, dim=1)
+    )
+)
+print("before block", abs(y1 -  y_hf.hidden_states[0]).sum())
 
 
-exported_program = torch.export.export(hf_model, (img,), strict=False)
+#  ---- -run it for the first block ---
+yp = y1
+for name, block in model.blocks._modules.items():
+    # block0 = getattr(model.blocks, str(i))
 
-print(exported_program)
+    yp = block(yp)
+    
+    y1 = (
+        y1
+        >> block.lnorm_in 
+        >> block.attention(X, X, X, need_weights=False)
+        >> Op(X[0] + y1)
+        >> Op(X) + (
+            block.lnorm_out
+            >> block.linear1
+            >> block.gelu
+            >> block.linear2
+            >> block.dropout
+        )
+    )
+    yf_state =  y_hf.hidden_states[int(name)+1]
+    print(f"After block {name}: {abs(y1 - yf_state).sum():.5f}")
+    print(f"        direct: {abs(yp - yf_state).sum():.5f}")
+     
+
+
+y2 = model.lnorm(y1)
+y2 = y2[..., 0, :]
+y2 = model.classifier(y2)
+print("Final result", abs(y2 - y_hf.logits).sum())
+
+
+yp = model.lnorm(yp)
+yp = yp[..., 0, :]
+yp = model.classifier(yp)
+print("Final result (direct)", abs(yp - y_hf.logits).sum())

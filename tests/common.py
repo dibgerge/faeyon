@@ -9,7 +9,7 @@ class ConstantLayer(nn.Module):
     def __init__(
         self, 
         size: int | tuple[int, ...], 
-        value: int,
+        value: int | float,
         dtype: torch.dtype = torch.float,
     ) -> None:
         super().__init__()

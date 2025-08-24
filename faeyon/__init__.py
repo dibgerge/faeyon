@@ -7,6 +7,8 @@ from .magic import (
     FMMap,
     FVar,
     Op,
+    Serials,
+    Parallels,
     Wire,
     W,
 )

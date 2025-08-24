@@ -1,10 +1,9 @@
 import inspect
-import torch
 from torch import nn
 from typing import Any, Optional, overload, Iterator
 from collections import OrderedDict
 
-from faeyon.magic.spells import ContainerBase, Wire, X, A, Op, Wiring
+from faeyon.magic.spells import ContainerBase, Wire, X, A, Wiring, Parallels
 
 
 class FaeSequential(nn.Module):
@@ -98,16 +97,12 @@ class FaeSequential(nn.Module):
             )
 
 
-class OpCollection(Op):
-    pass
-
-
 class FaeModuleList(nn.Module):
     def __init__(self, module: nn.Module, repeats: int) -> None:
         super().__init__()
         self.mlist = nn.ModuleList(module * repeats)
     
-    def __call__(self, *args: Any, **kwargs: Any) -> Op:
+    def __call__(self, *args: Any, **kwargs: Any) -> Parallels:
         ops = []
         for i, layer in enumerate(self.mlist):
             layer_args = [arg[i] if isinstance(arg, Wiring) else arg for arg in args]
@@ -116,7 +111,7 @@ class FaeModuleList(nn.Module):
                 for k, arg in kwargs.items()
             }
             ops.append(layer(*layer_args, **layer_kwargs))
-        return Op(ops)
+        return Parallels(ops)
 
 
 class FaeBlock(nn.Module):

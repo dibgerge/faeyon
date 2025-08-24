@@ -1,4 +1,5 @@
 from __future__ import annotations
+import sys
 from collections.abc import Callable
 from typing import Any
 from ..utils import is_ipython
@@ -66,6 +67,26 @@ _methods = {
 }
 
 
+def __rshift__(self, other):
+    from .spells import Op
+    return Op(self) >> other
+
+
+def __rrshift__(self, other):
+    from .spells import Op
+    return other >> Op(self)
+
+
+def __lshift__(self, other):
+    from .spells import Op
+    return Op(self) << other
+
+
+def __rlshift__(self, other):
+    from .spells import Op
+    return other << Op(self)
+
+
 def _meta_method[T](name: str) -> Callable[..., T]:
     def method(cls: type[T], *args, **kwargs) -> T:
         # Call the constructor method to return an instance of the class
@@ -84,12 +105,20 @@ def _x_method[T](name: str) -> Callable[..., T]:
     def _getattr_(self, key: str) -> Any:
         # Bypass IPython's internal check for the _ipython_canary_method_should_not_exist_ attribute
         # This is required to make IPython display the object's contents
-        # if is_ipython() and key == "_ipython_canary_method_should_not_exist_":
-        #     return self
+        if is_ipython() and key == "_ipython_canary_method_should_not_exist_":
+            return self
+        if key == "__torch_function__":
+            raise AttributeError
+            
         return method(self, key)
 
     if name == "__getattr__":
         return _getattr_
+
+    # For "special" operators in Faeyon used as pipe operators rather than bit shift
+    cur_module = sys.modules[__name__]
+    if name in ["__rshift__", "__rrshift__", "__lshift__", "__rlshift__"]:
+        return getattr(cur_module, name)
 
     return method
 

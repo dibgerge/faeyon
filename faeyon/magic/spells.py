@@ -4,7 +4,7 @@ import inspect
 import enum
 import itertools
 import operator
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Iterable
 from typing import Any, Optional, overload, Union
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -36,8 +36,8 @@ unary_operators: dict[Callable[[Any], Any], str] = {
     operator.pos: "__pos__",
 }
 
-OMType = Union["Op", nn.Module]
-OMXType = Union[OMType, X]
+# OMType = Union["Op", nn.Module]
+# OMXType = Union[OMType, X]
 
 
 def conjure(x: Any, data: Any) -> Any:
@@ -45,7 +45,7 @@ def conjure(x: Any, data: Any) -> Any:
     Evaluate the operations stored in the `X` buffer. If the input is not an instance of `X`, 
     return it as is.
     """
-    if isinstance(x, Op):
+    if isinstance(x, Delayable):
         return x.using(data)
     
     if not isinstance(x, X):
@@ -73,7 +73,7 @@ class A:
     """
     def __init__(self, *args, **kwargs) -> None:
         self._is_resolved = not any(
-            isinstance(item, (X, Op)) for item in itertools.chain(args, kwargs.values())
+            isinstance(item, (X, Delayable)) for item in itertools.chain(args, kwargs.values())
         )
 
         self.args = args
@@ -146,12 +146,74 @@ class _Variable:
         return f"{self.value!r}"
 
 
-class ContainerBase(ABC):
-    _condition: Optional[bool | X | Op]
+class Delayable(ABC):
+    _condition: Optional[bool | X | Delayable]
+    _else_: Optional[Delayable]
+    
+    def __new__(cls, *args, **kwargs):
+        obj = super().__new__(cls)
+        obj._condition = None
+        obj._else_ = None
+        return obj
+    
+    def copy(self):
+        """ Perform a shallow copy of the object. """
+        out = self.__new__(self.__class__)
+        for k, v in self.__dict__.items():
+            setattr(out, k, v)
+        return out
+
+    @abstractmethod
+    def _resolve(self, data: Any) -> Any:
+        """ Uses data to resolve the delayable. Must be implemented by subclasses. """
+    
+    def using(self, data: Any) -> Any:
+        if self._condition is not None:
+            condition = conjure(self._condition, data)
+            if condition:
+                return self._resolve(data)
+            
+            if self._else_ is not None:
+                return conjure(self._else_, data)
+            else:
+                return data
+        return self._resolve(data)
+        
+    def if_[T: Delayable](
+        self: T, 
+        condition: bool | X | Delayable, 
+        else_: Optional[Delayable] = None
+    ) -> T:
+        out = self.copy()
+        out._condition = condition
+        out._else_ = else_
+        return out
+
+    def __rshift__(self, other: Delayable) -> Serials:
+        if not isinstance(other, Delayable):
+            return NotImplemented
+        return Serials(self, other)
+        
+    def __rrshift__(self, other: Any) -> Any:
+        """
+        In this case `other` cannot be of type `Delayable` (__rshift__ is called instead).
+        `other` should be the final data to be used to evaluate the delayed operations.
+        """
+        return self.using(other)
+        
+    def __lshift__(self, other: Delayable) -> Parallels:
+        """
+        a << b. Both `a` and `b` are Delayable objects. This is not defined for any other type.
+        """
+        if not isinstance(other, Delayable):
+            return NotImplemented
+        return Parallels(self, other)
+
+
+class ContainerBase(Delayable, ABC):
     
     def __init__(self, *args) -> None:
         self._expression: Optional[X | Op] = None
-        self._condition = None
         self._value = _Variable(*args)
 
     @property
@@ -175,7 +237,7 @@ class ContainerBase(ABC):
                 "since expression is not an instance of `X` or `Op`."
             )
 
-        out = self._copy()
+        out = self.copy()
         out._expression = expression
         return out
 
@@ -183,12 +245,12 @@ class ContainerBase(ABC):
         return self.select(expression)
 
     @overload
-    def _copy[T: ContainerBase](self: T, target: None = None) -> T: ...
+    def copy[T: ContainerBase](self: T, target: None = None) -> T: ...
 
     @overload
-    def _copy(self, target: ContainerBase) -> ContainerBase: ...
+    def copy(self, target: ContainerBase) -> ContainerBase: ...
 
-    def _copy[T: ContainerBase](
+    def copy[T: ContainerBase](
         self: T, 
         target: Optional[ContainerBase] = None
     ) -> T | ContainerBase:
@@ -198,22 +260,12 @@ class ContainerBase(ABC):
         for k, v in target.__dict__.items():
             setattr(target, k, getattr(self, k, None))
         return target
-
-    def if_[T: ContainerBase](self: T, condition: Any) -> T:
-        out = self._copy()
-        out._condition = condition
-        return out
         
     @abstractmethod
     def _set(self, data: Any) -> None:
         pass
         
-    def using(self, data: Any) -> Any:
-        if self._condition is not None:
-            condition = conjure(self._condition, data)
-            if not condition:
-                return data
-
+    def _resolve(self, data: Any) -> Any:
         new_data = data
         if self._expression is not None:
             new_data = conjure(self._expression, data)
@@ -329,7 +381,7 @@ class KeyedContainer(ContainerBase):
                 f"Key has already been assigned to {self.__class__.__name__} and no data used yet."
             )
 
-        out = self._copy()
+        out = self.copy()
         out._key = key
         out._parent = self
         return out
@@ -402,12 +454,45 @@ class FMMap(KeyedContainer):
         return True
 
 
-class Op:
-    strategy: _OpStrategy
+class _OpBase(Delayable):
+    def _unary_op(self, oper):            
+        return Op(oper, self)
+    
+    def _binary_op(self, oper, other):
+        if isinstance(other, Parallels):
+            return Parallels([self], other, func=oper)
+        if isinstance(other, Op | Serials):
+            return Op(oper, self, other)
+        return NotImplemented
+
+
+def op_unary_method[T: _OpBase](oper: Callable[[T], _OpBase]) -> Callable[[T], _OpBase]:
+    def func(self: T) -> _OpBase:
+        return self._unary_op(oper)
+    return func
+
+
+def op_binary_method[T: _OpBase](oper: Callable[[T, T], T]) -> Callable[[T, Any], Op]:
+    def func(self: T, other: Any) -> Op:
+        return self._binary_op(oper, other)
+    return func
+
+
+for bin_op, (method, rmethod) in binary_operators.items():
+    if method in ("__rshift__", "__lshift__"):
+        continue
+    setattr(_OpBase, method, op_binary_method(bin_op))
+
+for uni_op, method in unary_operators.items():    
+    setattr(_OpBase, method, op_unary_method(uni_op))
+
+
+class Op(_OpBase):
+    strategy: _XStrategy | _CallableStrategy
 
     def __init__(
         self, 
-        op: Callable[..., Any] | OMXType | list[OMType], 
+        op: Callable[..., Any] | X, 
         *args,  
         **kwargs
     ) -> None:
@@ -416,157 +501,32 @@ class Op:
             if len(args) > 0 or len(kwargs) > 0:
                 raise ValueError(
                     "`op` cannot be an instance of `X` if `args` or `kwargs` are provided.")
-            self.strategy = _OpX(op)
-        elif isinstance(op, Op | nn.Module):
-            if len(kwargs) > 0:
-                raise ValueError("Cannot have keyword arguments if given instances of `Op` or `nn.Module`.")
-            self.strategy = _OpSerial(op, *args)
-        elif isinstance(op, list):
-            if len(args) > 0 or len(kwargs) > 0:
-                raise ValueError("`op` cannot be a `list` if `args` or `kwargs` are provided.")
-            self.strategy = _OpParallel(*op)
+            self.strategy = _XStrategy(op)
         elif isinstance(op, Callable):  # type: ignore[arg-type]
-            self.strategy = _OpCallable(op, *args, **kwargs)
+            self.strategy = _CallableStrategy(op, *args, **kwargs)
         else:
-            raise ValueError("Arguments should be of type `X`, `Op`, or Callable.")
+            raise ValueError(f"Arguments should be of type `X` or Callable. Got {type(op)}.")
 
     @classmethod
-    def from_strategy(cls, strategy: _OpStrategy) -> Op:
+    def from_strategy(cls, strategy: _XStrategy | _CallableStrategy) -> Op:
         out = cls.__new__(cls)
         out.strategy = strategy
         return out
-            
-    def using(self, data: Any) -> Any:
-        return self.strategy(data)
-
-    def if_(self, condition: bool | X | Op, else_: Optional[X | Op] = None) -> Op:
-        """ 
-        Add a condition for executing the op. 
-        If condition is False, optionally execute else_ instead, if given. This creates a new copy
-        of the op with the condition added. Since condition can be an immediately available bool, 
-        or a delayed Op expected to return a bool, we will delay the evaluation of the condition
-        until it is needed, so we don't have to split the logic here based on the type of condition.
-        """
-        strategy = self.strategy.if_(condition, else_)
-        out = self.from_strategy(strategy)
+    
+    def copy(self):
+        out = Op.from_strategy(self.strategy)
+        out._condition = self._condition
+        out._else_ = self._else_
         return out
         
-    def __rshift__(self, data: OMType) -> Op:
-        if not isinstance(data, Op | nn.Module):
-            return NotImplemented
-        return Op(self, data)
-        
-    def __rrshift__(self, data: Any) -> Any:
-        if isinstance(data, nn.Module | Op):
-            return Op(data, self)
-        return self.using(data)
+    def _resolve(self, data: Any) -> Any:
+        return self.strategy(data)
 
-    def __lshift__(self, data: OMType) -> Op:
-        if isinstance(data, nn.Module):
-            return self << data(X)
-
-        out = self.strategy.lparallelize(data)
-
-        if out is NotImplemented:
-            if isinstance(data, Op):
-                return data.strategy.rparallelize(self)
-        else:
-            return out
-        
-        return NotImplemented
-
-    def __rlshift__(self, data: nn.Module) -> Op:
-        if isinstance(data, nn.Module):
-            return data(X) << self
-            
-        return NotImplemented
-            
     def __repr__(self):
         return f"Op({self.strategy!r})"
 
 
-def op_unary_method[T: Op](oper: Callable[[T], T]) -> Callable[[T], Op]:
-    def func(self: T) -> Op:
-        return Op(oper, self)
-    return func
-
-
-def op_binary_method[T: Op](oper: Callable[[T, T], T], is_right: bool) -> Callable[[T, Any], Op]:
-    
-    def func(self: T, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
-        return Op(oper, self, other)
-
-    def rfunc(self: T, other: Any) -> Op:
-        if isinstance(other, nn.Module):
-            other = other(X)
-        return Op(oper, other, self)
-
-    return rfunc if is_right else func
-
-
-for bin_op, (method, rmethod) in binary_operators.items():
-    if method in ("__rshift__", "__lshift__"):
-        continue
-
-    setattr(Op, method, op_binary_method(bin_op, False))
-    setattr(Op, rmethod, op_binary_method(bin_op, True))
-
-for uni_op, method in unary_operators.items():    
-    setattr(Op, method, op_unary_method(uni_op))
-
-
-class _OpStrategy(ABC):
-    _condition: Optional[X | Op | bool]
-    _else_: Optional[X | Op]
-
-    def __new__(cls, *args, **kwargs):
-        obj = super().__new__(cls)
-        obj._condition = None
-        obj._else_ = None
-        return obj
-   
-    def __call__(self, data: Any) -> Any:
-        if self._condition is not None:
-            condition = conjure(self._condition, data)
-            if condition:
-                return self.using(data)
-            
-            if self._else_ is not None:
-                return conjure(self._else_, data)
-            else:
-                return data
-        return self.using(data)
-
-    def if_(self, condition: bool | X | Op, else_: Optional[X | Op] = None):
-        out = self._copy()
-        out._condition = condition
-        out._else_ = else_
-        return out
-
-    @abstractmethod
-    def lparallelize(self, data: OMType) -> Op:
-        pass
-
-    @abstractmethod
-    def rparallelize(self, data: OMType) -> Op:
-        pass
-
-    @abstractmethod
-    def _copy(self):
-        pass
-
-    @abstractmethod
-    def using(self, data: Any) -> Any:
-        pass
-  
-    @abstractmethod
-    def __repr__(self):
-        pass
-
-
-class _OpX(_OpStrategy):
+class _XStrategy:
     """ 
     Op Strategy when `op` is an instance of `X`. E.g.:
     
@@ -577,30 +537,14 @@ class _OpX(_OpStrategy):
     def __init__(self, op: X) -> None:
         self._op = op
 
-    @property
-    def op(self) -> Op:
-        return Op.from_strategy(self)
-
-    def lparallelize(self, data: OMType) -> Op:
-        return Op([self.op]) << data
-    
-    def rparallelize(self, data: OMType) -> Op:
-        return data << Op([self.op])
-
-    def _copy(self):
-        out = type(self)(self._op)
-        out._condition = self._condition
-        out._else_ = self._else_
-        return out
-
-    def using(self, data: Any) -> Any:
+    def __call__(self, data: Any) -> Any:
         return conjure(self._op, data)
 
     def __repr__(self):
         return f"{self._op!r}"
 
 
-class _OpCallable(_OpStrategy):
+class _CallableStrategy:
     """ 
     Op Strategy when `op` is a Callable.out._condition = self._condition
         out._else_ = self._else_
@@ -613,20 +557,8 @@ class _OpCallable(_OpStrategy):
     def __init__(self, op: Callable[..., Any], *args, **kwargs) -> None:
         self.op = op
         self.args = A(*args, **kwargs)
-
-    def lparallelize(self, data: OMType) -> Op:
-        return Op([Op.from_strategy(self)]) << data
-
-    def rparallelize(self, data: OMType) -> Op:
-        return data << Op([Op.from_strategy(self)])
-
-    def _copy(self):
-        out = type(self)(self.op, *self.args.args, **self.args.kwargs)
-        out._condition = self._condition
-        out._else_ = self._else_
-        return out
     
-    def using(self, data: Any) -> Any:
+    def __call__(self, data: Any) -> Any:
         resolved = data >> self.args
         return self.op(*resolved.args, **resolved.kwargs)
 
@@ -650,112 +582,156 @@ class _OpCallable(_OpStrategy):
         return f"{name}({args})"
 
 
-class _OpSerial(_OpStrategy):
-    """ 
-    Op Strategy when `op` is a list of `Op` Instances. E.g.:
-    
-    ```python
-    linear1 >> linear2
-    ```
-
-    which is the same as `Op(linear1, linear2)`. This calls each op in sequence.
-    """
-    def __init__(self, *args: OMType) -> None:
-        ops = []
-        for op in args:
+class Serials(_OpBase):
+    def __init__(self, *ops: Delayable | X | nn.Module):
+        new_ops = []
+        for op in ops:
             if isinstance(op, nn.Module):
-                op = op(X)
-            elif not isinstance(op, Op):
-                raise ValueError("All arguments must be of type `Op`, `nn.Module`.")
-            ops.append(op)
+                new_ops.append(op(X))
+            elif isinstance(op, X):
+                new_ops.append(Op(op))
+            elif not isinstance(op, Delayable):
+                raise ValueError("All arguments must be of subtype `Delayable`.")
+            else:
+                new_ops.append(op)
+        self.ops = tuple(new_ops)
 
-        self.ops = ops
-
-    def lparallelize(self, data: OMType) -> Op:
-        if self._condition is not None:
-            raise ValueError("Cannot parallelize op bound to a Serial op with condition.")
-
-        if len(self.ops) == 1:
-            return self.ops[0] << data
-            
-        left = self._copy(self.ops[:-1])
-        right = self.ops[-1]
-        return Op(Op.from_strategy(left), right << data)
-
-    def rparallelize(self, data: OMType) -> Op:
-        if self._condition is not None:
-            raise ValueError("Cannot parallelize op bound to a Serial op with condition.")
-
-        if len(self.ops) == 1:
-            return data << self.ops[0]
-        
-        right = self._copy(self.ops[1:])
-        left = Op(self.ops[0])
-        return Op(data << left, Op.from_strategy(right))
-
-    def _copy(self, ops: Optional[list[Op]] = None):
-        if ops is None:
-            ops = self.ops
-        out = type(self)(*ops)
+    def copy(self):
+        out = Serials(*self.ops)
         out._condition = self._condition
         out._else_ = self._else_
         return out
     
-    def using(self, data: Any) -> Any:
+    def _resolve(self, data: Any) -> Any:
         for op in self.ops:
             data = op.using(data)
         return data
 
-    def __iter__(self):
-        return iter(self.ops)
-    
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.ops)
 
-    def __repr__(self):
-        return f"\n  {'\n  >> '.join(map(repr, self.ops))}\n"
 
+class Parallels(_OpBase):
+    ops: tuple[Iterable[Delayable] | Parallels, ...]
+    _else_ : Optional[Parallels]
 
-class _OpParallel(_OpSerial):
-    """ 
-    Apply consecutive ops in parallel. When an op is added to the list, 
+    def __init__(
+        self, 
+        *ops: list[Delayable | X | nn.Module] | Delayable | X | nn.Module, 
+        func: Optional[Callable[[Any], Any]] = None
+    ) -> None:
+        lengths = []
+        error_msg = (
+            "All arguments must be of subtype `Delayable | X | nn.Module` or lists of that with "
+            "broadcastable lengths."
+        )
 
-    ```python
-    linear1 >> linear2
-    ```
+        for op in ops:
+            if isinstance(op, list):
+                if not all(isinstance(item, Delayable | X | nn.Module) for item in op):
+                    raise ValueError(error_msg)
+                lengths.append(len(op))
+            elif isinstance(op, Parallels):
+                lengths.append(len(op))
+            elif not isinstance(op, Delayable | X | nn.Module):
+                raise ValueError(error_msg)
+            else:
+                lengths.append(1)
 
-    which is the same as `Op(linear1, linear2)`. This calls each op in parallel.
-    """
-    def lparallelize(self, data: OMType) -> Op:
-        """
-        If `data` is of type `Op`, only know how to handle other `Op` with parallel strategy.
-        """
-        if isinstance(data, Op):
-            if not isinstance(data.strategy, _OpParallel):
-                return NotImplemented
-        else:
-            return NotImplemented
-                    
-        right = list(data.strategy)
-        if len(right) == 1:
-            right = right * len(self)
+        unique_lengths = set(lengths)
+        self.length = max(unique_lengths)
 
-        left = list(self)
-        if len(left) == 1:
-            left = left * len(right)
+        unique_lengths.discard(1)
+        if len(unique_lengths) > 1:
+            raise ValueError(error_msg)
+
+        new_ops: list[list[Delayable] | Parallels] = []
+        for op in ops:
+            if isinstance(op, list):
+                new_op = []
+                for item in op:
+                    if isinstance(item, nn.Module):
+                        new_op.append(item(X))
+                    elif isinstance(item, X):
+                        new_op.append(Op(item))
+                    else:
+                        new_op.append(item)
+
+                if len(new_op) != self.length:
+                    new_op = op * self.length
+                new_ops.append(new_op)
+            elif isinstance(op, Parallels):
+                if len(op) != self.length:
+                    new_ops.append([op] * self.length)
+                else:
+                    new_ops.append(op)
+            elif isinstance(op, Delayable):
+                new_ops.append([op] * self.length)
+            elif isinstance(op, X):
+                new_ops.append([Op(op)] * self.length)
+            elif isinstance(op, nn.Module):
+                new_ops.append([op(X)] * self.length)
+            else:
+                raise ValueError(error_msg)
         
-        if len(left) != len(right):
-            raise ValueError("`<<` must have ops with broadcastable sizes.")
+        self.ops = tuple(new_ops)
+        self.func = func
+    
+    def __getitem__(self, idx: int) -> Delayable:
+        args = [op[idx] for op in self.ops]
+        
+        out : Delayable
+        if self.func is not None:
+            out = Op(self.func, *args)
+        else:
+            out = Serials(*args)
 
-        out = self._copy([l >> r for l, r in zip(left, right)])
-        return Op.from_strategy(out)
+        if self._condition is not None:
+            if self._else_ is not None:
+                if len(self._else_) == 1:
+                    else_ = self._else_[0]
+                else:
+                    else_ = self._else_[idx]
+            else:
+                else_ = None
+            out = out.if_(self._condition, else_)
+        
+        return out
+
+    def if_(
+        self, 
+        condition: bool | X | Delayable, 
+        else_: Optional[Parallels] = None
+    ) -> Parallels:
+        if else_ is not None:
+            if not isinstance(else_, Parallels):
+                raise ValueError("`else_` must be of type `Parallels`.")
+            if len(else_) != self.length:
+                raise ValueError("`else_` must have length equal to `self.length`.")
+            
+        return super().if_(condition, else_)
+            
+    def __len__(self) -> int:
+        return self.length
     
-    def rparallelize(self, data: nn.Module) -> Op:  # type: ignore[override]
-        """ This should never be reached. """
-        return NotImplemented        
+    def copy(self):
+        out = Parallels(*self.ops)
+        out._condition = self._condition
+        out._else_ = self._else_
+        return out
+
+    def _resolve(self, data: Any) -> Any:
+        for i in range(self.length):
+            data  = data >> self[i]
+        return data
     
-    def __repr__(self):
-        return f"\n  {'\n  << '.join(map(repr, self.ops))}\n"
+    def _unary_op(self, oper):
+        return Parallels(self, func=oper)
+    
+    def _binary_op(self, oper, other):
+        if isinstance(other, _OpBase):
+            return Parallels(self, other, func=oper)
+        return NotImplemented
 
 
 class W(enum.Enum):

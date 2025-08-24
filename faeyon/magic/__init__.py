@@ -5,6 +5,8 @@ from .spells import (
     FMMap,
     FVar,
     Op,
+    Serials,
+    Parallels,
     Wire,
     W
 )

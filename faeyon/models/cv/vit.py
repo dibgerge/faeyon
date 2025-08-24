@@ -6,6 +6,7 @@ from faeyon.nn import (
     PosInterpEmbedding, 
     TokenizedMask, 
     FaeSequential, 
+    FaeBlock,
     head_to_attn_mask,
     Concat
 )
@@ -57,10 +58,10 @@ class ViTBlock(nn.Module):
 
         result = (
             inputs 
-            >> outputs["hidden_states"].if_(return_hidden_states)
+            # >> outputs["hidden_states"].if_(return_hidden_states)
             >> self.lnorm_in 
             >> self.attention(X, X, X, need_weights=return_weights)
-            >> outputs["attention_weights"].if_(return_weights) @ X[1]
+            # >> outputs["attention_weights"].if_(return_weights) @ X[1]
             >> Op(X[0] + inputs)
             >> Op(X) + (
                 self.lnorm_out
@@ -133,15 +134,15 @@ class ViT(nn.Module):
             non_positional=1,
             align_corners=False,
         )   
-        self.blocks = FaeSequential(*num_layers * ViTBlock(
-            num_heads=heads,
-            embed_dim=embed_size,
-            mlp_size=mlp_size,
-            dropout=dropout,
-            lnorm_eps=lnorm_eps,
-        ))
+        # self.blocks = FaeSequential(*num_layers * ViTBlock(
+        #     num_heads=heads,
+        #     embed_dim=embed_size,
+        #     mlp_size=mlp_size,
+        #     dropout=dropout,
+        #     lnorm_eps=lnorm_eps,
+        # ))
 
-        self.blocks2 = FaeBlock({
+        self.blocks = FaeBlock({
             "lnorm_in": nn.LayerNorm(embed_size, eps=lnorm_eps),
             "lnorm_out": nn.LayerNorm(embed_size, eps=lnorm_eps),
             "linear1": nn.Linear(embed_size, mlp_size),
@@ -154,7 +155,7 @@ class ViT(nn.Module):
                 dropout=dropout,
             ),
             "gelu": nn.GELU(),
-        }, repeat=num_layers)
+        }, repeats=num_layers)
 
         self.dropout = nn.Dropout(dropout)
         self.classifier = nn.Linear(embed_size, 1000)
@@ -191,7 +192,7 @@ class ViT(nn.Module):
         attention_weights = FList().if_(return_attention_weights)
         hidden_states = FList().if_(return_hidden_states)
         cls_token = self.cls_token.expand(img.shape[0], -1, -1)
-        head_mask = Op(
+        attn_mask = Op(
             head_to_attn_mask, 
             head_mask, 
             X.shape[0], 
@@ -208,18 +209,37 @@ class ViT(nn.Module):
                 >> self.concat(cls_token, X, dim=1)
             )
             >> self.dropout
-            >> hidden_states
-            >> A(
-                X,
-                head_mask=head_mask,
-                return_weights=return_attention_weights,
-                return_hidden_states=return_hidden_states
-            )
-            >> self.blocks.reset().wire(
-                X[0] if return_hidden_states or return_attention_weights else X, head_mask=W.Fanout).report(
-                hidden_states @ X[1]["hidden_states"], 
-                attention_weights @ X[1]["attention_weights"]
-            )
+            >> (
+                self.fstate.hidden
+                >>
+                Op(X) + (
+                    self.blocks.lnorm_in(X)
+                    << self.blocks.attention(X, X, X, need_weights=return_attention_weights)
+                    << Op(X[0])
+                )
+                # >> outputs["attention_weights"].if_(return_weights) @ X[1]
+                # << Op(X[0] + inputs)
+                << Op(X) + (
+                    self.blocks.lnorm_out(X)
+                    << self.blocks.linear1(X)
+                    << self.blocks.gelu(X)
+                    << self.blocks.linear2(X)
+                    << self.blocks.dropout(X)
+                )
+            )  # type: ignore
+
+            >> self.fstate.hidden
+            # >> A(
+            #     X,
+            #     # head_mask=attn_mask,
+            #     # return_weights=return_attention_weights,
+            #     # return_hidden_states=return_hidden_states
+            # )
+            # >> self.blocks.reset().wire(
+            #     X[0] if return_hidden_states or return_attention_weights else X)#.report(
+            # #     hidden_states @ X[1]["hidden_states"], 
+            # #     attention_weights @ X[1]["attention_weights"]
+            # # )
             >> Op(X[0]).if_(return_hidden_states or return_attention_weights)
             >> self.lnorm
             >> Op(X[..., 0, :])
