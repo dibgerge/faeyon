@@ -1,8 +1,16 @@
+import enum
 import torch
+import torch.nn.functional as F
 
-from typing import Optional
+from typing import Callable, Optional
+from faeyon import A, Op
 from torch import nn
+from torch.nn.attention.flex_attention import flex_attention
 
+
+class Enum(enum.StrEnum):
+    RoPe = "rope"
+   
 
 class Attention(nn.Module):
     """
@@ -95,3 +103,142 @@ class AdditiveAttention(Attention):
 
         c = torch.sum(alpha * value.unsqueeze(-3), dim=-2)
         return c
+
+
+class MultiHeadAttention(nn.Module):
+    """
+    softmax( fa( fq(xq Wq + bq) fk(xk Wk + bk)^T ) / scale ) fv(xv Wv)
+    If fa is a string, a preset is used, and we should not specify fq, fk, fv.
+    """
+    def __init__(
+        self,
+        embed_size: int,
+        num_heads: int = 1,
+        key_size: Optional[int] = None,
+        query_size: Optional[int] = None,
+        value_size: Optional[int] = None,
+        scale: Optional[float] = None,
+        dropout: Optional[float] = 0.0,
+        bias: Optional[bool] = False,
+        fa: Optional[Callable | str] = None,
+        fq: Optional[Callable] = None,
+        fk: Optional[Callable] = None,
+        fv: Optional[Callable] = None,
+    ) -> None:
+        super().__init__(
+            embed_size=embed_size,
+            key_size=key_size,
+            query_size=query_size,
+            value_size=value_size
+        )
+        self.num_heads = num_heads
+        self.head_size = embed_size // num_heads
+        self.key_proj = nn.Linear(self.key_size, self.embed_size, bias=bias)
+        self.query_proj = nn.Linear(self.query_size, self.embed_size, bias=bias)
+        self.value_proj = nn.Linear(self.value_size, self.embed_size, bias=bias)
+        self.out_proj = nn.Linear(self.embed_size, self.embed_size, bias=bias)
+
+        if isinstance(fa, str):
+            if fk is not None or fv is not None or fq is not None:
+                raise ValueError("`fk`, `fv` and `fq` must be None if `fa` is a string.")
+
+            self.fa, self.fqk, self.fv = fa()
+        else:        
+            self.fa = fa
+            self.fq = Op(fq)
+            self.fk = Op(fk)
+            self.fv = Op(fv)
+        self.scale = scale
+        self.dropout = dropout
+    
+    def forward(
+        self, 
+        query: torch.Tensor, 
+        key: torch.Tensor, 
+        value: torch.Tensor, 
+        attn_mask: Optional[torch.Tensor] = None,
+        is_causal: bool = False,
+    ) -> torch.Tensor:
+        """
+        Parameters
+        ----------
+
+        query : torch.Tensor    
+            Query tensor with shape (B, T_q, Eq). 
+
+        key : torch.Tensor
+            Key tensor with shape (B, T_kv, Ek). 
+
+        value : torch.Tensor
+            Value tensor with shape (B, T_kv, Ev).
+
+        attn_mask : torch.Tensor, optional
+            Attention mask with shape (B, T_q, T_kv), **Default**: None
+        """
+        q = query >> self.query_proj >> A(X, attn_mask=self.attn_mask) >> self.fq
+        k = key >> self.key_proj >> A(X, attn_mask=self.attn_mask) >> self.fk
+        v = value >> self.value_proj >> A(X, attn_mask=self.attn_mask) >> self.fv
+        
+        if self.fa is not None:
+            # TODO: Adding dropout?
+            attention = flex_attention(   
+                q, k, v,
+                score_mod=self.fa,
+                block_mask=None,
+                scale=self.scale,
+            )
+        else:
+            attention = F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=attn_mask,
+                dropout_p=self.dropout,
+                scale=self.scale,
+                is_causal=True,
+            )
+
+        return attention >> self.out_proj
+
+
+class RotaryEmbedding(nn.Module):
+    def __init__(
+        self, 
+        max_position_embeddings: int, 
+        embed_dim: int, 
+        num_heads: int
+    ):
+        super().__init__()
+        base = 10000.0
+        self.inv_freq = 1.0 / base ** (torch.arange(0, num_heads, 2) / embedding_dim)
+        self.embed_dim = embed_dim
+
+        if self.embed_dim % 2 != 0:
+            raise ValueError("Embedding dimension must be even for rotary embedding.")
+    
+    def forward(
+        self, 
+        x: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
+        is_causal: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        q : 
+            A tensor of shape (B, T, D), where B is batch size and T is the sequence length, 
+            and D is the embedding dimension.
+
+        k : 
+            A tensor of shape (B, T, D), where B is batch size and T is the sequence length, 
+            and D is the embedding dimension.
+        """
+        t, d = x.shape[-2:]
+        if d != self.embed_dim:
+            raise ValueError(
+                "q and k must have the same embedding dimension and the rotaty."
+            )
+            
+        pos = torch.where(attn_mask == 0, torch.arange(t, device=x.device), 1)
+        f = torch.outer(pos, self.inv_freq)
+        cos, sin = f.cos(), f.sin()
+        d = x.shape[-1] // 2
+        out1 =  x[..., :d] * cos - x[..., d:] * sin
+        out2 =  x[..., d:] * cos + x[..., :d] * sin
+        return torch.cat([out1, out2], dim=-1)

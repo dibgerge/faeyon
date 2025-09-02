@@ -524,6 +524,8 @@ class Op(_OpBase):
             self.strategy = _XStrategy(op)
         elif isinstance(op, Callable):  # type: ignore[arg-type]
             self.strategy = _CallableStrategy(op, *args, **kwargs)
+        elif isinstance(op, None):
+            self.strategy = _NoopStrategy()
         else:
             raise ValueError(f"Arguments should be of type `X` or Callable. Got {type(op)}.")
 
@@ -544,6 +546,14 @@ class Op(_OpBase):
 
     def __repr__(self):
         return f"Op({self.strategy!r})"
+
+
+class _NoopStrategy:
+    def __call__(self, data: Any) -> Any:
+        return data
+    
+    def __repr__(self):
+        return "<noop>"
 
 
 class _XStrategy:

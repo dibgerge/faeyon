@@ -81,3 +81,7 @@ print(abs(y -  y_hf.logits).sum())
 print("\n Saved states")
 print(model.fstate.collect())
 
+
+torch.save(model.state_dict(), "vit.pt")
+
+
