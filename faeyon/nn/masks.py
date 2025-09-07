@@ -57,8 +57,9 @@ def head_to_attn_mask(
     num_layers: Optional[int] = None
 ) -> torch.Tensor | list[None] | None:
     """
-    Applies selective masks to the attention weights of a multihead attention layer. This allows using masks for particular heads and reshapes the head to 
-    the correct shape based on expected sequence shape.
+    Applies selective masks to the attention weights of a multihead attention layer. This allows 
+    using masks for particular heads and reshapes the head to the correct shape based on expected 
+    sequence shape.
 
     H: Number of heads
     L: Number of layers
@@ -70,6 +71,26 @@ def head_to_attn_mask(
     ----------
     head_mask: torch.Tensor
         Indicates which heads are masked and which aren't. Should be of shape `(H,)` or `(L, H)`.
+
+    batch_size: int
+        The batch size of the input tensor, will be used to expand the head mask to the 
+        correct shape.
+    
+    src_len: int
+        The length of the source sequence, will be used to expand the head mask to the 
+        correct shape.
+    
+    tgt_len: int
+        The length of the target sequence, will be used to expand the head mask to the 
+        correct shape.
+    
+    ravel: bool
+        If True, the batch size and head dimensions will be combined. This format conforms to 
+        what is expected by the `MultiHeadAttention` class.
+    
+    num_layers: int
+        The number of layers in the model, this is required if `head_mask` is of shape (H,) and 
+        attention mask needs to be repeated for each layer.
     
     Returns
     -------

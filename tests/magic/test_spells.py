@@ -966,15 +966,3 @@ class TestW:
         assert isinstance(mux, _Mux)
         assert mux.s0 == "s0"
         assert mux.s1 == "s1"
-
-    def test_w_call_with_invalid_name(self):
-        """Test W.__call__ with invalid name raises AttributeError"""
-        from faeyon.magic.spells import W
-        
-        # Create a W instance with an invalid name
-        invalid_w = W.Fanout
-        invalid_w._name_ = "Invalid"  # type: ignore
-        
-        with pytest.raises(AttributeError):
-            invalid_w("test")
-

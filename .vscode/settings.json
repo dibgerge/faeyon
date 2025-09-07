@@ -3,9 +3,8 @@
     "python.testing.pytestArgs": [
         "tests"
     ],
-    "python.experiments.optInto": ["pythonTestAdapter"],
     "python.testing.unittestEnabled": false,
-    "python.testing.pytestEnabled": false,
+    "python.testing.pytestEnabled": true,
     "python.linting.mypyEnabled": false,
     "python.linting.mypyArgs": [
         "--config-file=pyproject.toml"

@@ -5,7 +5,8 @@ import enum
 import itertools
 import operator
 from collections.abc import Callable, Iterator, Iterable
-from typing import Any, Optional, overload, Union
+from typing import Any, Optional, overload
+from types import NoneType
 from abc import ABC, abstractmethod
 from collections import defaultdict
 
@@ -524,7 +525,7 @@ class Op(_OpBase):
             self.strategy = _XStrategy(op)
         elif isinstance(op, Callable):  # type: ignore[arg-type]
             self.strategy = _CallableStrategy(op, *args, **kwargs)
-        elif isinstance(op, None):
+        elif isinstance(op, NoneType):
             self.strategy = _NoopStrategy()
         else:
             raise ValueError(f"Arguments should be of type `X` or Callable. Got {type(op)}.")

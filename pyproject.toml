@@ -23,7 +23,7 @@ select = [
 
 
 [tool.pytest.ini_options]
-addopts = "--color=no -s --cov=faeyon/ --cov-report html:.test_coverage/html"
+addopts = "--color=yes -s --cov=faeyon/ --cov-report html:.test_coverage/html"
 required_plugins = ["pytest-cov"]
 
 

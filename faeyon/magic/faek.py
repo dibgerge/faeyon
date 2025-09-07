@@ -153,7 +153,7 @@ def __mul__[T: nn.Module](self: T, other: int | nn.Module | Op) -> list[T] | Op:
     if isinstance(other, nn.Module):
         return getattr(self(X), "__mul__")(other(X))
     
-    if isinstance(other, Op):
+    if isinstance(other, Delayable):
         return getattr(self(X), "__mul__")(other)
 
     if not isinstance(other, int):

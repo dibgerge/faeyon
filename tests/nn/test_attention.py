@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from faeyon.nn import AdditiveAttention
+from faeyon.nn import AdditiveAttention, MultiHeadAttention
 
 
 class TestAdditiveAttention:
@@ -71,3 +71,10 @@ class TestAdditiveAttention:
 
         output = attention(queries, keys, values)
         assert output.shape == expected_shape
+
+
+class TestMultiHeadAttention:
+    def test_usage(self):
+        fattn = MultiHeadAttention(embed_size=4, num_heads=2)
+        x = torch.rand(2, 5, 4)
+        y = fattn(x, x, x)

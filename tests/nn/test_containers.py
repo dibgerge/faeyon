@@ -106,13 +106,13 @@ class TestFaeSequential:
 
 class TestFaeModuleList:
     def test_forward(self):
-        model = FaeModuleList(nn.Linear(2, 2), 2)
+        model = FaeModuleList(nn.Linear(2, 2) * 2)
         x = torch.randn(1, 2)
         out = x >> model(X)
         assert out.shape == (1, 2)
 
     def test_forward_with_mux(self):
-        model = FaeModuleList(nn.Linear(2, 2), 2)
+        model = FaeModuleList(nn.Linear(2, 2) * 2)
         out = [1, torch.randn(1, 2)] >> model(W.Mux(X[1], X))
         assert out.shape == (1, 2)
 

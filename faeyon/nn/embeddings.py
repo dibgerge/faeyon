@@ -67,3 +67,51 @@ class PosInterpEmbedding(nn.Module):
         if self.non_positional is not None:
             return torch.cat((self.non_positional, out.flatten(2)), dim=2)
         return out
+
+
+class RotaryEmbedding(nn.Module):
+    """
+    RoPe embeddings. Must call this on keys and queries individually.
+    """
+    def __init__(
+        self, 
+        embed_dim: int, 
+        base: float = 10000.0
+    ) -> None:
+        super().__init__()
+        self.register_buffer("inv_freq", 1.0 / base ** (torch.arange(0, embed_dim, 2) / embed_dim))
+        self.embed_dim = embed_dim
+
+        if self.embed_dim % 2 != 0:
+            raise ValueError("Embedding dimension must be even for rotary embedding.")
+    
+    def forward(
+        self, 
+        x: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        q : 
+            A tensor of shape (B, T, D), where B is batch size and T is the sequence length, 
+            and D is the embedding dimension.
+
+        k : 
+            A tensor of shape (B, T, D), where B is batch size and T is the sequence length, 
+            and D is the embedding dimension.
+        """
+        t, d = x.shape[-2:]
+        if d != self.embed_dim:
+            raise ValueError(
+                "q and k must have the same embedding dimension and the rotaty."
+            )
+        
+        pos = torch.arange(t, device=x.device)
+        if mask is not None:
+            pos = torch.where(mask == 0, pos, 1)
+
+        f = torch.outer(pos, self.inv_freq)
+        cos, sin = f.cos(), f.sin()
+        d = x.shape[-1] // 2
+        out1 =  x[..., :d] * cos - x[..., d:] * sin
+        out2 =  x[..., d:] * cos + x[..., :d] * sin
+        return torch.cat([out1, out2], dim=-1)

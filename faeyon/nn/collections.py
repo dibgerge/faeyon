@@ -97,14 +97,15 @@ class FaeSequential(nn.Module):
             )
 
 
-class FaeModuleList(nn.Module):
-    def __init__(self, module: nn.Module, repeats: int) -> None:
-        super().__init__()
-        self.mlist = nn.ModuleList(module * repeats)
-    
+class FaeModuleList(nn.ModuleList):
+    # def __init__(self, modules: Optional[Iterable[nn.Module]] = None) -> None:
+    #     super().__init__(modules)
+
     def __call__(self, *args: Any, **kwargs: Any) -> Parallels:
+        # TODO: What if args/kwargs are already resolved?
         ops = []
-        for i, layer in enumerate(self.mlist):
+        for name, layer in self.named_children():
+            i = int(name)
             layer_args = [arg[i] if isinstance(arg, Wiring) else arg for arg in args]
             layer_kwargs = {
                 k: arg[i] if isinstance(arg, Wiring) else arg 
@@ -119,14 +120,39 @@ class FaeBlock(nn.Module):
     TODO: Handling non-module components will require ways to re-initialize them. Maybe for 
     `Parameter`/`Buffer` type, give the generator method instead of the tensor itself...
     """
-    def __init__(self, components: dict[str, nn.Module], repeats: int) -> None:
-        if repeats < 1:
+    def __init__(
+        self, 
+        components: dict[str, list[nn.Module] | nn.Module], 
+        repeats: Optional[int] = None
+    ) -> None:
+        super().__init__()
+        if repeats is not None and repeats < 1:
             raise ValueError("Repeats must be at least 1.")
 
-        super().__init__()
+        lengths = set()
+        msg = "Components must be instances of `nn.Module` or a list thereof."
+        for component in components.values():
+            if isinstance(component, list):
+                if not all(isinstance(x, nn.Module) for x in component):
+                    raise ValueError(msg)
+                lengths.add(len(component))
+            elif not isinstance(component, nn.Module):
+                raise ValueError(msg)
+            
+        if len(lengths) > 1:
+            raise ValueError("All components must have the same length.")
+        elif len(lengths) == 0:
+            if repeats is None:
+                raise ValueError("`repeats must be specified if no component list is given.")
+            length = repeats
+        else:
+            length = lengths.pop()
+            
+            if repeats is not None and length != repeats:
+                raise ValueError("A component list has a different length than `repeats`.")
+                    
         for key, component in components.items():
             if isinstance(component, nn.Module):
-                self.add_module(key, FaeModuleList(component, repeats))
+                self.add_module(key, FaeModuleList(component * length))
             else:
-                # TODO: Handle non-module components
-                raise NotImplementedError("Non-module components are not supported yet.")
+                self.add_module(key, FaeModuleList(component))

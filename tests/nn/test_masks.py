@@ -60,7 +60,7 @@ def test_head_to_attn_mask(head_mask, num_layers):
     src_len = 3
     tgt_len = 3
     heads = 5
-    res = head_to_attn_mask(head_mask, batch_size, src_len, tgt_len, num_layers)
+    res = head_to_attn_mask(head_mask, batch_size, src_len, tgt_len, num_layers=num_layers)
     expected = torch.zeros(batch_size, src_len, tgt_len)
     
     if num_layers is None:
