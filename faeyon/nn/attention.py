@@ -112,14 +112,32 @@ class MultiHeadAttention(nn.Module):
 
     fv callable which transforms the value tensor
     fk, fq callable which transforms the key and query tensors. The also get the attention mask and is_causal as arguments.
+
+    Attention = softmax(Q K^T / scale) V
+
+    Where 
+        Q ~ dm x d hq
+        K ~ dm x d h
+        V ~ dm x dv h
+
+    and 
+
+        dm = embed_size
+        d = kdim
+        dv = vdim
+        h = number of heads
+
+        hq = h g 
+        g = group_size  -- the number of kv heads per group in grouped query attention
+
+    If kdim, vdim are not specified, they will default to dm/h, so h must divide dm
     """
     def __init__(
         self,
-        embed_size: int,
+        dm: int,
         num_heads: int = 1,
-        num_heads_kv: Optional[int] = None,
+        group_size: int = 1,
         kdim: Optional[int] = None,
-        qdim: Optional[int] = None,
         vdim: Optional[int] = None,
         scale: Optional[float] = None,
         bias: Optional[bool] = False,
@@ -130,30 +148,28 @@ class MultiHeadAttention(nn.Module):
         fv: Optional[Callable] = None,
     ) -> None:
         super().__init__()
-        if embed_size % num_heads != 0:
-            raise ValueError("embed_size must be divisible by num_heads.")
 
-        if num_heads_kv is None:
-            num_heads_kv = num_heads
-        else:
-            if num_heads % num_heads_kv != 0:
-                raise ValueError("num_heads must be divisible by num_heads_kv.")
-        
-        self.num_heads_kv = num_heads_kv
+        if kdim is None or vdim is None:
+            if dm % num_heads != 0:
+                raise ValueError("embed_size must be divisible by num_heads.")
+
+            if kdim is None:
+                kdim = dm // num_heads
+            
+            if vdim is None:
+                vdim = dm // num_heads
+                   
         self.num_heads = num_heads
-        self.head_dim = embed_size // num_heads
-
-        if kdim is None:
-            kdim = embed_size
-        if qdim is None:
-            qdim = embed_size
-        if vdim is None:
-            vdim = embed_size
+        self.num_qheads = num_heads * group_size
+        self.kdim = kdim
+        self.vdim = vdim
+        self.embed_size = dm
+        self.group_size = group_size
         
-        self.query_proj = nn.Linear(qdim, embed_size, bias=bias)
-        self.key_proj = nn.Linear(kdim, self.num_heads_kv * self.head_dim, bias=bias)
-        self.value_proj = nn.Linear(vdim, self.num_heads_kv * self.head_dim, bias=bias)
-        self.out_proj = nn.Linear(embed_size, embed_size, bias=bias)
+        self.q_proj = nn.Linear(dm, self.kdim * self.num_qheads, bias=bias)
+        self.k_proj = nn.Linear(dm, self.kdim * self.num_heads, bias=bias)
+        self.v_proj = nn.Linear(dm, self.vdim * self.num_heads, bias=bias)
+        self.o_proj = nn.Linear(self.vdim * self.num_qheads, dm, bias=bias)
 
         if isinstance(fa, str):
             if fk is not None or fv is not None or fq is not None:
@@ -194,11 +210,11 @@ class MultiHeadAttention(nn.Module):
         """
         # TODO: consider the causal mask combined with attn_mask.
         b, t = query.shape[:2]
-        reshape = X.view(b, t, -1, self.head_dim).transpose(1, 2)
+        reshape = X.view(b, t, -1, self.kdim).transpose(1, 2)
 
-        q = query >> self.query_proj >> reshape >> Op(self.fq, X, mask=attn_mask)
-        k = key >> self.key_proj >> reshape >> Op(self.fk, X, mask=attn_mask)
-        v = value >> self.value_proj >> reshape >> Op(self.fv)
+        q = query >> self.q_proj >> reshape >> Op(self.fq, X, mask=attn_mask)
+        k = key >> self.k_proj >> reshape >> Op(self.fk, X, mask=attn_mask)
+        v = value >> self.v_proj >> X.view(b, t, -1, self.vdim).transpose(1, 2) >> Op(self.fv)
         
         if self.fa is not None:
             # TODO: Adding dropout?
@@ -209,14 +225,18 @@ class MultiHeadAttention(nn.Module):
                 scale=self.scale,
             )
         else:
+            # if self.group_size > 1:
+            #     k = k[..., None, :, :].expand(b, self.num_heads, self.group_size, t, self.kdim).reshape(b, self.num_heads * self.group_size, t, self.kdim)
+            #     v = v[..., None, :, :].expand(b, self.num_heads, self.group_size, t, self.vdim).reshape(b, self.num_heads * self.group_size, t, self.kdim)
+
             attention = F.scaled_dot_product_attention(
                 q, k, v,
                 attn_mask=attn_mask,
                 dropout_p=self.dropout if self.training else 0.0,
                 scale=self.scale,
-                is_causal=True,
-                enable_gqa=self.num_heads != self.num_heads_kv,
+                is_causal=is_causal,
+                enable_gqa=self.group_size > 1,
             )
-
-        return attention >> X.transpose(1, 2).reshape(b, t, -1) >> self.out_proj
+        out = attention >> X.transpose(1, 2).contiguous().reshape(b, t, -1) 
+        return out >> self.o_proj
 

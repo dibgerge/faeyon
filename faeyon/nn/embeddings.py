@@ -76,7 +76,7 @@ class RotaryEmbedding(nn.Module):
     def __init__(
         self, 
         embed_dim: int, 
-        base: float = 10000.0
+        base: float = 1000000.0
     ) -> None:
         super().__init__()
         self.register_buffer("inv_freq", 1.0 / base ** (torch.arange(0, embed_dim, 2) / embed_dim))
