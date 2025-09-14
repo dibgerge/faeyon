@@ -9,7 +9,6 @@ from faeyon import Op, X
 class QKTransform(nn.Module):
     def __init__(self, rotary_embedding: RotaryEmbedding, head_dim: int, eps: float) -> None:
         super().__init__()
-
         self.rotary_embedding = rotary_embedding
         self.norm = nn.RMSNorm(head_dim, eps=eps)
     
@@ -85,4 +84,4 @@ class Qwen(nn.Module):
             )
             >> self.norm
             >> self.lm_head
-         )
+        )
