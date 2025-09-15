@@ -25,7 +25,7 @@ class Qwen(nn.Module):
         num_layers: int,
         padding_idx: int,
         intermediate_size: int,
-        group_size: Optional[int] = None,
+        group_size: int = 1,
         dropout: float = 0.1,
         bias: bool = False,
         eps: float = 1e-6

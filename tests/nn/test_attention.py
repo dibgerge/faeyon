@@ -75,6 +75,6 @@ class TestAdditiveAttention:
 
 class TestMultiHeadAttention:
     def test_usage(self):
-        fattn = MultiHeadAttention(embed_size=4, num_heads=2)
+        fattn = MultiHeadAttention(dm=4, num_heads=2)
         x = torch.rand(2, 5, 4)
         y = fattn(x, x, x)

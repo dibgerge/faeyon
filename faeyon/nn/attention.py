@@ -158,7 +158,7 @@ class MultiHeadAttention(nn.Module):
             
             if vdim is None:
                 vdim = dm // num_heads
-                   
+        
         self.num_heads = num_heads
         self.num_qheads = num_heads * group_size
         self.kdim = kdim
@@ -229,13 +229,14 @@ class MultiHeadAttention(nn.Module):
             #     k = k[..., None, :, :].expand(b, self.num_heads, self.group_size, t, self.kdim).reshape(b, self.num_heads * self.group_size, t, self.kdim)
             #     v = v[..., None, :, :].expand(b, self.num_heads, self.group_size, t, self.vdim).reshape(b, self.num_heads * self.group_size, t, self.kdim)
 
+            enable_gqa = self.group_size > 1
             attention = F.scaled_dot_product_attention(
                 q, k, v,
                 attn_mask=attn_mask,
                 dropout_p=self.dropout if self.training else 0.0,
                 scale=self.scale,
                 is_causal=is_causal,
-                enable_gqa=self.group_size > 1,
+                enable_gqa=enable_gqa,
             )
         out = attention >> X.transpose(1, 2).contiguous().reshape(b, t, -1) 
         return out >> self.o_proj

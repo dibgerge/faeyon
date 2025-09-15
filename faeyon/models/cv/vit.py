@@ -20,6 +20,8 @@ class ViT(nn.Module):
     - [ ] checkpointing
     - [ ] Loading pre-trained model
     """
+    task: nn.Module | type[X]
+
     def __init__(
         self,
         embed_size: int,
@@ -28,6 +30,7 @@ class ViT(nn.Module):
         patch_size: int | tuple[int, int],
         num_layers: int,
         mlp_size: int,
+        task: Optional[nn.Module] = None,
         use_patch_mask: bool = False,
         in_channels: int = 3,
         dropout: float = 0.1,
@@ -86,6 +89,11 @@ class ViT(nn.Module):
         self.classifier = nn.Linear(embed_size, 1000)
         self.lnorm = nn.LayerNorm(embed_size, eps=lnorm_eps)
         self.concat = Concat()
+
+        if task is not None:
+            self.task = task
+        else:
+            self.task = X
 
     def forward(
         self,
@@ -159,9 +167,5 @@ class ViT(nn.Module):
                 << self.fstate.hidden.if_(keep_hidden)
             )
             >> self.lnorm
-            >> X[..., 0, :]
-            >> self.classifier
+            >> self.task
         )
-
-
-# Define the pre-trained model configurations given by google
