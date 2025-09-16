@@ -1,0 +1,27 @@
+# Cloud deployment dependencies for Faeyon
+# Install with: pip install -r cloud_requirements.txt
+
+# Core dependencies (already in main requirements)
+torch>=2.0.0
+torchvision>=0.15.0
+numpy>=1.21.0
+
+# Cloud platform SDKs
+kubernetes>=24.0.0
+boto3>=1.26.0
+google-cloud-aiplatform>=1.30.0
+azure-ai-ml>=1.0.0
+docker>=6.0.0
+
+# Configuration and utilities
+pyyaml>=6.0
+tqdm>=4.64.0
+
+# Optional: Jupyter for interactive development
+jupyter>=1.0.0
+ipywidgets>=8.0.0
+
+# Additional cloud utilities
+awscli>=1.29.0
+google-cloud-sdk>=400.0.0
+azure-cli>=2.50.0
