@@ -153,6 +153,29 @@ def create_training_generator(
         step += 1
 
 
+class DataHandler:
+    def __init__(
+        self, 
+        train_data: DataLoader, 
+        start_epoch: int = 0, 
+        start_step: int = 0,
+        min_period: Period,
+        max_period: Period,
+        val_freq: int = 1
+    ):
+        self.train_data = train_data
+
+    def __iter__(self):
+        return self
+    
+    def __next__(self) -> Any:
+        batch = next(self.train_data)
+        self.step += 1
+
+        # Check if epoch should be incremented, or if the data loader should be reset
+        return batch
+
+
 class Recipe:
     """ The base class for training recipes """
     def __init__(
@@ -287,6 +310,7 @@ class Recipe:
         max_period: str,
         val_data: Optional[DataLoader] = None,
         val_freq: int = 1,
+        gradient_accumulation_steps: int = 1,
         verbose: bool = True
     ) -> Dict[str, Any]:
         """
@@ -298,6 +322,7 @@ class Recipe:
             max_period: Maximum training period (e.g., "2m", "10e", "5000s")
             val_data: Validation data loader
             val_freq: Validation frequency (every N steps)
+            gradient_accumulation_steps: Number of steps to accumulate gradients before updating
             verbose: Whether to print progress
             
         Returns:
@@ -332,19 +357,36 @@ class Recipe:
         
         # Training loop
         step = 0
+        accumulation_step = 0
+        accumulated_loss = 0.0
+        
         for batch, step, should_validate in create_training_generator(train_data, val_data, val_freq):
             # Call batch begin callbacks
             self._call_callbacks('on_batch_begin', {'step': step, 'batch': batch})
             
-            # Training step
-            self.optimizer.zero_grad()
-            loss = self.train_step(batch, step)
-            loss.backward()
-            self.optimizer.step()
+            # Training step with gradient accumulation
+            if accumulation_step == 0:
+                self.optimizer.zero_grad()
             
-            # Track loss (only on master process for distributed training)
-            if is_master_process():
-                history['train_loss'].append(loss.item())
+            loss = self.train_step(batch, step)
+            
+            # Scale loss by accumulation steps to maintain correct gradient magnitudes
+            scaled_loss = loss / gradient_accumulation_steps
+            scaled_loss.backward()
+            
+            accumulated_loss += loss.item()
+            accumulation_step += 1
+            
+            # Update weights only after accumulating gradients
+            if accumulation_step == gradient_accumulation_steps:
+                self.optimizer.step()
+                accumulation_step = 0
+                
+                # Track loss (only on master process for distributed training)
+                if is_master_process():
+                    history['train_loss'].append(accumulated_loss / gradient_accumulation_steps)
+                
+                accumulated_loss = 0.0
             
             # Check if minimum period has been reached
             if not history['min_period_reached']:
@@ -381,12 +423,19 @@ class Recipe:
             # Progress logging (only on master process for distributed training)
             if verbose and step % 10 == 0 and is_master_process():
                 elapsed = time.time() - start_time
+                current_loss = accumulated_loss / max(accumulation_step, 1) if accumulation_step > 0 else 0.0
                 if max_mode == "time":
-                    print(f"Step {step} - Loss: {loss.item():.4f} - Time: {elapsed:.1f}s/{max_value:.1f}s")
+                    print(f"Step {step} - Loss: {current_loss:.4f} - Time: {elapsed:.1f}s/{max_value:.1f}s")
                 elif max_mode == "steps":
-                    print(f"Step {step} - Loss: {loss.item():.4f} - Steps: {step}/{max_value}")
+                    print(f"Step {step} - Loss: {current_loss:.4f} - Steps: {step}/{max_value}")
                 else:  # epochs
-                    print(f"Step {step} - Loss: {loss.item():.4f} - Epochs: {step // len(train_data)}")
+                    print(f"Step {step} - Loss: {current_loss:.4f} - Epochs: {step // len(train_data)}")
+        
+        # Handle remaining accumulated gradients if training ends mid-accumulation
+        if accumulation_step > 0:
+            self.optimizer.step()
+            if is_master_process():
+                history['train_loss'].append(accumulated_loss / accumulation_step)
         
         # Finalize training
         history['total_time'] = time.time() - start_time

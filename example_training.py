@@ -37,6 +37,7 @@ def train_with_epochs(recipe, train_loader, val_loader):
         max_period="5e",  # Maximum 5 epochs
         val_data=val_loader,
         val_freq=1,
+        gradient_accumulation_steps=1,  # No accumulation
         verbose=True
     )
     
@@ -255,6 +256,36 @@ def train_with_mixed_periods(recipe, train_loader, val_loader):
         max_period="5e",   # Maximum 5 epochs
         val_data=val_loader,
         val_freq=10,
+        gradient_accumulation_steps=1,  # No accumulation
+        verbose=True
+    )
+    
+    print(f"Completed {history['total_steps']} steps in {history['total_time']:.2f}s")
+    print(f"Min period reached: {history['min_period_reached']}")
+    print(f"Max period reached: {history['max_period_reached']}")
+    print(f"Early stopped: {history['early_stopped']}")
+    return history
+
+
+def train_with_gradient_accumulation(recipe, train_loader, val_loader):
+    """Example: Train with gradient accumulation"""
+    print("\n=== Training with gradient accumulation ===")
+    
+    # Use smaller batch size to simulate memory constraints
+    small_train_loader = DataLoader(train_loader.dataset, batch_size=4, shuffle=True)
+    small_val_loader = DataLoader(val_loader.dataset, batch_size=4, shuffle=False)
+    
+    print(f"Batch size: 4")
+    print(f"Gradient accumulation steps: 4")
+    print(f"Effective batch size: 16")
+    
+    history = recipe.train(
+        train_data=small_train_loader,
+        min_period="30s",  # Minimum 30 seconds
+        max_period="1m",   # Maximum 1 minute
+        val_data=small_val_loader,
+        val_freq=5,
+        gradient_accumulation_steps=4,  # Accumulate gradients over 4 steps
         verbose=True
     )
     
@@ -304,6 +335,9 @@ def main():
     
     # Train with mixed periods
     train_with_mixed_periods(recipe, train_loader, val_loader)
+    
+    # Gradient accumulation example
+    train_with_gradient_accumulation(recipe, train_loader, val_loader)
     
     print("\n=== Training Examples Complete ===")
     print("To run distributed training on multiple machines, use:")

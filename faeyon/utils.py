@@ -24,3 +24,15 @@ def is_notebook():
             return False  # Other type (?)
     except (NameError, ImportError):
         return False      # Probably standard Python interpreter
+
+
+class Period:
+    def __init__(self, value: int, unit: str):
+        self.value = value
+        self.unit = unit
+
+    def __str__(self):
+        return f"{self.value}{self.unit}"
+    
+    def __repr__(self):
+        return f"Period({self.value}, {self.unit})"
