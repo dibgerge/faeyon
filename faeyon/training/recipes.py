@@ -1,11 +1,8 @@
-import fnmatch
-import importlib
-import re
 import torch
 import time
 from collections import defaultdict
 
-from typing import Optional, Iterable, Dict, Any, Union, Generator, Tuple, List
+from typing import Optional, Any, Union
 from torch import nn, optim
 from torch.utils.data import DataLoader
 
@@ -15,153 +12,17 @@ from .distributed import (
 )
 from .callbacks import Callback
 from .loggers import MetricsComputer, MetricsLogger
-
-
-class FaeOptimizer:
-    """
-    Wraps regular torch optimizers, but instead of having to specify parameters directly, use a 
-    regexp to specify their names and we can do late bindings.
-
-    name : str | Optimzier
-        The name of the optimizer object. If given a string, it should be an existing
-        optimizer in the `torch.optim` module, or the full path of the optimizer e.g.
-        `foo.bar.MyOptimizer`.
-
-    regex : bool
-        Whether to use regular expressions to match parameter names. If True, the `patterns`
-        should be a list of regular expressions. If False, the `patterns` should be a list of
-        strings. If `None`, it will be inferred from the type of the `patterns` argument. A string
-        will be treated as a glob pattern.
-    """
-    def __init__(
-        self,
-        name: str,
-        patterns: Optional[str | re.Pattern | list[str | re.Pattern]] = None,
-        regex: Optional[bool] = None,
-        **kwargs
-    ):
-        module, _, obj = name.rpartition(".")
-        if not module:
-            module = "optim"
-
-        if patterns is not None:
-            if not isinstance(patterns, list):
-                patterns = [patterns]
-
-            if regex is False:
-                if any(isinstance(pat, re.Pattern) for pat in patterns):
-                    raise ValueError(
-                        "`regex` is False, but a `re.Pattern` object given to `params`."
-                    )
-            elif regex is True:
-                patterns = [
-                    pattern if isinstance(pattern, re.Pattern) else re.compile(pattern) 
-                    for pattern in patterns
-                ]
-
-        module_obj = importlib.import_module(module)
-        self.optimizer = getattr(module_obj, obj)
-        self.patterns = patterns
-        self.kwargs = kwargs
-            
-    def __call__(self, model: nn.Module) -> optim.Optimizer:
-        matches: Iterable[str]
-        valid_names: list[str] = []
-        
-        if self.patterns is None:
-            return self.optimizer(model.parameters(), **self.kwargs)
-
-        parameters = dict(model.named_parameters())
-        names = list(parameters.keys())
-
-        for pattern in self.patterns:            
-            if isinstance(pattern, re.Pattern):
-                matches = filter(pattern.fullmatch, names)
-            else:
-                matches = fnmatch.filter(names, pattern)
-            valid_names.extend(matches)
-
-        return self.optimizer([parameters[k] for k in valid_names], **self.kwargs)
-
-
-def parse_training_criteria(criteria: str) -> Tuple[str, Union[int, float]]:
-    """
-    Parse training criteria string into mode and value.
-    
-    Examples:
-        "200e" -> ("epochs", 200)
-        "1000s" -> ("steps", 1000) 
-        "10h" -> ("time", 36000)  # 10 hours in seconds
-        "30m" -> ("time", 1800)   # 30 minutes in seconds
-        "2.5h" -> ("time", 9000)  # 2.5 hours in seconds
-    """
-    criteria = criteria.strip().lower()
-    
-    # Time parsing
-    if criteria.endswith('h'):
-        hours = float(criteria[:-1])
-        return ("time", hours * 3600)
-    elif criteria.endswith('m'):
-        minutes = float(criteria[:-1])
-        return ("time", minutes * 60)
-    elif criteria.endswith('s') and not criteria.endswith('steps'):
-        seconds = float(criteria[:-1])
-        return ("time", seconds)
-    
-    # Steps parsing
-    elif criteria.endswith('steps') or criteria.endswith('step'):
-        steps = int(criteria.replace('steps', '').replace('step', ''))
-        return ("steps", steps)
-    elif criteria.endswith('s') and criteria.endswith('steps'):
-        steps = int(criteria[:-6])  # Remove 'steps'
-        return ("steps", steps)
-    
-    # Epochs parsing
-    elif criteria.endswith('e') or criteria.endswith('epochs') or criteria.endswith('epoch'):
-        epochs = int(criteria.replace('epochs', '').replace('epoch', '').replace('e', ''))
-        return ("epochs", epochs)
-    
-    # Default to epochs if no suffix
-    else:
-        try:
-            epochs = int(criteria)
-            return ("epochs", epochs)
-        except ValueError:
-            raise ValueError(f"Invalid training criteria: {criteria}. Use format like '200e', '1000s', '10h', etc.")
-
-
-def create_training_generator(
-    train_data: DataLoader,
-    val_data: Optional[DataLoader] = None,
-    val_freq: int = 1
-) -> Generator[Tuple[Any, int, bool], None, None]:
-    """Create a generator for training loop
-    
-    Args:
-        train_data: Training data loader
-        val_data: Validation data loader
-        val_freq: Validation frequency (every N steps)
-    
-    Yields:
-        Tuple of (batch, step, should_validate)
-    """
-    step = 0
-    for batch in train_data:
-        should_validate = (val_data is not None and step % val_freq == 0)
-        
-        yield batch, step, should_validate
-        step += 1
+from .core import TrainPeriod
 
 
 class DataHandler:
     def __init__(
         self, 
-        train_data: DataLoader, 
-        start_epoch: int = 0, 
-        start_step: int = 0,
-        min_period: Period,
-        max_period: Period,
-        val_freq: int = 1
+        train_data: DataLoader,
+        val_data: Optional[DataLoader] = None,
+        min_period: Optional[TrainPeriod | str] = None,
+        max_period: Optional[TrainPeriod | str] = None,
+        val_freq: Optional[TrainPeriod | str] = None
     ):
         self.train_data = train_data
 
@@ -237,7 +98,7 @@ class Recipe:
         """
         raise NotImplementedError("Subclasses must implement train_step")
     
-    def val_step(self, batch: Any, batch_idx: int) -> Dict[str, float]:
+    def val_step(self, batch: Any, batch_idx: int) -> dict[str, float]:
         """
         Perform one validation step.
         
@@ -250,14 +111,14 @@ class Recipe:
         """
         raise NotImplementedError("Subclasses must implement val_step")
     
-    def _call_callbacks(self, method_name: str, logs: Dict[str, Any]) -> None:
+    def _call_callbacks(self, method_name: str, logs: dict[str, Any]) -> None:
         """Call a method on all callbacks"""
         for callback in self.callbacks:
             method = getattr(callback, method_name, None)
             if method:
                 method(logs)
     
-    def _check_early_stopping(self, history: Dict[str, Any]) -> bool:
+    def _check_early_stopping(self, history: dict[str, Any]) -> bool:
         """Check if early stopping should be triggered"""
         for callback in self.callbacks:
             callback.on_epoch_end(0, history)  # Pass 0 as epoch since we're in step-based training
@@ -328,11 +189,6 @@ class Recipe:
         Returns:
             Training history dictionary
         """
-        # Parse training periods
-        min_mode, min_value = parse_training_criteria(min_period)
-        max_mode, max_value = parse_training_criteria(max_period)
-        
-        # Initialize training
         self.model.train()
         start_time = time.time()
         
