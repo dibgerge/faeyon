@@ -1,4 +1,5 @@
 from __future__ import annotations
+import enum
 from dataclasses import dataclass
 from torch.utils.data import DataLoader
 import itertools
@@ -81,7 +82,12 @@ class FaeOptimizer:
         return self.optimizer([parameters[k] for k in valid_names], **self.kwargs)
 
 
-@dataclass
+class PeriodUnit(enum.Enum):
+    EPOCHS = "epochs"
+    STEPS = "steps"
+    SECONDS = "seconds"
+
+
 class Period:
     """
     condition: str
@@ -249,40 +255,35 @@ class Period:
         )
 
 
+@dataclass
 class TrainState:
-    def __init__(self) -> None:
-        self.period = Period()
-        self.epoch_step = None
-        self.metrics = None
+    epoch: int = 0
+    step: int = 0
+    start_time: Optional[float] = None
+    current_time: Optional[float] = None
+    epoch_step: int = 0
+    epoch_start: Optional[float] = None
+    epoch_time: Optional[float] = None
+    metrics: Optional[dict[str, float]] = None
 
-    def is_epoch_start(self) -> bool:
-        return self.epoch_step == 0
-    
+    # def __init__(self) -> None:
+    #     self.epoch = 
+    #     self.epoch_step = None
+    #     self.metrics = None
+
     def reset(self) -> None:
         self.period = Period()
         self.epoch_step = 0
         self.metrics = None
 
-    def begin(self, data: DataLoader, min_period: Period, max_period: Period) -> TrainState:
-        self._in_loop = True
-        start_time = time.time()
-        stop_requested = False
+    def toc(self):
+        self.epoch += 1
+        self.epoch_step = 0
+        self.epoch_ts = 0
+        self.metrics = None
 
-        while not self._interrupted:
-            self.period += "1e"
-
-            for self.epoch_step, batch in enumerate(self._data, start=1):
-                self.period += "1step"
-                self.period += f"{time.time() - start_time}seconds"
-
-                if (
-                    current_period >= self._max_period
-                    or (stop_requested and current_period >= self._min_period)
-                ):
-                    self.interrupt()
-                    break
-                        
-                stop_requested = yield batch
-
-        self._in_loop = False
-
+    def tic(self) -> None:
+        self.step += 1
+        self.epoch_step += 1
+        self.epoch_ts += 1
+        self.ts += 1

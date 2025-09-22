@@ -74,6 +74,35 @@ class Recipe:
         self.model.train()
         return avg_metrics
     
+    def _train_iter(self, data: DataLoader, min_period: Period, max_period: Period) -> TrainState:
+        state = TrainState()
+        data_iter = iter(data)
+        train_start = time.time()
+        stop_requested = self.callbacks.on_train_begin(state)
+        
+        while state < max_period and not (stop_requested and state >= min_period):
+            state.tic()
+
+            if state.epoch_step == 1:
+                stop_requested = self.callbacks.on_epoch_begin(state) or stop_requested
+
+            stop_requested = self.callbacks.on_train_step_begin(state) or stop_requested
+
+            try:     
+                batch = next(data_iter)
+            except StopIteration:
+                stop_requested = self.callbacks.on_epoch_end(state) or stop_requested
+                data_iter = iter(data)
+                state.toc()
+            else:
+                metrics = yield batch
+                state.metrics = metrics
+                stop_requested = self.callbacks.on_train_step_end(state) or stop_requested
+            
+        self.callbacks.on_train_end(state)
+        return state
+
+            
     def train(
         self,
         train_data: DataLoader,
@@ -101,38 +130,22 @@ class Recipe:
             Training history dictionary
         """
         self.model.train()
-        state = TrainState(min_period, max_period)
 
-        self.callbacks.on_train_begin(state)
+        for state in self.train_iter(train_data, min_period, max_period):
+            self.optimizer.zero_grad()
+            loss, preds, targets = self.train_step(state.batch)
+            loss.backward()
+            self.optimizer.step()
 
-        for epoch in itertools.count(start=1):
-            state.epoch += 1
-            self.callbacks.on_epoch_begin(state)
-            for step, batch in enumerate(train_data, start=1):
-                self.callbacks.on_train_step_begin(state)
-
-                self.optimizer.zero_grad()
-                loss, preds, targets = self.train_step(batch)
-                loss.backward()
-                self.optimizer.step()
-
-                for metric in self.metrics:
-                    metric.update(preds, targets)
-                    # Check if time to flush train metrics
-                    if state.period >= flush_period:
-                        metric.rest()
-                        self.callbacks.on_train_metric(state)
+            for metric in self.metrics:
+                metric.update(preds, targets)
+                # Check if time to flush train metrics
+                if state.period >= flush_period:
+                    metric.rest()
+             
+            if val_data is not None and state.period >= val_period:
+                self._validate_epoch(val_data)
                 
-                if val_data is not None and state.period >= val_period:
-                    self._validate_epoch(val_data)
-                
-                self.callbacks.on_train_step_end(state)
-            
-            self.callbacks.on_epoch_end(state)
-        
-        self.callbacks.on_train_end(state)
-
-
     def cleanup(self):
         """Clean up distributed training"""
         if self.use_distributed:
