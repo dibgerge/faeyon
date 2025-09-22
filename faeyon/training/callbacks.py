@@ -10,25 +10,25 @@ import time
 from abc import ABC, abstractmethod
 from typing import Any, Optional, Union, Callable
 import torch
-from .core import Period, TrainState
+from .core import Period, TrainState, PeriodUnit
 
 
 class Callback(ABC):
     """Base class for all callbacks"""
     
-    def __init__(self, trigger: str | Period = None):
+    def __init__(self, trigger: Optional[str | Period] = None):
         """
         Trigger is the interval at which the callback is triggered, for example "2e", "10steps", "100seconds", etc.
         """
-        self._should_stop = False
-        
-    def request_stop(self) -> None:
-        """Request training to stop"""
-        self._should_stop = True
-    
-    def reset_stop(self) -> None:
-        """Reset stop request"""
-        self._should_stop = False
+        self._trigger = trigger
+        self.trigger_count = 0
+
+    def trigger(self, state: TrainState) -> bool:
+        # For time triggers, sometimes things are not exactly on the trigger
+        count = state // self._trigger
+        if count > self.trigger_count:
+            self.trigger_count = count
+            return self.on_trigger(state)
     
     def on_train_begin(self, logs: dict[str, Any]) -> Optional[bool]:
         """Called at the beginning of training"""
@@ -77,8 +77,6 @@ class CallbackCollection(Callback):
             return should_stop
         
         return proxy
-
-
 
 
 class EarlyStopping(Callback):

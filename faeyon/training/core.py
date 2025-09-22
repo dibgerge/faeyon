@@ -1,6 +1,7 @@
 from __future__ import annotations
 import enum
 from dataclasses import dataclass
+from math import e
 from torch.utils.data import DataLoader
 import itertools
 import time
@@ -9,6 +10,7 @@ import importlib
 import re
 from .callbacks import Callback
 
+from numbers import Number
 from datetime import timedelta
 
 from typing import Optional, Iterable, Literal
@@ -103,25 +105,9 @@ class Period:
     ts: Optional[timedelta] = None
     condition: Optional[Literal["all", "any", "epochs", "steps", "ts"]] = None
 
-    def __post_init__(self) -> None:
-        nones = [self.epochs is None, self.steps is None, self.ts is None]
-
-        if self.condition not in ["all", "any", "epochs", "steps", "ts", None]:
-            raise ValueError(
-                f"Invalid condition: {self.condition}. Must be one of: 'all', 'any', 'epochs', "
-                f"'steps', 'ts'."
-            )
-                
-        if self.condition in ["epochs", "steps", "ts"] and any(nones):
-            raise ValueError(
-                f"`condition` is {self.condition}, which requires all `epochs`, `steps`, and `ts` "
-                "to be specified."
-            )
-
-        if sum(nones) == 1 and self.condition is not None:
-            raise ValueError(
-                f"Only one field is specified, `condition` is {self.condition}"
-            )
+    def __init__(self, value: float | int, unit: PeriodUnit) -> None:
+        self.value = value
+        self.unit = unit
 
     @classmethod
     def from_expr(cls, expr: str):
@@ -136,123 +122,147 @@ class Period:
             (d(?:ays?)?)        # Days (Group 7)
         )
         """
-        # Only three occurences of the pattern are allowed (epoch, steps, time - one of seconds, 
-        # hours, days). Repeated occurences of one type is not allowed, will be checked in code.
-        validator = rf"""
-        \s*
-        {pattern}
-        (?:\s*([|&])\s*{pattern})?
-        (?:\s*([|&])\s*{pattern})?
-        \s*
-        """
-        matcher = re.fullmatch(validator, expr, re.IGNORECASE | re.VERBOSE)
+        matcher = re.fullmatch(pattern, expr, re.IGNORECASE | re.VERBOSE)
 
         if not matcher:
-            raise ValueError(
-                f"Invalid period expression: {expr}. Make sure that only three occurences of the "
-                f"pattern are allowed (epoch, steps, time - one of seconds, hours, days). Repeated "
-                f"occurences of one type is not allowed."
-            )
+            raise ValueError(f"Invalid period expression: {expr}")
 
         groups = matcher.groups()
-        amounts = {"epochs": None, "steps": None, "ts": None}
-        group_map = {1: "epochs", 2: "steps", 3: "ts", 4: "ts", 5: "ts", 6: "ts"}
+        # amounts = {"epochs": None, "steps": None, "ts": None}
+        group_map = {
+            1: PeriodUnit.EPOCHS, 
+            2: PeriodUnit.STEPS, 
+            3: PeriodUnit.SECONDS, 
+            4: PeriodUnit.SECONDS, 
+            5: PeriodUnit.SECONDS, 
+            6: PeriodUnit.SECONDS
+        }
         time_map = {3: "seconds", 4: "minutes", 5: "hours", 6: "days"}
-        keys, conditions = [], []
 
-        # The pattern has 7 capturing groups + 1 condition group, and 3 repetitions of the pattern.
-        for i in [0, 8, 16]:
-            if groups[i] is None:
-                continue
-
-            value = float(groups[i])
+        value = float(groups[0])
             
-            # find indices of non-None groups
-            indices = [j for j in range(1, 7) if groups[i+j] is not None]
+        # find indices of non-None groups
+        indices = [j for j in range(1, 7) if groups[j] is not None]
 
-            if len(indices) != 1:
-                raise ValueError(
-                    f"Invalid period expression: {expr}.")
+        if len(indices) != 1:
+            raise ValueError(
+                f"Invalid period expression: {expr}.")
 
-            index = indices[0]
-            key = group_map[index]
+        index = indices[0]
+        unit = group_map[index]
 
-            if amounts[key] is not None:
-                raise ValueError(
-                    f"Invalid period expression: {expr}. Repeated occurences of one type "
-                    "is not allowed."
-                )
+        if unit == PeriodUnit.SECONDS:
+            value = timedelta(**{time_map[index]: value}).total_seconds()
+        
+        return cls(value, unit)
 
-            if i + 7 < len(groups) and groups[i + 7] is not None:
-                conditions.append(groups[i + 7])
-            keys.append(key)
-
-            if key == "steps":
-                if value.is_integer():
-                    amounts["steps"] = int(value)
-                else:
-                    raise ValueError(f"Fractional steps are not supported {expr}.")
-            elif key == "ts":
-                value = timedelta(**{time_map[index]: value})
-
-            amounts[key] = value
-
-        if len(conditions) == 0:
-            return cls(**amounts)
-
-        conditions_set = set(conditions)
-        if len(conditions_set) == 2:
-            idx = conditions.index("&")
-            operands  = {keys[idx], keys[idx + 1]}
-            condition = set(amounts.keys()) - operands
-            condition = condition.pop()
-        elif conditions_set == {"&"}:
-            condition = "all"
-        elif conditions_set == {"|"}:
-            condition = "any"
-        else:
-            raise ValueError(f"Invalid period expression: {expr}.")
-        return cls(**amounts, condition=condition)
-
-    def __eq__(self, other: Period) -> bool:
-        return (
-            self.epochs == other.epochs 
-            and self.steps == other.steps 
-            and self.ts == other.ts 
-            and self.condition == other.condition
-        )
-
-    def __iadd__(self, other: str | Period) -> Period:
+    def _validate_period(self, other: Period | Number | str) -> Period:
         if isinstance(other, str):
             other = Period.from_expr(other)
+        elif isinstance(other, Number):
+            other = Period(other, self.unit)
 
-        self.epochs += other.epochs
-        self.steps += other.steps
-        self.ts += other.ts
+        if other.unit != self.unit:
+            raise ValueError(
+                f"Given period has different units than the current period: "
+                f"{self.unit} and {other.unit}."
+            )
+        return other
+
+    def __iadd__(self, other: Period | Number | str) -> Period:
+        other = self._validate_period(other)
+        self.value += other.value
         return self
 
-    def __add__(self, other: str | Period) -> Period:
-        if isinstance(other, str):
-            other = Period.from_expr(other)
-        return Period(
-            epochs=self.epochs + other.epochs,
-            steps=self.steps + other.steps,
-            ts=self.ts + other.ts, 
-            condition=self.condition
-        )
+    def __add__(self, other: Period | Number | str) -> Period:
+        other = self._validate_period(other)
+        return Period(value=self.value + other.value, unit=self.unit)
 
-    def __ne__(self, other: Period) -> bool:
+    __radd__ = __add__
+
+    def __isub__(self, other: Period | Number | str) -> Period:
+        other = self._validate_period(other)
+        self.value -= other.value
+        return self
+        
+    def __sub__(self, other: Period | Number | str) -> Period:
+        other = self._validate_period(other)
+        return Period(value=self.value - other.value, unit=self.unit)
+
+    def __rsub__(self, other: Period | Number | str) -> Period:
+        other = self._validate_period(other)
+        return Period(value=other.value - self.value, unit=self.unit)
+
+    def __imul__(self, other: Period | Number | str) -> Period:
+        other = self._validate_period(other)
+        self.value *= other.value
+        return self
+
+    def __mul__(self, other: Period | Number | str) -> Period:
+        other = self._validate_period(other)
+        return Period(value=self.value * other.value, unit=self.unit)
+
+    __rmul__ = __mul__
+
+    def __itruediv__(self, other: Period | Number | str) -> Period:
+        other = self._validate_period(other)
+        self.value /= other.value
+        return self
+
+    def __truediv__(self, other: Period | Number | str) -> float:
+        other = self._validate_period(other)
+        return self.value / other.value
+
+    def __rtruediv__(self, other: Period | Number | str) -> float:
+        other = self._validate_period(other)
+        return other.value / self.value
+
+    def __ifloordiv__(self, other: Period | Number | str) -> Period:
+        other = self._validate_period(other)
+        self.value //= other.value
+        return self
+
+    def __floordiv__(self, other: Period | Number | str) -> int:
+        other = self._validate_period(other)
+        return self.value // other.value
+
+    def __rfloordiv__(self, other: Period | Number | str) -> int:
+        other = self._validate_period(other)
+        return other.value // self.value
+
+    def __imod__(self, other: Period | Number | str) -> Period:
+        other = self._validate_period(other)
+        self.value %= other.value
+        return self
+
+    def __mod__(self, other: Period | Number | str) -> float:
+        other = self._validate_period(other)
+        return self.value % other.value
+
+    def __rmod__(self, other: Period | Number | str) -> float:
+        other = self._validate_period(other)
+        return other.value % self.value
+
+    def __eq__(self, other: Period | Number | str) -> bool:
+        return self.value == self._validate_period(other).value
+
+    def __ne__(self, other: Period | Number | str) -> bool:
         return not self == other
+    
+    def __lt__(self, other: Period | Number | str) -> bool:
+        return self.value < self._validate_period(other).value
+
+    def __le__(self, other: Period | Number | str) -> bool:
+        return self.value <= self._validate_period(other).value
+    
+    def __gt__(self, other: Period | Number | str) -> bool:
+        return self.value > self._validate_period(other).value
+    
+    def __ge__(self, other: Period | Number | str) -> bool:
+        return self.value >= self._validate_period(other).value
 
     def __repr__(self) -> str:
-        return (
-            f"Period("
-                f"epochs={self.epochs}, "
-                f"steps={self.steps}, "
-                f"ts={self.ts}, "
-                f"condition={self.condition}"
-            f")"
-        )
+        return f"Period({self.value}, {self.unit})"
 
 
 @dataclass
@@ -261,29 +271,108 @@ class TrainState:
     step: int = 0
     start_time: Optional[float] = None
     current_time: Optional[float] = None
+    train_metrics: Optional[dict[str, float]] = None
+
     epoch_step: int = 0
     epoch_start: Optional[float] = None
-    epoch_time: Optional[float] = None
-    metrics: Optional[dict[str, float]] = None
 
-    # def __init__(self) -> None:
-    #     self.epoch = 
-    #     self.epoch_step = None
-    #     self.metrics = None
+    val_start: Optional[float] = None
+    val_step: int = 0
+    val_metrics: Optional[dict[str, float]] = None
 
     def reset(self) -> None:
-        self.period = Period()
-        self.epoch_step = 0
-        self.metrics = None
+        self.epoch = 0
+        self.step = 0
+        self.start_time = None
+        self.current_time = None
+        self.train_metrics = None
 
-    def toc(self):
-        self.epoch += 1
         self.epoch_step = 0
-        self.epoch_ts = 0
-        self.metrics = None
+        self.epoch_start = None
 
-    def tic(self) -> None:
-        self.step += 1
-        self.epoch_step += 1
-        self.epoch_ts += 1
-        self.ts += 1
+        self.val_step = 0
+        self.val_start = None
+        self.val_metrics = None
+
+    @property
+    def run_time(self) -> float:
+        if self.start_time is None or self.current_time is None:
+            return 
+        return self.current_time - self.start_time
+
+    @property
+    def epoch_time(self) -> float:
+        if self.epoch_start is None or self.current_time is None:
+            return 
+        return self.current_time - self.epoch_start
+
+    @property
+    def val_time(self) -> float:
+        if self.val_start is None or self.current_time is None:
+            return 
+        return self.current_time - self.val_start
+
+    def toc(self, train: bool = True) -> None:
+        if train:
+            self.epoch += 1
+            self.epoch_step = 0
+            self.epoch_start = time.time()
+        else:
+            self.val_step = 0
+            self.val_start = time.time()
+
+        if self.start_time is None:
+            self.start_time = self.epoch_start
+        
+    def tic(self, train: bool = True) -> None:
+        self.current_time = time.time()
+        if train:
+            self.step += 1
+            self.epoch_step += 1
+        else:
+            self.val_step += 1
+
+    def is_epoch_begin(self) -> bool:
+        return self.epoch_step == 1
+
+    def _get_field(self, unit: PeriodUnit) -> float:
+        if unit == PeriodUnit.EPOCHS:
+            value = self.epoch
+        elif unit == PeriodUnit.STEPS:
+            value = self.step
+        elif unit == PeriodUnit.SECONDS:
+            value =self.run_time
+        else:
+            ValueError(f"Invalid unit: {unit}")
+        return Period(value, unit=unit)
+
+    def __eq__(self, period: Period) -> bool:
+        return self._get_field(period.unit) == period
+
+    def __lt__(self, period: Period) -> bool:
+        state_period = Period(self._get_field(period.unit), unit=period.unit)
+        return state_period < period
+
+    def __le__(self, period: Period) -> bool:
+        state_period = Period(self._get_field(period.unit), unit=period.unit)
+        return state_period <= period
+
+    def __gt__(self, period: Period) -> bool:
+        state_period = Period(self._get_field(period.unit), unit=period.unit)
+        return state_period > period
+
+    def __ge__(self, period: Period) -> bool:
+        state_period = Period(self._get_field(period.unit), unit=period.unit)
+        return state_period >= period
+
+    def __ne__(self, period: Period) -> bool:
+        return not self == period
+
+    def __truediv__(self, other: Period | Number | str) -> float:
+        other = self._validate_period(other)
+        return self.value / other.value
+
+    def __floordiv__(self, other: Period | Number | str) -> int:
+        other = self._validate_period(other)
+        return self.value // other.value
+
