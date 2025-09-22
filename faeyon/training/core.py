@@ -1,9 +1,12 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from torch.utils.data import DataLoader
+import itertools
+import time
 import fnmatch
 import importlib
 import re
+from .callbacks import Callback
 
 from datetime import timedelta
 
@@ -79,7 +82,7 @@ class FaeOptimizer:
 
 
 @dataclass
-class TrainPeriod:
+class Period:
     """
     condition: str
         This can be "all", "any", "epochs", "steps", "ts". with the following meaning:
@@ -92,14 +95,12 @@ class TrainPeriod:
     epochs: Optional[float] = None
     steps: Optional[int] = None
     ts: Optional[timedelta] = None
-    condition: Literal["all", "any", "epochs", "steps", "ts"] = "all"
+    condition: Optional[Literal["all", "any", "epochs", "steps", "ts"]] = None
 
     def __post_init__(self) -> None:
         nones = [self.epochs is None, self.steps is None, self.ts is None]
-        if all(nones):
-            raise ValueError("At least one of `epochs`, `steps`, or `ts` must be specified.")
-        
-        if self.condition not in ["all", "any", "epochs", "steps", "ts"]:
+
+        if self.condition not in ["all", "any", "epochs", "steps", "ts", None]:
             raise ValueError(
                 f"Invalid condition: {self.condition}. Must be one of: 'all', 'any', 'epochs', "
                 f"'steps', 'ts'."
@@ -109,6 +110,11 @@ class TrainPeriod:
             raise ValueError(
                 f"`condition` is {self.condition}, which requires all `epochs`, `steps`, and `ts` "
                 "to be specified."
+            )
+
+        if sum(nones) == 1 and self.condition is not None:
+            raise ValueError(
+                f"Only one field is specified, `condition` is {self.condition}"
             )
 
     @classmethod
@@ -202,7 +208,7 @@ class TrainPeriod:
             raise ValueError(f"Invalid period expression: {expr}.")
         return cls(**amounts, condition=condition)
 
-    def __eq__(self, other: TrainPeriod) -> bool:
+    def __eq__(self, other: Period) -> bool:
         return (
             self.epochs == other.epochs 
             and self.steps == other.steps 
@@ -210,12 +216,31 @@ class TrainPeriod:
             and self.condition == other.condition
         )
 
-    def __ne__(self, other: TrainPeriod) -> bool:
+    def __iadd__(self, other: str | Period) -> Period:
+        if isinstance(other, str):
+            other = Period.from_expr(other)
+
+        self.epochs += other.epochs
+        self.steps += other.steps
+        self.ts += other.ts
+        return self
+
+    def __add__(self, other: str | Period) -> Period:
+        if isinstance(other, str):
+            other = Period.from_expr(other)
+        return Period(
+            epochs=self.epochs + other.epochs,
+            steps=self.steps + other.steps,
+            ts=self.ts + other.ts, 
+            condition=self.condition
+        )
+
+    def __ne__(self, other: Period) -> bool:
         return not self == other
 
     def __repr__(self) -> str:
         return (
-            f"TrainPeriod("
+            f"Period("
                 f"epochs={self.epochs}, "
                 f"steps={self.steps}, "
                 f"ts={self.ts}, "
@@ -224,9 +249,40 @@ class TrainPeriod:
         )
 
 
-class DataHandler:
-    def __init__(self, data: DataLoader):
-        self.train_data = data
+class TrainState:
+    def __init__(self) -> None:
+        self.period = Period()
+        self.epoch_step = None
+        self.metrics = None
 
-    def __iter__(self):
-        return self
+    def is_epoch_start(self) -> bool:
+        return self.epoch_step == 0
+    
+    def reset(self) -> None:
+        self.period = Period()
+        self.epoch_step = 0
+        self.metrics = None
+
+    def begin(self, data: DataLoader, min_period: Period, max_period: Period) -> TrainState:
+        self._in_loop = True
+        start_time = time.time()
+        stop_requested = False
+
+        while not self._interrupted:
+            self.period += "1e"
+
+            for self.epoch_step, batch in enumerate(self._data, start=1):
+                self.period += "1step"
+                self.period += f"{time.time() - start_time}seconds"
+
+                if (
+                    current_period >= self._max_period
+                    or (stop_requested and current_period >= self._min_period)
+                ):
+                    self.interrupt()
+                    break
+                        
+                stop_requested = yield batch
+
+        self._in_loop = False
+

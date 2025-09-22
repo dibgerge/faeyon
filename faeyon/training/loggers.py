@@ -6,100 +6,17 @@ TensorBoard, MLFlow, Weights & Biases, and custom metrics logging.
 """
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 import torch
 
 from .callbacks import Callback
-
-
-class MetricsComputer:
-    """Computes various metrics for model evaluation"""
-    
-    @staticmethod
-    def accuracy(predictions: torch.Tensor, targets: torch.Tensor) -> float:
-        """Compute accuracy for classification tasks"""
-        if predictions.dim() > 1 and predictions.size(1) > 1:
-            # Multi-class classification
-            predicted_classes = torch.argmax(predictions, dim=1)
-        else:
-            # Binary classification
-            predicted_classes = (predictions > 0.5).long()
-        
-        correct = (predicted_classes == targets).float()
-        return correct.mean().item()
-    
-    @staticmethod
-    def precision_recall_f1(predictions: torch.Tensor, targets: torch.Tensor, 
-                           num_classes: int = None) -> Dict[str, float]:
-        """Compute precision, recall, and F1 score"""
-        if predictions.dim() > 1 and predictions.size(1) > 1:
-            predicted_classes = torch.argmax(predictions, dim=1)
-        else:
-            predicted_classes = (predictions > 0.5).long()
-        
-        if num_classes is None:
-            num_classes = max(predicted_classes.max().item(), targets.max().item()) + 1
-        
-        # Convert to one-hot for multi-class metrics
-        if num_classes > 2:
-            pred_one_hot = torch.zeros(predicted_classes.size(0), num_classes)
-            pred_one_hot.scatter_(1, predicted_classes.unsqueeze(1), 1)
-            
-            target_one_hot = torch.zeros(targets.size(0), num_classes)
-            target_one_hot.scatter_(1, targets.unsqueeze(1), 1)
-        else:
-            pred_one_hot = predicted_classes.float()
-            target_one_hot = targets.float()
-        
-        # Compute metrics for each class
-        precision_scores = []
-        recall_scores = []
-        f1_scores = []
-        
-        for i in range(num_classes):
-            if num_classes > 2:
-                tp = (pred_one_hot[:, i] * target_one_hot[:, i]).sum().item()
-                fp = (pred_one_hot[:, i] * (1 - target_one_hot[:, i])).sum().item()
-                fn = ((1 - pred_one_hot[:, i]) * target_one_hot[:, i]).sum().item()
-            else:
-                tp = ((pred_one_hot == 1) & (target_one_hot == 1)).sum().item()
-                fp = ((pred_one_hot == 1) & (target_one_hot == 0)).sum().item()
-                fn = ((pred_one_hot == 0) & (target_one_hot == 1)).sum().item()
-            
-            precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-            recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-            f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
-            
-            precision_scores.append(precision)
-            recall_scores.append(recall)
-            f1_scores.append(f1)
-        
-        return {
-            'precision': sum(precision_scores) / len(precision_scores),
-            'recall': sum(recall_scores) / len(recall_scores),
-            'f1': sum(f1_scores) / len(f1_scores)
-        }
-    
-    @staticmethod
-    def mae(predictions: torch.Tensor, targets: torch.Tensor) -> float:
-        """Compute Mean Absolute Error for regression tasks"""
-        return torch.abs(predictions - targets).mean().item()
-    
-    @staticmethod
-    def mse(predictions: torch.Tensor, targets: torch.Tensor) -> float:
-        """Compute Mean Squared Error for regression tasks"""
-        return ((predictions - targets) ** 2).mean().item()
-    
-    @staticmethod
-    def rmse(predictions: torch.Tensor, targets: torch.Tensor) -> float:
-        """Compute Root Mean Squared Error for regression tasks"""
-        return torch.sqrt(((predictions - targets) ** 2).mean()).item()
+from lightning import LightningModule
 
 
 class MetricsLogger(Callback):
     """Base class for metrics logging callbacks"""
     
-    def __init__(self, metrics: List[str] = None, log_freq: int = 1):
+    def __init__(self, metrics: list[str] = None, log_freq: int = 1):
         super().__init__()
         self.metrics = metrics or ['accuracy']
         self.log_freq = log_freq
@@ -108,23 +25,7 @@ class MetricsLogger(Callback):
     def compute_metrics(self, predictions: torch.Tensor, targets: torch.Tensor) -> Dict[str, float]:
         """Compute specified metrics"""
         results = {}
-        
-        for metric in self.metrics:
-            if metric == 'accuracy':
-                results[metric] = MetricsComputer.accuracy(predictions, targets)
-            elif metric == 'precision':
-                results.update(MetricsComputer.precision_recall_f1(predictions, targets))
-            elif metric == 'recall':
-                results.update(MetricsComputer.precision_recall_f1(predictions, targets))
-            elif metric == 'f1':
-                results.update(MetricsComputer.precision_recall_f1(predictions, targets))
-            elif metric == 'mae':
-                results[metric] = MetricsComputer.mae(predictions, targets)
-            elif metric == 'mse':
-                results[metric] = MetricsComputer.mse(predictions, targets)
-            elif metric == 'rmse':
-                results[metric] = MetricsComputer.rmse(predictions, targets)
-        
+            
         return results
 
 

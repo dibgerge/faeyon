@@ -1,1 +1,1 @@
-from .core import TrainPeriod
+from .core import Period

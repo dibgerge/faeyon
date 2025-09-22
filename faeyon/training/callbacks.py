@@ -8,20 +8,20 @@ including early stopping, model checkpointing, and learning rate scheduling.
 import os
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Optional, Union, Callable
 import torch
+from .core import Period, TrainState
 
 
 class Callback(ABC):
     """Base class for all callbacks"""
     
-    def __init__(self):
+    def __init__(self, trigger: str | Period = None):
+        """
+        Trigger is the interval at which the callback is triggered, for example "2e", "10steps", "100seconds", etc.
+        """
         self._should_stop = False
-    
-    def should_stop(self) -> bool:
-        """Check if callback requests training to stop"""
-        return self._should_stop
-    
+        
     def request_stop(self) -> None:
         """Request training to stop"""
         self._should_stop = True
@@ -30,29 +30,55 @@ class Callback(ABC):
         """Reset stop request"""
         self._should_stop = False
     
-    def on_train_begin(self, logs: Dict[str, Any]) -> None:
+    def on_train_begin(self, logs: dict[str, Any]) -> Optional[bool]:
         """Called at the beginning of training"""
         pass
     
-    def on_train_end(self, logs: Dict[str, Any]) -> None:
+    def on_train_end(self, logs: dict[str, Any]) -> Optional[bool]:
         """Called at the end of training"""
         pass
     
-    def on_epoch_begin(self, epoch: int, logs: Dict[str, Any]) -> None:
+    def on_epoch_begin(self, epoch: int, logs: dict[str, Any]) -> Optional[bool]:
         """Called at the beginning of each epoch"""
         pass
     
-    def on_epoch_end(self, epoch: int, logs: Dict[str, Any]) -> None:
+    def on_epoch_end(self, epoch: int, logs: dict[str, Any]) -> Optional[bool]:
         """Called at the end of each epoch"""
         pass
     
-    def on_batch_begin(self, batch: int, logs: Dict[str, Any]) -> None:
+    def on_train_step_begin(self, batch: int, logs: dict[str, Any]) -> Optional[bool]:
         """Called at the beginning of each batch"""
         pass
     
-    def on_batch_end(self, batch: int, logs: Dict[str, Any]) -> None:
+    def on_train_step_end(self, batch: int, logs: dict[str, Any]) -> Optional[bool]:
         """Called at the end of each batch"""
         pass
+
+    def on_trigger(self, state: TrainState, trigger: str) -> Optional[bool]:
+        pass
+
+
+class CallbackCollection(Callback):
+    """Collection of callbacks"""
+    
+    def __init__(self, callbacks: list[Callback]):
+        super().__init__()
+        self.callbacks = callbacks
+    
+    def __getattr__(self, name: str) -> Callable:
+        """Called at the beginning of training"""
+        def proxy(state: TrainState) -> Optional[bool]:
+            should_stop = False
+            for callback in self.callbacks:
+                func = getattr(callback, name)
+                result = func(state)
+                if result is not None:
+                    should_stop |= result
+            return should_stop
+        
+        return proxy
+
+
 
 
 class EarlyStopping(Callback):
@@ -85,7 +111,7 @@ class EarlyStopping(Callback):
             self.monitor_op = lambda a, b: a > b + min_delta
             self.best_score = float('-inf')
     
-    def on_epoch_end(self, epoch: int, logs: Dict[str, Any]) -> None:
+    def on_epoch_end(self, epoch: int, logs: dict[str, Any]) -> None:
         """Check if early stopping should be triggered"""
         current = logs.get(self.monitor)
         if current is None:
@@ -138,12 +164,12 @@ class ModelCheckpoint(Callback):
             self.monitor_op = lambda a, b: a > b
             self.best_score = float('-inf')
     
-    def on_train_begin(self, logs: Dict[str, Any]) -> None:
+    def on_train_begin(self, logs: dict[str, Any]) -> None:
         """Initialize model and optimizer references"""
         self.model = logs.get('model')
         self.optimizer = logs.get('optimizer')
     
-    def on_epoch_end(self, epoch: int, logs: Dict[str, Any]) -> None:
+    def on_epoch_end(self, epoch: int, logs: dict[str, Any]) -> None:
         """Save model checkpoint if conditions are met"""
         if epoch % self.save_freq != 0:
             return
@@ -162,7 +188,7 @@ class ModelCheckpoint(Callback):
         else:
             self._save_checkpoint(epoch, logs)
     
-    def _save_checkpoint(self, epoch: int, logs: Dict[str, Any]) -> None:
+    def _save_checkpoint(self, epoch: int, logs: dict[str, Any]) -> None:
         """Save the actual checkpoint"""
         if self.model is None:
             return
@@ -217,7 +243,7 @@ class LearningRateScheduler(Callback):
             self.monitor_op = lambda a, b: a > b
             self.best_score = float('-inf')
     
-    def on_epoch_end(self, epoch: int, logs: Dict[str, Any]) -> None:
+    def on_epoch_end(self, epoch: int, logs: dict[str, Any]) -> None:
         """Update learning rate based on monitoring metric"""
         current = logs.get(self.monitor)
         if current is None:
@@ -284,7 +310,7 @@ class ReduceLROnPlateau(Callback):
             self.monitor_op = lambda a, b: a > b + threshold
             self.best = float('-inf')
     
-    def on_epoch_end(self, epoch: int, logs: Dict[str, Any]) -> None:
+    def on_epoch_end(self, epoch: int, logs: dict[str, Any]) -> None:
         """Check if learning rate should be reduced"""
         current = logs.get('val_loss')
         if current is None:
@@ -323,14 +349,14 @@ class History(Callback):
             'lr': []
         }
     
-    def on_epoch_end(self, epoch: int, logs: Dict[str, Any]) -> None:
+    def on_epoch_end(self, epoch: int, logs: dict[str, Any]) -> None:
         """Record metrics in history"""
         for key, value in logs.items():
             if key not in self.history:
                 self.history[key] = []
             self.history[key].append(value)
     
-    def on_batch_end(self, batch: int, logs: Dict[str, Any]) -> None:
+    def on_batch_end(self, batch: int, logs: dict[str, Any]) -> None:
         """Record batch-level metrics"""
         if 'loss' in logs:
             self.history['train_loss'].append(logs['loss'])
@@ -356,27 +382,27 @@ class LambdaCallback(Callback):
         self.on_batch_begin_func = on_batch_begin
         self.on_batch_end_func = on_batch_end
     
-    def on_train_begin(self, logs: Dict[str, Any]) -> None:
+    def on_train_begin(self, logs: dict[str, Any]) -> None:
         if self.on_train_begin_func:
             self.on_train_begin_func(logs)
     
-    def on_train_end(self, logs: Dict[str, Any]) -> None:
+    def on_train_end(self, logs: dict[str, Any]) -> None:
         if self.on_train_end_func:
             self.on_train_end_func(logs)
     
-    def on_epoch_begin(self, epoch: int, logs: Dict[str, Any]) -> None:
+    def on_epoch_begin(self, epoch: int, logs: dict[str, Any]) -> None:
         if self.on_epoch_begin_func:
             self.on_epoch_begin_func(epoch, logs)
     
-    def on_epoch_end(self, epoch: int, logs: Dict[str, Any]) -> None:
+    def on_epoch_end(self, epoch: int, logs: dict[str, Any]) -> None:
         if self.on_epoch_end_func:
             self.on_epoch_end_func(epoch, logs)
     
-    def on_batch_begin(self, batch: int, logs: Dict[str, Any]) -> None:
+    def on_batch_begin(self, batch: int, logs: dict[str, Any]) -> None:
         if self.on_batch_begin_func:
             self.on_batch_begin_func(batch, logs)
     
-    def on_batch_end(self, batch: int, logs: Dict[str, Any]) -> None:
+    def on_batch_end(self, batch: int, logs: dict[str, Any]) -> None:
         if self.on_batch_end_func:
             self.on_batch_end_func(batch, logs)
 
@@ -387,8 +413,10 @@ class TerminateOnNaN(Callback):
     def __init__(self):
         super().__init__()
     
-    def on_batch_end(self, batch: int, logs: Dict[str, Any]) -> None:
+    def on_batch_end(self, batch: int, logs: dict[str, Any]) -> None:
         """Check for NaN loss and terminate if found"""
+        # loss = state.metrics.get("train/loss")
+
         loss = logs.get('loss')
         if loss is not None and torch.isnan(torch.tensor(loss)):
             print("NaN loss detected, terminating training")
@@ -406,14 +434,14 @@ class CSVLogger(Callback):
         self.keys = None
         self.file = None
     
-    def on_train_begin(self, logs: Dict[str, Any]) -> None:
+    def on_train_begin(self, logs: dict[str, Any]) -> None:
         """Initialize CSV file"""
         if self.append:
             self.file = open(self.filename, 'a')
         else:
             self.file = open(self.filename, 'w')
     
-    def on_epoch_end(self, epoch: int, logs: Dict[str, Any]) -> None:
+    def on_epoch_end(self, epoch: int, logs: dict[str, Any]) -> None:
         """Write metrics to CSV file"""
         if self.keys is None:
             self.keys = sorted(logs.keys())
@@ -423,7 +451,7 @@ class CSVLogger(Callback):
         self.file.write(self.separator.join(values) + '\n')
         self.file.flush()
     
-    def on_train_end(self, logs: Dict[str, Any]) -> None:
+    def on_train_end(self, logs: dict[str, Any]) -> None:
         """Close CSV file"""
         if self.file:
             self.file.close()
