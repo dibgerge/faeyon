@@ -96,12 +96,11 @@ def train_multi_node():
     
     # Train
     history = recipe.train(
-        train_loader, 
+        train_loader,
+        val_data=val_loader, 
         min_period="30s", 
         max_period="2m", 
-        val_loader, 
         val_freq=10, 
-        verbose=is_master_process()  # Only master process prints
     )
     
     # Synchronize after training

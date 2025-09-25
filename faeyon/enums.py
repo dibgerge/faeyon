@@ -1,0 +1,18 @@
+import enum
+
+
+class ClfType(enum.StrEnum):
+    """
+    Specifies the type of predictions/targets for classification tasks.
+
+    * BINARY: Predictions are probabilities in [0, 1] and targets are 0 or 1.
+    * SPARSE: Predictions are integer values and targets are integer values.
+    * CATEGORICAL: Predictions are probabilities in [0, 1] and targets are one-hot encoded.
+    * MULTILABEL: Predictions are probabilities in [0, 1] and targets are one-hot encoded.
+    """
+    BINARY = "binary"
+    SPARSE = "sparse"
+    CATEGORICAL = "categorical"
+    MULTILABEL = "multilabel"
+
+

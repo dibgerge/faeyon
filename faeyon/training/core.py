@@ -335,7 +335,7 @@ class TrainState:
     def is_epoch_begin(self) -> bool:
         return self.epoch_step == 1
 
-    def _get_field(self, unit: PeriodUnit) -> float:
+    def _get_field(self, unit: PeriodUnit) -> Period:
         if unit == PeriodUnit.EPOCHS:
             value = self.epoch
         elif unit == PeriodUnit.STEPS:
@@ -350,29 +350,23 @@ class TrainState:
         return self._get_field(period.unit) == period
 
     def __lt__(self, period: Period) -> bool:
-        state_period = Period(self._get_field(period.unit), unit=period.unit)
-        return state_period < period
+        return self._get_field(period.unit) < period
 
     def __le__(self, period: Period) -> bool:
-        state_period = Period(self._get_field(period.unit), unit=period.unit)
-        return state_period <= period
+        return self._get_field(period.unit) <= period
 
     def __gt__(self, period: Period) -> bool:
-        state_period = Period(self._get_field(period.unit), unit=period.unit)
-        return state_period > period
+        return self._get_field(period.unit) > period
 
     def __ge__(self, period: Period) -> bool:
-        state_period = Period(self._get_field(period.unit), unit=period.unit)
-        return state_period >= period
+        return self._get_field(period.unit) >= period
 
     def __ne__(self, period: Period) -> bool:
         return not self == period
 
     def __truediv__(self, other: Period | Number | str) -> float:
-        other = self._validate_period(other)
-        return self.value / other.value
+        return self._get_field(other.unit) / other.value
 
     def __floordiv__(self, other: Period | Number | str) -> int:
-        other = self._validate_period(other)
-        return self.value // other.value
+        return self._get_field(other.unit) // other.value
 
