@@ -266,6 +266,7 @@ class ClfMetricBase(Metric):
                 else:
                     targets = targets.unsqueeze(-1)
 
+                preds = (preds.unsqueeze(-1) >= self.thresholds).to(torch.long)
                 nthresh = len(self.thresholds)
                 targets = targets.expand(n, nthresh)
                 thresholds = self.thresholds.expand(n, -1)
@@ -294,6 +295,7 @@ class ClfMetricBase(Metric):
                     targets = one_hot(targets)
                 
                 nthresh = len(self.thresholds)
+                preds = (preds.unsqueeze(-1) >= self.thresholds).to(torch.long)
                 targets = targets.unsqueeze(-1).expand(n, -1, nthresh)
                 classes = torch.arange(self.num_classes).view(1, -1, 1).expand(n, -1, nthresh)
                 thresholds = self.thresholds.view(1, 1, -1).expand(n, self.num_classes, 1)
