@@ -1,7 +1,7 @@
 import enum
 
 
-class ClfType(enum.StrEnum):
+class ClfTask(enum.StrEnum):
     """
     Specifies the type of predictions/targets for classification tasks.
 
