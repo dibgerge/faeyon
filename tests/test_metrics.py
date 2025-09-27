@@ -60,19 +60,16 @@ class TestClfMetricBase:
     ])
     def test_init_errors(self, kwargs):
         # Cannot use both `thresholds` and `topk`
-        print(kwargs)
         with pytest.raises(ValueError):
             metrics.ClfMetricBase(**kwargs)
 
     def test_init_binary(self):
         """ num_classes 1 or 2 sets task to BINARY"""
         metric1 = metrics.ClfMetricBase(num_classes=2)
-        assert metric1.task == metrics.ClfTask.BINARY
-        assert metric1.num_classes == 2
+        assert metric1.num_classes == 1
 
         metric2 = metrics.ClfMetricBase(num_classes=1)
-        assert metric2.task == metrics.ClfTask.BINARY
-        assert metric2.num_classes == 2
+        assert metric2.num_classes == 1
 
     @pytest.mark.parametrize("thresh, expected", [
         (3, [0.0, 0.5, 1.0]),
@@ -96,7 +93,7 @@ class TestClfMetricBase:
         ({}, torch.rand(4, 3), torch.rand(4, 3)),
         #T argets are negative for sparse inputs
         ({}, torch.randint(0, 3, (4,)), torch.randint(-3, 0, (4,))),
-        # Preds of shape (B, C) are not probabilities
+        # Preds of shape (B, C) are not floating point
         ({}, torch.randint(0, 3, (4, 3)), torch.randint(0, 3, (4, 3))),
         # Number of classes mismatch between preds & targets
         ({}, torch.rand(4, 3), one_hot(torch.randint(0, 5, (4,)), num_classes=5)),
@@ -141,11 +138,49 @@ class TestClfMetricBase:
         ({"topk": 1, "num_classes": 3}, torch.randint(0, 3, (4,)), torch.randint(0, 3, (4,))),
         # If preds and targets are sparse, we should have num_classes
         ({}, torch.randint(0, 3, (4,)), torch.randint(0, 3, (4,))),
+        # Preds of shape (B, C) must be probabilities
+        ({"num_classes": 3}, torch.randint(0, 3, (4, 3)), torch.randint(0, 3, (4,))),
+        # Multilabel not supported for preds of shape (B, )
+        (
+            {"multilabel": True, "thresholds": 0.5}, 
+            torch.rand(4), 
+            torch.tensor([[1, 1, 0], [1, 1, 1], [0, 1, 0], [1, 0, 0]])
+        ),
+        # Multilabel preds must be probabilities
+        (
+            {"multilabel": True, "thresholds": 0.5}, 
+            torch.rand(4, 3) + 2, 
+            torch.tensor([[1, 1, 0], [1, 1, 1], [0, 1, 0], [1, 0, 0]])
+        ),
+        # Multilabel targets must be one-hot encoded
+        (
+            {"multilabel": True, "thresholds": 0.5}, 
+            torch.rand(4, 3), 
+            torch.randint(0, 3, (4,))
+        ),
+        # Multilabel targets cannot be of shape (B, 1)
+        (
+            {"multilabel": True, "thresholds": 0.5}, 
+            torch.rand(4, 3), 
+            torch.randint(0, 2, (4, 1))
+        ),        
     ])
     def test_update_errors(self, kwargs, preds, targets):
         metric = metrics.ClfMetricBase(**kwargs)
         with pytest.raises(ValueError):
             metric.update(preds, targets)
+
+    def test_update_task_mismatch(self):
+        """ Make two updates where second update has a different task than first update."""
+        metric = metrics.ClfMetricBase(thresholds=0.5, average=None)
+        metric.update(torch.rand(4,), torch.randint(0, 2, (4,)))
+        assert metric.num_classes == 1
+
+        with pytest.raises(ValueError):
+            metric.update(torch.rand(4, 3), torch.randint(0, 3, (4,)))
+
+
+
 
 
     @pytest.mark.parametrize("preds, targets", [
