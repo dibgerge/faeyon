@@ -21,6 +21,8 @@ class ClfMetricBase(Metric):
     """
     thresholds: Optional[torch.Tensor]
     task: Optional[ClfTask]
+    num_classes: Optional[int]
+    _state: Optional[torch.Tensor]
 
     def __init__(
         self, 
@@ -28,15 +30,13 @@ class ClfMetricBase(Metric):
         thresholds: Optional[int | float | list[float] | torch.Tensor] = None,
         topk: Optional[int] = None,
         subset: Optional[list[int]] = None,
-        average: Optional[str] = "weighted",
+        average: Optional[str] = None,
         multilabel: bool = False,
     ):
         if thresholds is not None and topk is not None:
             raise ValueError("Cannot use both `thresholds` and `topk`.")
 
         if multilabel:        
-            if topk is not None:
-                raise ValueError("`topk` is not supported for multilabel predictions.")
             if thresholds is None:
                 raise ValueError("`thresholds` is required for multilabel predictions.")
             
@@ -63,15 +63,12 @@ class ClfMetricBase(Metric):
             
             case float():
                 self.thresholds = torch.tensor([thresholds])
-            
-            case torch.Tensor():
-                if thresholds.max() > 1 or thresholds.min() < 0:
-                    raise ValueError("`thresholds` tensor values must all be in [0, 1].")
-            
+                        
             case list() | tuple():
-                if max(thresholds) > 1 or min(thresholds) < 0:
-                    raise ValueError("`thresholds` list/tuple values must all be in [0, 1].")
                 self.thresholds = torch.tensor(thresholds)
+
+            case torch.Tensor():
+                self.thresholds = thresholds
 
             case None:
                 self.thresholds = None
@@ -79,6 +76,9 @@ class ClfMetricBase(Metric):
             case _:
                 raise ValueError(
                     "`thresholds` must be an integer, float, or list/tensor of floats.")
+        
+        if self.thresholds is not None and (self.thresholds.max() > 1 or self.thresholds.min() < 0):
+            raise ValueError("`thresholds` tensor values must all be in [0, 1].")
 
         self.subset = subset
         self.average = average
@@ -87,7 +87,7 @@ class ClfMetricBase(Metric):
         self.reset()
 
     def reset(self) -> None:
-        pass
+        self._state = None
 
     def _infer_task(self, preds: torch.Tensor, targets: torch.Tensor) -> ClfTask:
         """
@@ -126,31 +126,6 @@ class ClfMetricBase(Metric):
                 raise ValueError("Targets must be non-negative for shape (B,).")
             tclasses = None
 
-        mismatch = False
-        if pclasses is not None and tclasses is not None:
-            mismatch = pclasses != tclasses
-
-        if self.num_classes is not None:
-            if pclasses is not None:
-                mismatch = pclasses != self.num_classes
-        
-            if tclasses is not None:
-                mismatch = tclasses != self.num_classes
-
-            if max_target + 1 > self.num_classes:
-                mismatch = True
-
-            if not preds.is_floating_point() and max_pred + 1 > self.num_classes:
-                mismatch = True
-
-        if mismatch:
-            raise ValueError(
-                "Number of classes invalid for predictions or targets:\n"
-                f"\tTarget: {tclasses}\n"
-                f"\tPredictions: {pclasses}\n"
-                f"\tNum classes: {self.num_classes}"
-            )
-
         # Infer task
         if self.multilabel:
             if preds.ndim == 1:
@@ -169,27 +144,27 @@ class ClfMetricBase(Metric):
                 if targets.shape[-1] == 1:
                     raise ValueError("Multilabels are not supported for targets of shape (B, 1).")
             return ClfTask.MULTILABEL
+        elif targets.ndim == 2:
+            if (targets.sum(-1) > 1).any():
+                raise ValueError(
+                    "Categorical targets must be one-hot encoded. Found targets with multilabels.")
 
         match(preds.ndim):
             # Binary task
-            case 1 if preds.is_floating_point():
-                
-                if self.topk is not None:
-                    raise ValueError("Topk is not supported for binary predictions.")
+            case 1 if preds.is_floating_point():                
+                if self.thresholds is None:
+                    raise ValueError("Binary predictions require `threshold`.")
 
                 if max_pred > 1 or min_pred < 0:
                     raise ValueError(
                         "Predictions as float tensors of shape (B,) must be probabilities."
                     )
                 
-                if self.thresholds is None:
-                    raise ValueError("Binary predictions require `threshold`.")
-                    
                 if self.average is not None:
                     raise ValueError("`average` is not supported for binary predictions.")
 
-                if max_target > 1:
-                    raise ValueError("targets must be 0 or 1 for binary task.")
+                # if max_target > 1:
+                #     raise ValueError("targets must be 0 or 1 for binary task.")
 
                 if targets.ndim == 2:
                     if targets.shape[-1] > 2:
@@ -198,7 +173,7 @@ class ClfMetricBase(Metric):
                 if self.num_classes is None:
                     self.num_classes = 2
 
-                return ClfTask.BINARY
+                task = ClfTask.BINARY
             
             # Sparse task
             case 1: 
@@ -217,7 +192,7 @@ class ClfMetricBase(Metric):
                     else:
                         self.num_classes = tclasses
 
-                return ClfTask.SPARSE
+                task = ClfTask.SPARSE
             case 2:
                 if not preds.is_floating_point():
                     raise ValueError(
@@ -228,11 +203,41 @@ class ClfMetricBase(Metric):
                 if self.num_classes is None:
                     self.num_classes = pclasses
 
-                return ClfTask.CATEGORICAL
+                if self.thresholds is not None:
+                    task = ClfTask.CATEGORICAL
+                else:
+                    task = ClfTask.SPARSE
 
             case _:
                 raise ValueError(
                     f"Predictions tensor must be of shape (B,) or (B, C). Got {preds.shape}")
+
+        mismatch = False
+        if pclasses is not None and tclasses is not None:
+            mismatch |= pclasses != tclasses
+
+        if self.num_classes is not None:
+            if pclasses is not None:
+                mismatch |= pclasses != self.num_classes
+        
+            if tclasses is not None:
+                mismatch |= tclasses != self.num_classes
+
+            if max_target + 1 > self.num_classes:
+                mismatch |= True
+
+            if not preds.is_floating_point() and max_pred + 1 > self.num_classes:
+                mismatch |= True
+
+        if mismatch:
+            raise ValueError(
+                "Number of classes invalid for predictions or targets:\n"
+                f"\tTarget: {tclasses}\n"
+                f"\tPredictions: {pclasses}\n"
+                f"\tNum classes: {self.num_classes}"
+            )
+
+        return task
      
     def update(self, preds: torch.Tensor, targets: torch.Tensor) -> None:
         """
@@ -243,6 +248,8 @@ class ClfMetricBase(Metric):
             - C: Number of classes
             - B: Batch size
         """
+        size: tuple[int, ...]
+
         task = self._infer_task(preds, targets)
 
         if self.task is None:
@@ -254,11 +261,17 @@ class ClfMetricBase(Metric):
                 f"\tInferred: {task}"
             )
 
-        n = preds.shape[0]
-        c = self.num_classes
+        # Make type checker happy
+        if self.num_classes is None:
+            raise ValueError("`num_classes` is not set/cannot be inferred.")
 
-        match self.task:
+        n = preds.shape[0]
+        match task:
             case ClfTask.BINARY:
+                # Not needed, but make type checker happy
+                if self.thresholds is None:
+                    raise ValueError("Binary predictions require `thresholds`.")
+
                 # One-hot encoded binary targets would be of shape (B, 2)
                 if targets.ndim == 2:
                     if targets.shape[-1] == 2:
@@ -269,28 +282,32 @@ class ClfMetricBase(Metric):
                 preds = (preds.unsqueeze(-1) >= self.thresholds).to(torch.long)
                 nthresh = len(self.thresholds)
                 targets = targets.expand(n, nthresh)
-                thresholds = self.thresholds.expand(n, -1)
-                items = torch.stack([thresholds, preds, targets], dim=-1).view(-1, 3)
+                thresholds = torch.arange(nthresh).expand(n, -1)
+                items = torch.stack([thresholds, preds, targets]).view(3, -1)
+                size = (nthresh, 2, 2)
     
             case ClfTask.SPARSE:                
                 if targets.ndim == 2:
                     # Convert one-hot encoded targets to sparse
                     targets = targets.argmax(dim=-1)
 
-                if self.topk is not None:
-                    if self.topk > 1:
-                        preds = preds.topk(self.topk, dim=-1).indices
-                        pred_top = preds[:, 0]
-                        pred_tp = (targets == preds).any(dim=-1)
-                        preds = torch.where(pred_tp, targets, pred_top)
-                    else:
-                        # convert prediction probabilities to sparse class numbers
-                        preds = preds.argmax(dim=-1)
+                if self.topk is not None and self.topk > 1:
+                    preds = preds.topk(self.topk, dim=-1).indices
+                    pred_top = preds[:, 0]
+                    pred_tp = (targets == preds).any(dim=-1)
+                    preds = torch.where(pred_tp, targets, pred_top)
+                else:
+                    # convert prediction probabilities to sparse class numbers
+                    preds = preds.argmax(dim=-1)
 
-                items = torch.column_stack([preds, targets])
+                items = torch.stack([preds, targets])
+                size = (self.num_classes, self.num_classes)
                 
             case ClfTask.CATEGORICAL | ClfTask.MULTILABEL:
                 # This task means thresholds are given with categorical predictions
+                if self.thresholds is None:
+                    raise ValueError("Categorical/multilabel predictions require `thresholds`.")
+
                 if targets.ndim == 1:
                     targets = one_hot(targets)
                 
@@ -298,12 +315,17 @@ class ClfMetricBase(Metric):
                 preds = (preds.unsqueeze(-1) >= self.thresholds).to(torch.long)
                 targets = targets.unsqueeze(-1).expand(n, -1, nthresh)
                 classes = torch.arange(self.num_classes).view(1, -1, 1).expand(n, -1, nthresh)
-                thresholds = self.thresholds.view(1, 1, -1).expand(n, self.num_classes, 1)
-                items = torch.stack([classes, thresholds, preds, targets], dim=-1).view(-1, 4)
+                thresholds = torch.arange(nthresh).view(1, 1, -1).expand(n, self.num_classes, 1)
+                items = torch.stack([classes, thresholds, preds, targets]).view(4, -1)
+                size = (self.num_classes, nthresh, 2, 2)
 
-        indices, counts = torch.unique(items, dim=0, return_counts=True)
+        indices, counts = torch.unique(items, dim=1, return_counts=True)
+        data = torch.sparse_coo_tensor(indices, counts, size=size)
 
-        return indices, counts
+        if self._state is None:
+            self._state = data
+        else:
+            self._state += data
 
 
 class Accuracy(ClfMetricBase):
