@@ -8,7 +8,6 @@ import time
 import fnmatch
 import importlib
 import re
-from .callbacks import Callback
 
 from numbers import Number
 from datetime import timedelta

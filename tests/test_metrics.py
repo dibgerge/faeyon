@@ -83,90 +83,137 @@ class TestClfMetricBase:
         torch.testing.assert_close(metric.thresholds,  torch.tensor(expected))
 
     @pytest.mark.parametrize("kwargs, preds, targets", [
-        # Different batch size between preds & targets
+        # 0 Different batch size between preds & targets
         ({}, torch.rand(4, 3), torch.randint(0, 3, (5, 3))), 
-        # Preds have wrong number of dimensions
+        # 1 Preds have wrong number of dimensions
         ({}, torch.rand(4, 3, 2), torch.randint(0, 3, (4, 3))),
-        # Targets have wrong number of dimensions
+        # 2 Targets have wrong number of dimensions
         ({}, torch.rand(4, 3), torch.randint(0, 3, (4, 3, 2))),
-        # Targets are not integer values
+        # 3 Targets are not integer values
         ({}, torch.rand(4, 3), torch.rand(4, 3)),
-        #T argets are negative for sparse inputs
+        # 4 Targets are negative for sparse inputs
         ({}, torch.randint(0, 3, (4,)), torch.randint(-3, 0, (4,))),
-        # Preds of shape (B, C) are not floating point
+        
+        # 5 Preds of shape (B, C) are not floating point
         ({}, torch.randint(0, 3, (4, 3)), torch.randint(0, 3, (4, 3))),
-        # Number of classes mismatch between preds & targets
+        # 6 Number of classes mismatch between preds & targets
         ({}, torch.rand(4, 3), one_hot(torch.randint(0, 5, (4,)), num_classes=5)),
-        # mismatch between categorical preds & num_classes
+        # 7 mismatch between categorical preds & num_classes
         ({"num_classes": 5}, torch.rand(4, 3), one_hot(torch.randint(0, 5, (4,)), num_classes=5)),
-        # mismatch between sparse preds & num_classes
+        # 8 mismatch between sparse preds & num_classes
         (
             {"num_classes": 3}, 
             torch.randint(3, 5, (4,)), 
             one_hot(torch.randint(0, 3, (4,)), num_classes=5)
         ),
-        # mismatch between targets & num_classes
+        # 9 mismatch between targets & num_classes
         ({"num_classes": 3}, torch.rand(4, 3), one_hot(torch.randint(0, 5, (4,)), num_classes=5)),
-        # sparse targets has more classes than num_classes
+        # 10 sparse targets has more classes than num_classes
         ({"num_classes": 3}, torch.randint(0, 3, (4,)), torch.randint(3, 5, (4,))),
-        # Multilabel targets with unspecified multilabel argument
-        ({}, torch.rand(4, 3), torch.tensor([[1, 1, 0], [1, 1, 1], [0, 1, 0], [1, 0, 0]])),
-        # Average input not supported for binary predictions
-        (
-            {"average": "weighted", "thresholds": 0.5}, 
-            torch.tensor([0.1, 0.6, 0.7, 0.9]), 
-            torch.tensor([0, 1, 1, 0])
-        ),
-        # Binary task: Targets must be 0 or 1
+
+        # 11 Binary task: Targets must be 0 or 1
         ({"thresholds": 0.5}, torch.tensor([0.1, 0.6, 0.7, 0.9]), torch.tensor([0, 1, 2, 0])),
-        # Binary task: 2-D targets must be of shape (B, 2) or (B, 1)
+        # 12 Binary task: 2-D targets should not have more than 2 class
         (
             {"thresholds": 0.5}, 
             torch.tensor([0.1, 0.6, 0.7, 0.9]), 
             torch.tensor([[0, 1, 0], [0, 1, 0], [0, 0, 1], [0, 1, 0]])
         ),
-        # Binary pred inputs require thresholds
+        # 13 Binary pred inputs require thresholds
         ({}, torch.tensor([0.1, 0.6, 0.7, 0.9]), torch.tensor([0, 1, 1, 0])),
-        # Binary pred inputs must be probabilities
+        # 14 Binary pred inputs must be probabilities        
         ({"thresholds": 0.5}, torch.tensor([0.1, 0.6, 0.7, 2.9]), torch.tensor([0, 1, 1, 0])),
-        # Sparse predictions should not have thresholds
+        # 15 Binary: Targets must be binary for preds of shape (B, 2)
+        (
+            {"thresholds": 0.5}, 
+            torch.randn((4, 2)), 
+            [[0, 1], [0, 1], [0, 0], [0, 1]]
+        ),
+        # 16 Binary: topk is invalid for preds of shape (B, 2)
+        (
+            {"topk": 2}, 
+            torch.randn((4, 2)), 
+            [[0, 1], [0, 1], [0, 1], [0, 1]]
+        ),
+        # 17 Binary: preds and targets are sparse - bad targets
+        ({"num_classes": 1}, torch.randint(0, 2, (4,)), torch.randint(2, 5, (4,))),
+        # 18 Binary: preds and targets are sparse - bad preds
+        ({"num_classes": 1}, torch.randint(2, 5, (4,)), torch.randint(0, 2, (4,))),
+        # 19 Binary: preds sparse, targets is (B, 1) - bad targets
+        ({}, torch.randint(0, 2, (4,)), torch.randint(3, 5, (4, 1))),
+        # 20 Binary: preds sparse, targets is (B, 2) - bad targets
+        ({}, torch.randint(0, 2, (4,)), torch.tensor([[0, 1], [0, 1], [0, 1], [1, 1]])),
+        # 21 Binary: preds sparse, targets is (B, 1) - topk cannot be used
+        ({"topk": 1}, torch.randint(0, 2, (4,)), torch.randint(0, 2, (4, 1))),
+        # 22 Binary: preds sparse, targets is (B, 1) - thresholds cannot be used
+        ({"thresholds": 0.5}, torch.randint(0, 2, (4,)), torch.randint(0, 2, (4, 1))),
+        # 23 Binary: preds sparse, targets is (B, 1) - preds must be {0, 1}
+        ({}, torch.randint(2, 5, (4,)), torch.randint(0, 2, (4, 1))),
+
+        # 24 Sparse predictions should not have thresholds
         (
             {"thresholds": 0.5, "num_classes": 3}, 
             torch.randint(0, 3, (4,)), torch.randint(0, 3, (4,))
         ),
-        # Sparse predictions should not have topk
+
+        # 25 Sparse predictions should not have topk
         ({"topk": 1, "num_classes": 3}, torch.randint(0, 3, (4,)), torch.randint(0, 3, (4,))),
-        # If preds and targets are sparse, we should have num_classes
+
+        # 26 If preds and targets are sparse, we should have num_classes
         ({}, torch.randint(0, 3, (4,)), torch.randint(0, 3, (4,))),
-        # Preds of shape (B, C) must be probabilities
-        ({"num_classes": 3}, torch.randint(0, 3, (4, 3)), torch.randint(0, 3, (4,))),
-        # Multilabel not supported for preds of shape (B, )
+
+        # 27 Categorical predictions and sparse targets - targets with wrong # classes
+        ({}, torch.rand(4, 3), torch.randint(3, 5, (4,))),
+
+        # 28 Multilabel targets with unspecified multilabel argument
+        ({}, torch.rand(4, 3), [[1, 1, 0], [1, 1, 1], [0, 1, 0], [1, 0, 0]]),
+
+        # 29 Multilabel not supported for preds of shape (B, )
         (
             {"multilabel": True, "thresholds": 0.5}, 
             torch.rand(4), 
-            torch.tensor([[1, 1, 0], [1, 1, 1], [0, 1, 0], [1, 0, 0]])
+            [[1, 1, 0], [1, 1, 1], [0, 1, 0], [1, 0, 0]]
         ),
-        # Multilabel preds must be probabilities
+        # 30 Multilabel preds must be probabilities
         (
             {"multilabel": True, "thresholds": 0.5}, 
             torch.rand(4, 3) + 2, 
-            torch.tensor([[1, 1, 0], [1, 1, 1], [0, 1, 0], [1, 0, 0]])
+            [[1, 1, 0], [1, 1, 1], [0, 1, 0], [1, 0, 0]]
         ),
-        # Multilabel targets must be one-hot encoded
+        # 31 Multilabel targets must be one-hot encoded
         (
             {"multilabel": True, "thresholds": 0.5}, 
             torch.rand(4, 3), 
             torch.randint(0, 3, (4,))
         ),
-        # Multilabel targets cannot be of shape (B, 1)
+        # 32 Multilabel targets cannot be of shape (B, 1)
         (
             {"multilabel": True, "thresholds": 0.5}, 
             torch.rand(4, 3), 
             torch.randint(0, 2, (4, 1))
-        ),        
+        ),
+
+        # 33 Preds: (B,) Targets: (B, C) - with topk
+        (
+            {"topk": 1}, 
+            torch.randint(0, 3, (4,)), 
+            [[0, 1, 0], [0, 1, 0], [0, 1, 0], [0, 1, 0]]
+        ),
+        # 34 Preds: (B,) Targets: (B, C) - with max_pred > C
+        (
+            {}, 
+            torch.randint(3, 4, (4,)), 
+            [[0, 1, 0], [0, 1, 0], [0, 1, 0], [0, 1, 0]]
+        ),
     ])
     def test_update_errors(self, kwargs, preds, targets):
         metric = metrics.ClfMetricBase(**kwargs)
+
+        if not isinstance(preds, torch.Tensor):
+            preds = torch.tensor(preds)
+        if not isinstance(targets, torch.Tensor):
+            targets = torch.tensor(targets)
+
         with pytest.raises(ValueError):
             metric.update(preds, targets)
 
@@ -179,19 +226,161 @@ class TestClfMetricBase:
         with pytest.raises(ValueError):
             metric.update(torch.rand(4, 3), torch.randint(0, 3, (4,)))
 
+    @pytest.mark.parametrize("kwargs, preds, targets, expected", [
+        # 0 Preds: (B,) INT, targets: (B,)
+        (
+            {"num_classes": 1}, 
+            [0, 1, 1, 1], 
+            [0, 1, 1, 0],
+            [[1, 0], [1, 2]]
+        ),
+        # 1 Preds: (B,) INT, targets: (B, 1)
+        (
+            {"num_classes": 1}, 
+            [0, 1, 1, 1], 
+            [[0], [1], [1], [0]],
+            [[1, 0], [1, 2]]
+        ),
+        # 2 Preds: (B,) INT, targets: (B, 2)
+        (
+            {}, 
+            [0, 1, 1, 1], 
+            [[1, 0], [0, 1], [0, 1], [1, 0]],
+            [[1, 0], [1, 2]]
+        ),
+        # 3 Preds: (B,) FLOAT, targets: (B,)
+        (
+            {"thresholds": 0.5}, 
+            [0.2, 0.7, 0.6, 0.8], 
+            [0, 1, 1, 0],
+            [[[1, 0], [1, 2]]]
+        ),
+        # 4 Preds: (B,) FLOAT, targets: (B, 1)
+        (
+            {"thresholds": 0.5}, 
+            [0.2, 0.7, 0.6, 0.8], 
+            [[0], [1], [1], [0]],
+            [[[1, 0], [1, 2]]]
+        ),
+        # 5 Preds: (B,) FLOAT, targets: (B, 2)
+        (
+            {"thresholds": 0.5}, 
+            [0.2, 0.7, 0.6, 0.8], 
+            [[1, 0], [0, 1], [0, 1], [1, 0]],
+            [[[1, 0], [1, 2]]]
+        ),
 
+        # 6 Preds: (B, 2) FLOAT, targets: (B,)
+        (
+            {}, 
+            [[0.1, -2.0], [0.6, 1.1], [0.7, 1.5], [0.9, 2.0]], 
+            [0, 1, 1, 0],
+            [[1, 0], [1, 2]]
+        ),
+        # 7 Preds: (B, 2) FLOAT, targets: (B, 1)
+        (
+            {}, 
+            [[0.1, -2.0], [0.6, 1.1], [0.7, 1.5], [0.9, 2.0]], 
+            [[0], [1], [1], [0]],
+            [[1, 0], [1, 2]]
+        ),
+        # 8 Preds: (B, 2) FLOAT, targets: (B, 2)
+        (
+            {}, 
+            [[0.1, -2.0], [0.6, 1.1], [0.7, 1.5], [0.9, 2.0]], 
+            [[1, 0], [0, 1], [0, 1], [1, 0]],
+            [[1, 0], [1, 2]]
+        ),
 
-
-
-    @pytest.mark.parametrize("preds, targets", [
-        clf_test_data("binary", "binary"),
+        # 9 Preds: (B,) SPARSE, targets: (B,) SPARSE
+        (
+            {"num_classes": 3}, 
+            [0, 2, 1, 2, 2],
+            [0, 2, 2, 2, 1],
+            [[1, 0, 0], [0, 0, 1], [0, 1, 2]]
+        ),
+        # 10 Preds: (B,) SPARSE, targets: (B, 1) SPARSE
+        (
+            {"num_classes": 3}, 
+            [0, 2, 1, 2, 2],
+            [[0], [2], [2], [2], [1]],
+            [[1, 0, 0], [0, 0, 1], [0, 1, 2]]
+        ),
+        # 11 Preds: (B,) SPARSE, targets: (B, C) SPARSE
+        (
+            {}, 
+            [0, 2, 1, 2, 2],
+            [[1, 0, 0], [0, 0, 1], [0, 0, 1], [0, 0, 1], [0, 1, 0]],
+            [[1, 0, 0], [0, 0, 1], [0, 1, 2]]
+        ),
+        # 12 Preds: (B, C) FLOAT, targets: (B,) SPARSE
+        (
+            {}, 
+            [
+                [0.1, -2.0, 0.0], 
+                [0.6, 1.1, 2.0], 
+                [0.7, 1.5, 0.0], 
+                [0.9, 1.0, 2.0], 
+                [-0.9, 0.1, 0.6]
+            ],
+            [0, 2, 2, 2, 1],
+            [[1, 0, 0], [0, 0, 1], [0, 1, 2]]
+        ),
+        # 13 Preds: (B, C) FLOAT, targets: (B, 1) SPARSE
+        (
+            {}, 
+            [
+                [0.1, -2.0, 0.0], 
+                [0.6, 1.1, 2.0], 
+                [0.7, 1.5, 0.0], 
+                [0.9, 1.0, 2.0], 
+                [-0.9, 0.1, 0.6]
+            ],
+            [[0], [2], [2], [2], [1]],
+            [[1, 0, 0], [0, 0, 1], [0, 1, 2]]
+        ),
+        # 14 Preds: (B, C) FLOAT, targets: (B,) SPARSE
+        (
+            {"topk": 2}, 
+            [
+                [0.1, -2.0, 0.0], 
+                [0.6, 1.1, 2.0], 
+                [0.7, 1.5, 0.0], 
+                [0.9, 1.0, 2.0], 
+                [-0.9, 0.1, 0.6]
+            ],
+            [0, 2, 2, 2, 1],
+            [[1, 0, 0], [0, 1, 1], [0, 0, 2]]
+        ),
+        # 15 Preds: (B, C) FLOAT, targets: (B,) SPARSE
+        (
+            {"thresholds": 0.35}, 
+            [
+                [0.6, 0.2, 0.2], 
+                [0.1, 0.1, 0.8],
+                [0.2, 0.7, 0.1], 
+                [0.1, 0.3, 0.6], 
+                [0.4, 0.0, 0.6]
+            ],
+            [0, 2, 2, 2, 1],
+            [
+                [[[3, 0], [1, 1]]],
+                [[[3, 1], [1, 0]]],
+                [[[1, 1], [1, 2]]]
+            ]
+        ),
     ])
-    def test_binary_update(self, preds, targets):
-        metric = metrics.ClfMetricBase(thresholds=0.5, average=None)
-        expected = torch.tensor([[
-            [1, 0], 
-            [1, 2]
-        ]])            
-        metric.update(preds, targets)
-        torch.testing.assert_close(metric._state.to_dense(), expected)
+    def test_update(self, kwargs, preds, targets, expected):
+        preds = torch.tensor(preds)
+        targets = torch.tensor(targets)
+
+        if preds.ndim == 1:
+            preds_list = [preds, preds.unsqueeze(-1)]
+        else:
+            preds_list = [preds]
+
+        for preds in preds_list:   
+            metric = metrics.ClfMetricBase(**kwargs)
+            metric.update(preds, targets)
+            torch.testing.assert_close(metric._state.to_dense(), torch.tensor(expected))
 

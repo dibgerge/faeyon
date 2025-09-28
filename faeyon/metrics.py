@@ -100,6 +100,12 @@ class ClfMetricBase(Metric):
                 f"\tPredictions: {preds.shape} \n"
                 f"\tTargets: {targets.shape}"
             )
+        
+        if preds.ndim == 1:
+            preds = preds.unsqueeze(-1)
+        
+        if targets.ndim == 1:
+            targets = targets.unsqueeze(-1)
 
         max_pred = preds.max().item()
         min_pred = preds.min().item()
@@ -111,28 +117,20 @@ class ClfMetricBase(Metric):
             raise ValueError(
                 "Targets tensor must be non-negative integer tensor for shape (B,) or (B, C).")
 
-        # nclasses = self._validate_nclasses(preds, targets, max_pred, max_target)
-        #is_target_binary = max_target <= 1 and min_target >= 0
         is_pred_proba = preds.is_floating_point() and max_pred <= 1 and min_pred >= 0
+        is_pred_binary = not preds.is_floating_point() and max_pred <= 1 and min_pred >= 0
 
-        if targets.ndim == 2:
-            tmax = targets.sum(-1).max().item()
+        if targets.shape[-1] > 1:
+            tsum = targets.sum(-1)
             is_target_multilabel = max_target <= 1 and min_target >= 0
-            is_target_binary = tmax == 1
+            is_target_binary = (tsum == 1).all().item()
         else:
             is_target_multilabel = False
             is_target_binary = max_target <= 1 and min_target >= 0
 
         match self.multilabel, preds.shape, targets.shape:
             # Binary task cases
-            case (
-                (False, (pbatch,), (tbatch,)) |
-                (False, (pbatch,), (tbatch, 1)) |
-                (False, (pbatch,), (tbatch, 2)) |
-                (False, (pbatch, 1), (tbatch, )) |
-                (False, (pbatch, 1), (tbatch, 1)) |
-                (False, (pbatch, 1), (tbatch, 2))
-             ) if preds.is_floating_point():
+            case False, (pbatch, 1), (tbatch, tc) if preds.is_floating_point() and tc in [1, 2]:
                 if not is_target_binary:
                     raise ValueError("Targets must be 0 or 1 for binary predictions.")
 
@@ -146,34 +144,35 @@ class ClfMetricBase(Metric):
 
                 task = ClfTask.BINARY
                 nclasses = 1
-
+            
             # Binary task cases, but with 2-D predictions
-            case (
-                (False, (pbatch, 2), (tbatch, )) |
-                (False, (pbatch, 2), (tbatch, 1)) |
-                (False, (pbatch, 2), (tbatch, 2))
-            ) if preds.is_floating_point() and pbatch == tbatch:
+            case False, (pbatch, 2), (tbatch, tc) if (
+                preds.is_floating_point() and pbatch == tbatch and tc in [1, 2]
+            ):
                 if not is_target_binary:
                     raise ValueError("Targets must be 0 or 1 for binary predictions.")
 
                 if self.topk is not None and self.topk > 1:
                     raise ValueError("Topk can only be 1 for binary predictions of shape (B, 2).")
-                
-                task = ClfTask.BINARY
-                nclasses = 1
-
-            # Sparse predictions and targets for binary or sparse tasks
-            case False, (pbatch,), (tbatch,) if not preds.is_floating_point() and pbatch == tbatch:
-                if self.topk is not None:
-                    raise ValueError("Topk is not supported for sparse predictions.")
 
                 if self.thresholds is not None:
-                    raise ValueError("`threshold is not supported for sparse predictions.")
+                    task = ClfTask.CATEGORICAL
+                    nclasses = 2
+                else:
+                    task = ClfTask.BINARY
+                    nclasses = 1
+
+            # Sparse predictions and targets for binary or sparse tasks
+            case False, (pbatch, 1), (tbatch, 1) if (
+                not preds.is_floating_point() and pbatch == tbatch
+            ):
+                if self.topk is not None or self.thresholds is not None:
+                    raise ValueError("topk/thresholds are not supported for sparse predictions.")
                 
                 if self.num_classes is None:
                     raise ValueError("`num_classes` is not set/cannot be inferred.")
                 elif self.num_classes == 1:
-                    if not is_target_binary or not is_pred_proba:
+                    if not is_target_binary or not is_pred_binary:
                         raise ValueError(
                             "Integer Targets/Predictions must be 0 or 1 for binary predictions."
                         )
@@ -181,28 +180,43 @@ class ClfMetricBase(Metric):
                     task = ClfTask.BINARY
                     nclasses = 1
                 else:
-                    if max_pred >= self.num_classes or max_target >= self.num_classes:
+                    if (
+                        max_pred >= self.num_classes 
+                        or min_pred < 0 
+                        or max_target >= self.num_classes
+                    ):
                         raise ValueError(
                             "Sparse predictions/target values must be less than `num_classes`.")
                     nclasses = self.num_classes
                     task = ClfTask.SPARSE
+            
+            # Sparse
+            case False, (pbatch, 1), (tbatch, tc) if (
+                not preds.is_floating_point() and pbatch == tbatch and tc > 2
+            ):
+                if self.topk is not None or self.thresholds is not None:
+                    raise ValueError("Topk/thresholds are not supported for sparse predictions.")
+                
+                if max_pred >= tc or min_pred < 0:
+                    raise ValueError(
+                        "Predictions values must be less than targets number of classes and "
+                        "greater than 0."
+                    )
+                nclasses = tc
+                task = ClfTask.SPARSE
 
             # Binary task cases for 2-D targets and sparse predictions
-            case False, (pbatch,), (tbatch, c) if (
+            case False, (pbatch, 1), (tbatch, 2) if (
                 not preds.is_floating_point() 
-                and (c <= 2) 
                 and (pbatch == tbatch)
             ):
                 if not is_target_binary:
                     raise ValueError("Targets must be onehot encoded for binary predictions.")
                 
-                if self.topk is not None:
-                    raise ValueError("Topk is not supported for sparse predictions.")
+                if self.topk is not None or self.thresholds is not None:
+                    raise ValueError("Topk/thresholds are not supported for sparse predictions.")
                 
-                if self.thresholds is not None:
-                    raise ValueError("`threshold is not supported for sparse predictions.")
-                
-                if max_pred > 1 or min_pred < 0:
+                if not is_pred_binary:
                     raise ValueError("Integer Predictions must be 0 or 1 for binary predictions.")
 
                 task = ClfTask.BINARY
@@ -222,10 +236,10 @@ class ClfMetricBase(Metric):
                     task = ClfTask.SPARSE
                 
                 nclasses = pc
-            
+
             # Categorical / sparse task - sparse targets
-            case False, (pbatch, pc), (tbatch,) if (
-                not preds.is_floating_point() and pbatch == tbatch and pc > 2
+            case False, (pbatch, pc), (tbatch, 1) if (
+                preds.is_floating_point() and pbatch == tbatch and pc > 2
             ):
                 if max_target > pc:
                     raise ValueError(
@@ -237,14 +251,12 @@ class ClfMetricBase(Metric):
                     task = ClfTask.SPARSE
 
                 nclasses = pc
-            
+
             # Multilabel task
             case True, (pbatch, pc), (tbatch, tc) if (
-                is_pred_proba and pc == tc and pbatch == tbatch and pc > 1 and is_target_multilabel
+                is_pred_proba and pc == tc and pbatch == tbatch 
+                and pc > 1 and is_target_multilabel
             ):
-                if self.thresholds is not None:
-                    raise ValueError("`thresholds` is required for multilabel predictions.")
-
                 task = ClfTask.MULTILABEL
                 nclasses = pc
             case _:
@@ -264,24 +276,17 @@ class ClfMetricBase(Metric):
     ) -> tuple[torch.Tensor, tuple[int, ...]]:
         size: tuple[int, ...]
         
-        # One-hot encoded binary targets would be of shape (B, 2)
         n = preds.shape[0]
-        if targets.ndim == 2:
-            if targets.shape[-1] == 2:
-                targets = targets.argmax(dim=-1, keepdim=True)
-        else:
-            targets = targets.unsqueeze(-1)
-        
-        if preds.ndim == 2 and preds.shape[-1] == 2:
-            preds = preds.argmax(dim=-1, keepdim=True)
-        else:
-            if self.thresholds is None:
-                raise ValueError("Binary predictions require `thresholds`.")
-
+        if self.thresholds is not None:
             if preds.ndim == 1:
                 preds = preds.unsqueeze(-1)
+            
+            if targets.ndim == 1:
+                targets = targets.unsqueeze(-1)
+            
+            if targets.shape[-1] == 2:
+                targets = targets.argmax(dim=-1, keepdim=True)
 
-        if self.thresholds is not None:
             preds = (preds >= self.thresholds).to(torch.long)
             nthresh = len(self.thresholds)
             targets = targets.expand(n, nthresh)
@@ -289,6 +294,16 @@ class ClfMetricBase(Metric):
             items = torch.stack([thresholds, preds, targets]).view(3, -1)
             size = (nthresh, 2, 2)
         else:
+            if preds.ndim == 2 and preds.shape[-1] == 2:
+                preds = preds.argmax(dim=-1)
+            else:
+                preds = preds.squeeze()
+            
+            if targets.ndim == 2 and targets.shape[-1] == 2:
+                targets = targets.argmax(dim=-1)
+            else:
+                targets = targets.squeeze()
+
             items = torch.stack([preds, targets])
             size = (2, 2)
         
@@ -302,16 +317,20 @@ class ClfMetricBase(Metric):
         if self.num_classes is None:
             raise ValueError("`num_classes` is not set/cannot be inferred.")
 
-        if targets.ndim == 2:
+        if targets.ndim == 2 and targets.shape[-1] > 1:
             targets = targets.argmax(dim=-1)
+        else:
+            targets = targets.squeeze()
 
         if self.topk is not None and self.topk > 1:
             preds = preds.topk(self.topk, dim=-1).indices
             pred_top = preds[:, 0]
-            pred_tp = (targets == preds).any(dim=-1)
+            pred_tp = (targets.unsqueeze(-1) == preds).any(dim=-1)
             preds = torch.where(pred_tp, targets, pred_top)
-        else:
+        elif preds.ndim == 2 and preds.shape[-1] > 1:
             preds = preds.argmax(dim=-1)
+        else:
+            preds = preds.squeeze()
 
         items = torch.stack([preds, targets])
         size = (self.num_classes, self.num_classes)
@@ -330,6 +349,7 @@ class ClfMetricBase(Metric):
         if self.num_classes is None:
             raise ValueError("`num_classes` is not set/cannot be inferred.")
 
+        targets = targets.squeeze()
         if targets.ndim == 1:
             targets = one_hot(targets)
         
@@ -351,8 +371,6 @@ class ClfMetricBase(Metric):
             - C: Number of classes
             - B: Batch size
         """
-        size: tuple[int, ...]
-
         task, nclasses = self._infer_task(preds, targets)
 
         if self.num_classes is None:
@@ -376,9 +394,10 @@ class ClfMetricBase(Metric):
 
 class Accuracy(ClfMetricBase):
     def compute(self) -> float:
-        return (self.predictions == self.targets).mean()
-
-
+        if self._state is None:
+            raise ValueError("Accuracy cannot be computed before updating the metric.")
+        
+    
 class Precision(ClfMetricBase):
     def compute(self) -> float:
         return (self.predictions == self.targets).mean()
