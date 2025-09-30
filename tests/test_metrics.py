@@ -1,45 +1,9 @@
 import torch
 import pytest
-from faeyon import metrics
+from faeyon.metrics.classification import ClfMetricBase
+from faeyon.metrics import Accuracy
 
 from torch.nn.functional import one_hot
-
-
-def clf_test_data(ptask, ttask):
-    preds = {
-        "binary": torch.tensor([0.1, 0.6, 0.7, 0.9]),
-        "sparse": torch.tensor([0, 0, 1, 2]),
-        "categorical": torch.tensor([
-            [0.2, 0.6, 0.3], 
-            [0.4, 0.3, 0.3], 
-            [0.8, 0.1, 0.1], 
-            [0.1, 0.2, 0.7]
-        ]),
-        "multilabel": torch.tensor([
-            [0.9, 0.6, 0.7], 
-            [0.4, 0.2, 0.8], 
-            [0.3, 0.2, 0.1], 
-            [0.9, 0.2, 0.7]
-        ]),
-    }
-
-    targets = {
-        "binary": torch.tensor([0, 1, 1, 0]),
-        "sparse": torch.tensor([1, 0, 0, 2]),
-        "categorical": torch.tensor([
-            [0, 1, 0],
-            [1, 0, 0],
-            [0, 0, 1],
-            [0, 0, 1]
-        ]),
-        "multilabel": torch.tensor([
-            [1, 0, 1],
-            [0, 1, 0],
-            [0, 0, 1],
-            [1, 1, 0]
-        ]),
-    }
-    return preds[ptask], targets[ttask]
 
 
 class TestClfMetricBase:
@@ -61,14 +25,14 @@ class TestClfMetricBase:
     def test_init_errors(self, kwargs):
         # Cannot use both `thresholds` and `topk`
         with pytest.raises(ValueError):
-            metrics.ClfMetricBase(**kwargs)
+            ClfMetricBase(**kwargs)
 
     def test_init_binary(self):
         """ num_classes 1 or 2 sets task to BINARY"""
-        metric1 = metrics.ClfMetricBase(num_classes=2)
+        metric1 = ClfMetricBase(num_classes=2)
         assert metric1.num_classes == 1
 
-        metric2 = metrics.ClfMetricBase(num_classes=1)
+        metric2 = ClfMetricBase(num_classes=1)
         assert metric2.num_classes == 1
 
     @pytest.mark.parametrize("thresh, expected", [
@@ -79,7 +43,7 @@ class TestClfMetricBase:
     ])
     def test_init_with_thresholds(self, thresh, expected):
         """ Different types of `thresholds` are supported """
-        metric = metrics.ClfMetricBase(thresholds=thresh)
+        metric = ClfMetricBase(thresholds=thresh)
         torch.testing.assert_close(metric.thresholds,  torch.tensor(expected))
 
     @pytest.mark.parametrize("kwargs, preds, targets", [
@@ -207,7 +171,7 @@ class TestClfMetricBase:
         ),
     ])
     def test_update_errors(self, kwargs, preds, targets):
-        metric = metrics.ClfMetricBase(**kwargs)
+        metric = ClfMetricBase(**kwargs)
 
         if not isinstance(preds, torch.Tensor):
             preds = torch.tensor(preds)
@@ -219,7 +183,7 @@ class TestClfMetricBase:
 
     def test_update_task_mismatch(self):
         """ Make two updates where second update has a different task than first update."""
-        metric = metrics.ClfMetricBase(thresholds=0.5, average=None)
+        metric = ClfMetricBase(thresholds=0.5, average=None)
         metric.update(torch.rand(4,), torch.randint(0, 2, (4,)))
         assert metric.num_classes == 1
 
@@ -380,7 +344,50 @@ class TestClfMetricBase:
             preds_list = [preds]
 
         for preds in preds_list:   
-            metric = metrics.ClfMetricBase(**kwargs)
+            metric = ClfMetricBase(**kwargs)
             metric.update(preds, targets)
             torch.testing.assert_close(metric._state.to_dense(), torch.tensor(expected))
 
+
+class TestAccuracy:
+
+    @pytest.mark.parametrize("kwargs, preds, targets, expected", [
+        # Sparse task - (C, C) state
+        ({"num_classes": 3, "average": "micro"}, [0, 2, 1, 2, 2], [0, 2, 2, 2, 1], 0.6),
+        ({"num_classes": 3, "average": "macro"}, [0, 2, 1, 2, 2], [0, 2, 2, 2, 1], 0.55555556),
+        ({"num_classes": 3, "average": "weighted"}, [0, 2, 1, 2, 2], [0, 2, 2, 2, 1], 0.6),
+        (
+            {"num_classes": 3, "average": "none"}, 
+            [0, 2, 1, 2, 2], 
+            [0, 2, 2, 2, 1], 
+            [1.0, 0.0, 0.666667]
+        ),
+
+        # Categorical (Binary) task - (T, 2, 2) state
+        (
+            {"average": "micro", "thresholds": [0.5, 0.8]}, 
+            [0.1, 0.6, 0.7, 0.9, 0.3], 
+            [0, 1, 1, 0, 1],
+            [0.6, 0.2]
+        ),
+        # Categorical (Multiclass) task - (T, 2, 2) state
+        # (
+        #     {"average": "micro", "thresholds": [0.5, 0.65]}, 
+        #     [
+        #         [0.6, 0.2, 0.2], 
+        #         [0.1, 0.1, 0.8],
+        #         [0.2, 0.7, 0.1], 
+        #         [0.1, 0.3, 0.6], 
+        #         [0.4, 0.0, 0.6]
+        #     ],
+        #     [0, 2, 2, 2, 1],
+        #     [0.6, 0.2]
+        # ),
+    ])
+    def test_compute(self, kwargs, preds, targets, expected):
+        preds = torch.tensor(preds)
+        targets = torch.tensor(targets)
+        metric = Accuracy(**kwargs)
+        metric.update(preds, targets)
+        res = metric.compute()
+        torch.testing.assert_close(res, torch.tensor(expected, dtype=res.dtype))

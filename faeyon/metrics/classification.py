@@ -1,16 +1,16 @@
 import torch
 
-from typing import Protocol, Optional, Literal
+from typing import Optional
 from faeyon.enums import ClfTask
 from torch.nn.functional import one_hot
+from .base import Metric
 
 
-class Metric(Protocol):
-    def update(self, predictions: torch.Tensor, targets: torch.Tensor) -> None: ...
+class BinarySparseTask:
 
-    def compute(self) -> float: ...
-
-    def reset(self) -> None: ...
+    def condition(self, preds: torch.Tensor, targets: torch.Tensor) -> bool: ...
+    
+    def update(self, preds: torch.Tensor, targets: torch.Tensor) -> None: ...
 
 
 class ClfMetricBase(Metric):
@@ -357,7 +357,7 @@ class ClfMetricBase(Metric):
         preds = (preds.unsqueeze(-1) >= self.thresholds).to(torch.long)
         targets = targets.unsqueeze(-1).expand(n, -1, nthresh)
         classes = torch.arange(self.num_classes).view(1, -1, 1).expand(n, -1, nthresh)
-        thresholds = torch.arange(nthresh).view(1, 1, -1).expand(n, self.num_classes, 1)
+        thresholds = torch.arange(nthresh).view(1, 1, -1).expand(n, self.num_classes, nthresh)
         items = torch.stack([classes, thresholds, preds, targets]).view(4, -1)
         size = (self.num_classes, nthresh, 2, 2)
         return items, size
@@ -382,22 +382,101 @@ class ClfMetricBase(Metric):
                     f"Inferred: {nclasses}\tProvided: {self.num_classes}"
                 )
 
-        items, size = self.task_map[task](preds, targets)
-        indices, counts = torch.unique(items, dim=1, return_counts=True)
-        data = torch.sparse_coo_tensor(indices, counts, size=size)
+        indices, size = self.task_map[task](preds, targets)
+
+        # sparse coo coalesce add the values of repeated indices
+        values = torch.ones(indices.shape[-1], dtype=torch.long, device=indices.device)
+        data = torch.sparse_coo_tensor(indices, values, dtype=torch.long, size=size).coalesce()
 
         if self._state is None:
             self._state = data
         else:
             self._state += data
 
+    def _confusion_sparse(self) -> dict[str, torch.Tensor]:
+        if self._state is None:
+            raise ValueError("State is empty. Call update() before compute().")
+
+        if self._state.ndim != 2:
+            raise ValueError("State must be a 2D sparse tensor.")
+
+        nclasses = self._state.shape[0]
+        pred_idx, target_idx = self._state.indices()
+        values = self._state.values()
+
+        tp = torch.zeros(nclasses, device=values.device, dtype=values.dtype)
+        fp = torch.zeros_like(tp)
+        tn = torch.zeros_like(tp)
+        fn = torch.zeros_like(tp)
+        cardinality = torch.zeros_like(tp)
+
+        tp_mask = pred_idx == target_idx
+        itp_mask = ~tp_mask
+
+        tp.scatter_add_(0, pred_idx[tp_mask], values[tp_mask])
+        fp.scatter_add_(0, pred_idx[itp_mask], values[itp_mask])        
+        fn.scatter_add_(0, target_idx[itp_mask], values[itp_mask])
+
+        tn = values.sum() - (tp + fp + fn)
+        cardinality.scatter_add_(0, target_idx, values)
+
+        return {"tp": tp, "fp": fp, "tn": tn, "fn": fn, "cardinality": cardinality}
+
+    def _confusion_categorical(self) -> dict[str, torch.Tensor]:
+        if self._state is None:
+            raise ValueError("State is empty. Call update() before compute().")
+        
+        if self._state.ndim not in [3, 4]:
+            raise ValueError("State must be a 3D or 4D sparse tensor.")
+
+        state = self._state.to_dense()
+        return {
+            "tp": state[..., 1, 1],
+            "fp": state[..., 1, 0],
+            "tn": state[..., 0, 0],
+            "fn": state[..., 0, 1],
+            "cardinality": state.sum(dim=(-2, -1))
+        }
+
 
 class Accuracy(ClfMetricBase):
-    def compute(self) -> float:
-        if self._state is None:
-            raise ValueError("Accuracy cannot be computed before updating the metric.")
-        
+    def _compute_sparse(self) -> torch.Tensor:
+        confusion = self._confusion_sparse()
+        tp = confusion["tp"]
+        cardinality = confusion["cardinality"]
+        total = cardinality.sum()
+
+        match self.average:
+            case "macro":
+                caccuracy = tp / cardinality
+                return caccuracy.mean()
+            case "micro":
+                return tp.sum() / total
+            case "weighted":
+                caccuracy = tp / cardinality
+                return (cardinality * caccuracy / total).sum()
+            case "none" | None:
+                return tp / cardinality
+            case _:
+                raise ValueError(f"Invalid average: {self.average}")
     
+    def _compute_categorical(self) -> torch.Tensor:
+        confusion = self._confusion_categorical()
+        tp = confusion["tp"]
+        tn = confusion["tn"]
+        cardinality = confusion["cardinality"]
+        return (tp + tn) / cardinality
+
+    def compute(self) -> torch.Tensor:
+        if self._state is None:
+            raise ValueError("State is empty. Call update() before compute().")
+
+        if self._state.ndim == 2:
+            return  self._compute_sparse()
+        else:
+            return self._compute_categorical()      
+
+
 class Precision(ClfMetricBase):
     def compute(self) -> float:
         return (self.predictions == self.targets).mean()
