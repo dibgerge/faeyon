@@ -2,6 +2,7 @@ import pytest
 import torch
 from faeyon import FList
 from faeyon.models import ViT
+from faeyon.models.tasks import ClassifyTask
 
 
 @pytest.fixture
@@ -13,6 +14,7 @@ def model():
         patch_size=4,
         num_layers=2,
         mlp_size=4,
+        task=ClassifyTask(num_hidden=4, pooling=0, num_labels=1000),
     )
     model.eval()
     return model

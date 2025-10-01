@@ -370,19 +370,6 @@ class TestAccuracy:
             [0, 1, 1, 0, 1],
             [0.6, 0.2]
         ),
-        # Categorical (Multiclass) task - (T, 2, 2) state
-        # (
-        #     {"average": "micro", "thresholds": [0.5, 0.65]}, 
-        #     [
-        #         [0.6, 0.2, 0.2], 
-        #         [0.1, 0.1, 0.8],
-        #         [0.2, 0.7, 0.1], 
-        #         [0.1, 0.3, 0.6], 
-        #         [0.4, 0.0, 0.6]
-        #     ],
-        #     [0, 2, 2, 2, 1],
-        #     [0.6, 0.2]
-        # ),
     ])
     def test_compute(self, kwargs, preds, targets, expected):
         preds = torch.tensor(preds)
