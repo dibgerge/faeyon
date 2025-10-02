@@ -7,11 +7,11 @@ including setup, communication primitives, and synchronization functions.
 
 import os
 import time
-from typing import Dict, List, Tuple, Optional
+from typing import Optional
 import torch
 
 
-def setup_distributed(backend: str = None, init_method: str = None) -> Tuple[int, int, int, int]:
+def setup_distributed(backend: str = None, init_method: str = None) -> tuple[int, int, int, int]:
     """Initialize distributed training for multi-node support
     
     Args:
@@ -61,7 +61,7 @@ def cleanup_distributed():
         torch.distributed.destroy_process_group()
 
 
-def get_node_info() -> Dict[str, int]:
+def get_node_info() -> dict[str, int]:
     """Get information about the current node in multi-node setup
     
     Returns:
@@ -138,7 +138,7 @@ def all_reduce_tensor(tensor: torch.Tensor, op: str = 'sum') -> torch.Tensor:
     return tensor
 
 
-def gather_tensors(tensor: torch.Tensor, dst: int = 0) -> List[torch.Tensor]:
+def gather_tensors(tensor: torch.Tensor, dst: int = 0) -> list[torch.Tensor]:
     """Gather tensors from all processes to a destination process
     
     Args:
@@ -146,7 +146,7 @@ def gather_tensors(tensor: torch.Tensor, dst: int = 0) -> List[torch.Tensor]:
         dst: Destination rank (default: 0)
     
     Returns:
-        List of tensors (only non-empty on destination process)
+        list of tensors (only non-empty on destination process)
     """
     if not torch.distributed.is_initialized():
         return [tensor]
@@ -203,7 +203,7 @@ def setup_distributed_dataloader(
     )
 
 
-def get_available_devices() -> List[torch.device]:
+def get_available_devices() -> list[torch.device]:
     """Get list of available devices"""
     devices = []
     
@@ -218,12 +218,12 @@ def get_available_devices() -> List[torch.device]:
     return devices
 
 
-def setup_multi_gpu(model: torch.nn.Module, device_ids: List[int] = None) -> torch.nn.Module:
+def setup_multi_gpu(model: torch.nn.Module, device_ids: list[int] = None) -> torch.nn.Module:
     """Setup model for multi-GPU training
     
     Args:
         model: Model to wrap
-        device_ids: List of GPU device IDs to use
+        device_ids: list of GPU device IDs to use
     
     Returns:
         Wrapped model for multi-GPU training
@@ -281,14 +281,14 @@ def broadcast_tensor(tensor: torch.Tensor, src: int = 0) -> torch.Tensor:
     return tensor
 
 
-def all_gather_tensors(tensor: torch.Tensor) -> List[torch.Tensor]:
+def all_gather_tensors(tensor: torch.Tensor) -> list[torch.Tensor]:
     """Gather tensors from all processes to all processes
     
     Args:
         tensor: Tensor to gather
     
     Returns:
-        List of tensors from all processes
+        list of tensors from all processes
     """
     if not torch.distributed.is_initialized():
         return [tensor]

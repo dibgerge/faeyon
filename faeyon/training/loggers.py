@@ -22,7 +22,7 @@ class MetricsLogger(Callback):
         self.log_freq = log_freq
         self.step_count = 0
     
-    def compute_metrics(self, predictions: torch.Tensor, targets: torch.Tensor) -> Dict[str, float]:
+    def compute_metrics(self, predictions: torch.Tensor, targets: torch.Tensor) -> dict[str, float]:
         """Compute specified metrics"""
         results = {}
             
@@ -32,7 +32,7 @@ class MetricsLogger(Callback):
 class TensorBoardLogger(MetricsLogger):
     """TensorBoard logging callback"""
     
-    def __init__(self, log_dir: str = "logs", metrics: List[str] = None, log_freq: int = 1):
+    def __init__(self, log_dir: str = "logs", metrics: list[str] = None, log_freq: int = 1):
         super().__init__(metrics, log_freq)
         self.log_dir = log_dir
         self.writer = None
@@ -43,14 +43,14 @@ class TensorBoardLogger(MetricsLogger):
         except ImportError:
             self.SummaryWriter = None
     
-    def on_train_begin(self, logs: Dict[str, Any]) -> None:
+    def on_train_begin(self, logs: dict[str, Any]) -> None:
         if self.SummaryWriter is None:
             print("TensorBoard not available. Install with: pip install tensorboard")
             return
         
         self.writer = self.SummaryWriter(self.log_dir)
     
-    def on_batch_end(self, batch: int, logs: Dict[str, Any]) -> None:
+    def on_batch_end(self, batch: int, logs: dict[str, Any]) -> None:
         if self.writer is None or batch % self.log_freq != 0:
             return
         
@@ -63,7 +63,7 @@ class TensorBoardLogger(MetricsLogger):
             if key.startswith('val_') and isinstance(value, (int, float)):
                 self.writer.add_scalar(f'Metrics/{key}', value, batch)
     
-    def on_train_end(self, logs: Dict[str, Any]) -> None:
+    def on_train_end(self, logs: dict[str, Any]) -> None:
         if self.writer:
             self.writer.close()
 
@@ -71,7 +71,7 @@ class TensorBoardLogger(MetricsLogger):
 class MLFlowLogger(MetricsLogger):
     """MLFlow logging callback"""
     
-    def __init__(self, experiment_name: str = "faeyon_experiment", metrics: List[str] = None, log_freq: int = 1):
+    def __init__(self, experiment_name: str = "faeyon_experiment", metrics: list[str] = None, log_freq: int = 1):
         super().__init__(metrics, log_freq)
         self.experiment_name = experiment_name
         self.run = None
@@ -82,7 +82,7 @@ class MLFlowLogger(MetricsLogger):
         except ImportError:
             self.mlflow = None
     
-    def on_train_begin(self, logs: Dict[str, Any]) -> None:
+    def on_train_begin(self, logs: dict[str, Any]) -> None:
         if self.mlflow is None:
             print("MLFlow not available. Install with: pip install mlflow")
             return
@@ -99,7 +99,7 @@ class MLFlowLogger(MetricsLogger):
         if 'optimizer' in logs:
             self.mlflow.log_param("optimizer_type", type(logs['optimizer']).__name__)
     
-    def on_batch_end(self, batch: int, logs: Dict[str, Any]) -> None:
+    def on_batch_end(self, batch: int, logs: dict[str, Any]) -> None:
         if self.mlflow is None or batch % self.log_freq != 0:
             return
         
@@ -108,7 +108,7 @@ class MLFlowLogger(MetricsLogger):
             if isinstance(value, (int, float)):
                 self.mlflow.log_metric(key, value, step=batch)
     
-    def on_train_end(self, logs: Dict[str, Any]) -> None:
+    def on_train_end(self, logs: dict[str, Any]) -> None:
         if self.mlflow and self.run:
             self.mlflow.end_run()
 
@@ -116,7 +116,7 @@ class MLFlowLogger(MetricsLogger):
 class WandBLogger(MetricsLogger):
     """Weights & Biases logging callback"""
     
-    def __init__(self, project: str = "faeyon-project", metrics: List[str] = None, log_freq: int = 1, **kwargs):
+    def __init__(self, project: str = "faeyon-project", metrics: list[str] = None, log_freq: int = 1, **kwargs):
         super().__init__(metrics, log_freq)
         self.project = project
         self.wandb = None
@@ -128,7 +128,7 @@ class WandBLogger(MetricsLogger):
         except ImportError:
             self.wandb = None
     
-    def on_train_begin(self, logs: Dict[str, Any]) -> None:
+    def on_train_begin(self, logs: dict[str, Any]) -> None:
         if self.wandb is None:
             print("Weights & Biases not available. Install with: pip install wandb")
             return
@@ -140,14 +140,14 @@ class WandBLogger(MetricsLogger):
         if 'model' in logs:
             self.wandb.watch(logs['model'])
     
-    def on_batch_end(self, batch: int, logs: Dict[str, Any]) -> None:
+    def on_batch_end(self, batch: int, logs: dict[str, Any]) -> None:
         if self.wandb is None or batch % self.log_freq != 0:
             return
         
         # Log metrics
         self.wandb.log(logs, step=batch)
     
-    def on_train_end(self, logs: Dict[str, Any]) -> None:
+    def on_train_end(self, logs: dict[str, Any]) -> None:
         if self.wandb:
             self.wandb.finish()
 
@@ -159,12 +159,12 @@ class ConsoleLogger(Callback):
         super().__init__()
         self.log_freq = log_freq
     
-    def on_batch_end(self, batch: int, logs: Dict[str, Any]) -> None:
+    def on_batch_end(self, batch: int, logs: dict[str, Any]) -> None:
         if batch % self.log_freq == 0:
             loss = logs.get('loss', 'N/A')
             print(f"Batch {batch}: Loss = {loss}")
     
-    def on_epoch_end(self, epoch: int, logs: Dict[str, Any]) -> None:
+    def on_epoch_end(self, epoch: int, logs: dict[str, Any]) -> None:
         print(f"Epoch {epoch} completed")
         for key, value in logs.items():
             if isinstance(value, (int, float)):
@@ -180,25 +180,25 @@ class FileLogger(Callback):
         self.log_freq = log_freq
         self.file = None
     
-    def on_train_begin(self, logs: Dict[str, Any]) -> None:
+    def on_train_begin(self, logs: dict[str, Any]) -> None:
         self.file = open(self.filename, 'w')
         self.file.write("Epoch,Batch,Loss,Val_Loss\n")
     
-    def on_batch_end(self, batch: int, logs: Dict[str, Any]) -> None:
+    def on_batch_end(self, batch: int, logs: dict[str, Any]) -> None:
         if self.file and batch % self.log_freq == 0:
             loss = logs.get('loss', 'N/A')
             val_loss = logs.get('val_loss', 'N/A')
             self.file.write(f"0,{batch},{loss},{val_loss}\n")
             self.file.flush()
     
-    def on_epoch_end(self, epoch: int, logs: Dict[str, Any]) -> None:
+    def on_epoch_end(self, epoch: int, logs: dict[str, Any]) -> None:
         if self.file:
             loss = logs.get('loss', 'N/A')
             val_loss = logs.get('val_loss', 'N/A')
             self.file.write(f"{epoch},0,{loss},{val_loss}\n")
             self.file.flush()
     
-    def on_train_end(self, logs: Dict[str, Any]) -> None:
+    def on_train_end(self, logs: dict[str, Any]) -> None:
         if self.file:
             self.file.close()
 
@@ -212,7 +212,7 @@ class JSONLogger(Callback):
         self.log_freq = log_freq
         self.logs = []
     
-    def on_batch_end(self, batch: int, logs: Dict[str, Any]) -> None:
+    def on_batch_end(self, batch: int, logs: dict[str, Any]) -> None:
         if batch % self.log_freq == 0:
             log_entry = {
                 'batch': batch,
@@ -221,7 +221,7 @@ class JSONLogger(Callback):
             }
             self.logs.append(log_entry)
     
-    def on_epoch_end(self, epoch: int, logs: Dict[str, Any]) -> None:
+    def on_epoch_end(self, epoch: int, logs: dict[str, Any]) -> None:
         log_entry = {
             'epoch': epoch,
             'timestamp': torch.cuda.Event(enable_timing=True).elapsed_time(torch.cuda.Event(enable_timing=True)) if torch.cuda.is_available() else 0,
@@ -229,7 +229,7 @@ class JSONLogger(Callback):
         }
         self.logs.append(log_entry)
     
-    def on_train_end(self, logs: Dict[str, Any]) -> None:
+    def on_train_end(self, logs: dict[str, Any]) -> None:
         import json
         with open(self.filename, 'w') as f:
             json.dump(self.logs, f, indent=2)
@@ -238,7 +238,7 @@ class JSONLogger(Callback):
 class MetricsTracker(Callback):
     """Callback to track and compute metrics during training"""
     
-    def __init__(self, metrics: List[str] = None, compute_freq: int = 10):
+    def __init__(self, metrics: list[str] = None, compute_freq: int = 10):
         super().__init__()
         self.metrics = metrics or ['accuracy']
         self.compute_freq = compute_freq
@@ -246,7 +246,7 @@ class MetricsTracker(Callback):
         self.targets = []
         self.metrics_history = []
     
-    def on_batch_end(self, batch: int, logs: Dict[str, Any]) -> None:
+    def on_batch_end(self, batch: int, logs: dict[str, Any]) -> None:
         # Store predictions and targets for metric computation
         if 'predictions' in logs and 'targets' in logs:
             self.predictions.append(logs['predictions'])
@@ -278,6 +278,6 @@ class MetricsTracker(Callback):
         self.predictions = []
         self.targets = []
     
-    def get_metrics_history(self) -> List[Dict[str, Any]]:
+    def get_metrics_history(self) -> list[dict[str, Any]]:
         """Get the metrics history"""
         return self.metrics_history

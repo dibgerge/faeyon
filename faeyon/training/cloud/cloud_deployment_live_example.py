@@ -152,8 +152,8 @@ def main():
     # except Exception as e:
     #     print(f"Live deployment failed (expected if no infrastructure): {e}")
     
-    # Example 5: List existing jobs
-    print("\n--- 5. List Existing Cloud Jobs ---")
+    # Example 5: list existing jobs
+    print("\n--- 5. list Existing Cloud Jobs ---")
     for platform in ["kubernetes", "docker", "aws"]:
         jobs = list_cloud_jobs(platform)
         print(f"{platform.capitalize()} jobs: {len(jobs)}")
@@ -167,7 +167,7 @@ def main():
     print("To manage jobs after deployment:")
     print("  - Check status: deployment.get_status()")
     print("  - Stop job: deployment.stop_job()")
-    print("  - List jobs: list_cloud_jobs(platform)")
+    print("  - list jobs: list_cloud_jobs(platform)")
     
     print("\n=== Cloud Deployment Complete ===")
     print("Generated configuration files in:")

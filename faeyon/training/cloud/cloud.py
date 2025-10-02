@@ -11,7 +11,7 @@ import os
 import time
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, dict, list, Optional, Union
 
 try:
     import yaml
@@ -49,9 +49,9 @@ class CloudConfig:
         namespace: str = "default",
         storage_class: str = "gp2",
         storage_size: str = "100Gi",
-        node_selector: Optional[Dict[str, str]] = None,
-        tolerations: Optional[List[Dict[str, Any]]] = None,
-        resources: Optional[Dict[str, Any]] = None
+        node_selector: Optional[dict[str, str]] = None,
+        tolerations: Optional[list[dict[str, Any]]] = None,
+        resources: Optional[dict[str, Any]] = None
     ):
         self.platform = platform
         self.region = region
@@ -76,7 +76,7 @@ class CloudDeployment:
         self.config = config
         self.deployment_name = f"faeyon-training-{int(time.time())}"
     
-    def create_kubernetes_manifest(self, script_path: str, requirements: Optional[List[str]] = None) -> str:
+    def create_kubernetes_manifest(self, script_path: str, requirements: Optional[list[str]] = None) -> str:
         """Create Kubernetes manifest for distributed training"""
         manifest = {
             "apiVersion": "apps/v1",
@@ -149,9 +149,9 @@ class CloudDeployment:
             raise ImportError("PyYAML is required for Kubernetes manifest generation. Install with: pip install pyyaml")
         return yaml.dump_all([manifest, pvc_manifest], default_flow_style=False)
     
-    def create_docker_compose(self, script_path: str, requirements: Optional[List[str]] = None) -> str:
+    def create_docker_compose(self, script_path: str, requirements: Optional[list[str]] = None) -> str:
         """Create Docker Compose file for distributed training"""
-        compose: Dict[str, Any] = {
+        compose: dict[str, Any] = {
             "version": "3.8",
             "services": {}
         }
@@ -186,7 +186,7 @@ class CloudDeployment:
             raise ImportError("PyYAML is required for Docker Compose generation. Install with: pip install pyyaml")
         return yaml.dump(compose, default_flow_style=False)
     
-    def create_aws_sagemaker_config(self, script_path: str, requirements: Optional[List[str]] = None) -> Dict[str, Any]:
+    def create_aws_sagemaker_config(self, script_path: str, requirements: Optional[list[str]] = None) -> dict[str, Any]:
         """Create AWS SageMaker configuration for distributed training"""
         return {
             "TrainingJobName": self.deployment_name,
@@ -223,7 +223,7 @@ class CloudDeployment:
             }
         }
     
-    def create_gcp_ai_platform_config(self, script_path: str, requirements: Optional[List[str]] = None) -> Dict[str, Any]:
+    def create_gcp_ai_platform_config(self, script_path: str, requirements: Optional[list[str]] = None) -> dict[str, Any]:
         """Create Google Cloud AI Platform configuration for distributed training"""
         return {
             "displayName": self.deployment_name,
@@ -251,7 +251,7 @@ class CloudDeployment:
             }
         }
     
-    def create_azure_ml_config(self, script_path: str, requirements: Optional[List[str]] = None) -> Dict[str, Any]:
+    def create_azure_ml_config(self, script_path: str, requirements: Optional[list[str]] = None) -> dict[str, Any]:
         """Create Azure ML configuration for distributed training"""
         return {
             "name": self.deployment_name,
@@ -284,8 +284,8 @@ class CloudDeployment:
             }
         }
     
-    def deploy(self, script_path: str, requirements: Optional[List[str]] = None, output_dir: str = ".", 
-               create_infrastructure: bool = True, **kwargs) -> Union[str, Dict[str, Any]]:
+    def deploy(self, script_path: str, requirements: Optional[list[str]] = None, output_dir: str = ".", 
+               create_infrastructure: bool = True, **kwargs) -> Union[str, dict[str, Any]]:
         """
         Deploy distributed training configuration and optionally create infrastructure.
         
@@ -355,7 +355,7 @@ class CloudDeployment:
         else:
             raise ValueError(f"Unsupported platform: {self.config.platform}")
     
-    def _deploy_kubernetes(self, manifest_path: str, **kwargs) -> Dict[str, Any]:
+    def _deploy_kubernetes(self, manifest_path: str, **kwargs) -> dict[str, Any]:
         """Deploy to Kubernetes cluster"""
         try:
             # Apply the manifest
@@ -388,7 +388,7 @@ class CloudDeployment:
                 "stderr": e.stderr
             }
     
-    def _deploy_docker(self, compose_path: str, **kwargs) -> Dict[str, Any]:
+    def _deploy_docker(self, compose_path: str, **kwargs) -> dict[str, Any]:
         """Deploy using Docker Compose"""
         try:
             # Start the services
@@ -414,7 +414,7 @@ class CloudDeployment:
                 "stderr": e.stderr
             }
     
-    def _deploy_aws(self, config: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+    def _deploy_aws(self, config: dict[str, Any], **kwargs) -> dict[str, Any]:
         """Deploy to AWS SageMaker"""
         if boto3 is None:
             return {
@@ -444,7 +444,7 @@ class CloudDeployment:
                 "error_code": e.response['Error']['Code']
             }
     
-    def _deploy_gcp(self, config: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+    def _deploy_gcp(self, config: dict[str, Any], **kwargs) -> dict[str, Any]:
         """Deploy to Google Cloud AI Platform"""
         if aiplatform is None:
             return {
@@ -481,7 +481,7 @@ class CloudDeployment:
                 "error": str(e)
             }
     
-    def _deploy_azure(self, config: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+    def _deploy_azure(self, config: dict[str, Any], **kwargs) -> dict[str, Any]:
         """Deploy to Azure ML"""
         if MLClient is None:
             return {
@@ -545,7 +545,7 @@ class CloudDeployment:
                 "error": str(e)
             }
     
-    def get_status(self, job_id: Optional[str] = None) -> Dict[str, Any]:
+    def get_status(self, job_id: Optional[str] = None) -> dict[str, Any]:
         """Get status of deployed job"""
         if self.config.platform == "kubernetes":
             try:
@@ -584,7 +584,7 @@ class CloudDeployment:
         
         return {"status": "not_implemented", "platform": self.config.platform}
     
-    def stop_job(self, job_id: Optional[str] = None) -> Dict[str, Any]:
+    def stop_job(self, job_id: Optional[str] = None) -> dict[str, Any]:
         """Stop running job"""
         if self.config.platform == "kubernetes":
             try:
@@ -701,7 +701,7 @@ def deploy_training_job(
     platform: str = "kubernetes",
     create_infrastructure: bool = True,
     **config_kwargs
-) -> Union[str, Dict[str, Any]]:
+) -> Union[str, dict[str, Any]]:
     """
     Convenience function to deploy a training job to the cloud.
     
@@ -724,16 +724,16 @@ def deploy_training_job(
     )
 
 
-def list_cloud_jobs(platform: str, **kwargs) -> List[Dict[str, Any]]:
+def list_cloud_jobs(platform: str, **kwargs) -> list[dict[str, Any]]:
     """
-    List running cloud training jobs.
+    list running cloud training jobs.
     
     Args:
         platform: Cloud platform
         **kwargs: Platform-specific parameters
         
     Returns:
-        List of job information
+        list of job information
     """
     if platform == "kubernetes":
         try:

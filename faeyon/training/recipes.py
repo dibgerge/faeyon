@@ -1,24 +1,29 @@
 import abc
 import torch
 
-from typing import Optional, Any, Union
+from typing import Generator, Optional, Any, Union
 from torch import nn, optim
 from torch.utils.data import DataLoader
 
 from .distributed import cleanup_distributed
 from .callbacks import Callback
-from .loggers import MetricsComputer, MetricsLogger
+
 from .core import Period, FaeOptimizer, TrainState
-from faeyon.metrics import Metric
+from faeyon.metrics.base import Metric
+from faeyon import A
+from faeyon.enums import TrainStateMode
 
 
 class Recipe:
     """ The base class for training recipes """
+
+    optimizer: optim.Optimizer
+
     def __init__(
         self,
         model: nn.Module,
         loss: nn.Module,
-        optimizer: Union[optim.Optimizer, FaeOptimizer],
+        optimizer: optim.Optimizer | FaeOptimizer,
         metrics: Optional[list[dict[str, str | Period] | Metric]] = None,
         callbacks: Optional[list[Callback]] = None,
         train_flush: str | Period = "1e",
@@ -26,11 +31,10 @@ class Recipe:
     ):
         self.model = model
         self.loss = loss
-        self.optimizer = optimizer
         self.callbacks = callbacks or []
         self.train_metrics = metrics or []
         self.val_metrics = metrics or []
-        self.state = TrainState(train_metrics=self.train_metrics, val_metrics=self.val_metrics)
+        # self.state = TrainState(train_metrics=self.train_metrics, val_metrics=self.val_metrics)
 
         if isinstance(train_flush, str):
             self.train_flush = Period.from_expr(train_flush)
@@ -42,6 +46,7 @@ class Recipe:
         else:
             self.optimizer = optimizer
 
+        self.state = TrainState()
         self.val_period = val_period
         self._last_flush = 0
         self._last_val = 0
@@ -73,39 +78,46 @@ class Recipe:
         self.callbacks.on_val_end(self.state)
         self.model.train()
     
-    def _train_iter(self, data: DataLoader, min_period: Period, max_period: Period) -> TrainState:
+    def _train_iter(
+        self, 
+        data: DataLoader, 
+        min_period: Period, 
+        max_period: Period
+    ) -> Generator[dict[str, Any], None, None]:
         data_iter = iter(data)
         stop_requested = self.callbacks.on_train_begin(self.state)
         
         self.state.toc()
         while self.state < max_period and not (stop_requested and self.state >= min_period):
+            stop = []
             try:     
                 batch = next(data_iter)
             except StopIteration:
-                stop_requested = self.callbacks.on_epoch_end(self.state) or stop_requested
+                stop.append(self.callbacks.on_epoch_end(self.state))
                 data_iter = iter(data)
                 self.state.toc()
-                continue
+            else:
+                self.state.tic()
+                stop.append(self.callbacks.trigger(self.state))
 
-            self.state.tic()
-            stop_requested = self.callbacks.trigger(self.state) or stop_requested
+                if self.state.is_epoch_begin():
+                    stop.append(self.callbacks.on_epoch_begin(self.state))
 
-            if self.state.is_epoch_begin():
-                stop_requested = self.callbacks.on_epoch_begin(self.state) or stop_requested
-
-            stop_requested = self.callbacks.on_train_step_begin(self.state) or stop_requested
-            yield batch
-            stop_requested = self.callbacks.on_train_step_end(self.state) or stop_requested
+                stop.append(self.callbacks.on_train_step_begin(self.state))
+                yield batch
+                stop.append(self.callbacks.on_train_step_end(self.state))
+    
+            stop_requested = stop_requested or any(stop)
             
         self.callbacks.on_train_end(self.state)
 
     def train(
         self,
         train_data: DataLoader,
-        max_period: Optional[str | Period] = None,
-        min_period: Optional[str | Period] = None,
         val_data: Optional[DataLoader] = None,
-    ) -> dict[str, Any]:
+        min_period: Optional[str | Period] = None,
+        max_period: Optional[str | Period] = None,
+    ) -> None:
         """
         Train the model with flexible min/max periods.
         
@@ -121,9 +133,41 @@ class Recipe:
         """
         self.model.train()
 
-        for state in self.train_iter(train_data, min_period, max_period):
+        min_period = Period.from_expr(min_period)
+        max_period = Period.from_expr(max_period)
+
+        g = self.state.start(train_data, val_data, min_period, max_period)
+        while True:
+            event = next(g)
+
+            match event:
+                case TrainStateMode.TRAIN_BEGIN:
+                    pass
+                case TrainStateMode.TRAIN_END:
+                    break
+                case TrainStateMode.EPOCH_BEGIN:
+                    pass
+                case TrainStateMode.EPOCH_END:
+                    break
+                case TrainStateMode.TRAIN_STEP_BEGIN:
+                    pass
+                case TrainStateMode.TRAIN_STEP_END:
+                    pass
+                case float():
+
+
+
+        for batch in self._train_iter(train_data, min_period, max_period):
             self.optimizer.zero_grad()
-            loss, preds, targets = self.train_step(state.batch)
+
+            inputs = batch["inputs"]
+            targets = batch["targets"]
+
+            if isinstance(inputs, dict):
+                inputs = A(**inputs)
+
+            preds = inputs >> self.model
+            loss = self.loss(preds, targets)
             loss.backward()
             self.optimizer.step()
             self.state.train_metrics.update(preds, targets)

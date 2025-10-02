@@ -466,7 +466,8 @@ class ClfMetricBase(Metric):
     task: Optional[Task]
 
     def __init__(
-        self, 
+        self,
+        name: Optional[str] = None,
         num_classes: Optional[int] = None,
         thresholds: Optional[int | float | list[float] | torch.Tensor] = None,
         topk: Optional[int] = None,
@@ -474,6 +475,7 @@ class ClfMetricBase(Metric):
         average: Optional[str] = None,
         multilabel: bool = False,
     ):
+        super().__init__(name)
         if thresholds is not None and topk is not None:
             raise ValueError("Cannot use both `thresholds` and `topk`.")
 

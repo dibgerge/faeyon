@@ -1,7 +1,7 @@
-import enum
+from enum import Flag, auto, StrEnum
 
 
-class ClfTask(enum.StrEnum):
+class ClfTask(StrEnum):
     """
     Specifies the type of predictions/targets for classification tasks.
 
@@ -16,3 +16,25 @@ class ClfTask(enum.StrEnum):
     MULTILABEL = "multilabel"
 
 
+class PeriodUnit(StrEnum):
+    EPOCHS = "epochs"
+    STEPS = "steps"
+    SECONDS = "seconds"
+
+
+class TrainStage(StrEnum):
+    TRAIN = "train"
+    VAL = "val"
+    PREDICT = "predict"
+    TEST = "test"
+
+
+class TrainStateMode(Flag):
+    TRAIN_BEGIN = auto()
+    TRAIN_END = auto()
+    EPOCH_BEGIN = auto()
+    EPOCH_END = auto()
+    TRAIN_STEP = auto()
+    VAL_BEGIN = auto()
+    VAL_END = auto()
+    VAL_STEP = auto()
