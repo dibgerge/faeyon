@@ -4,12 +4,13 @@ import time
 import fnmatch
 import importlib
 import re
+import torch
+
 from datetime import timedelta
 
-from typing import Optional, Iterable, Literal, Union
+from typing import Optional, Iterable, Union
 from torch import nn, optim
-from torch.utils.data import DataLoader
-from faeyon.enums import PeriodUnit, TrainStateMode, TrainStage
+from faeyon.enums import PeriodUnit
 from faeyon.metrics import MetricCollection
 
 
@@ -277,16 +278,14 @@ class TrainState:
     epoch: int
 
     total_train_steps: int
-
     total_val_steps: int
-
     epoch_train_steps: int
     epoch_val_steps: int
 
-    _start_time: float
-    _epoch_start_time: float
-    _epoch_val_start_time: float
-    _current_time: float
+    _start_time: Optional[float]
+    _epoch_start_time: Optional[float]
+    _epoch_val_start_time: Optional[float]
+    _current_time: Optional[float]
     _total_val_time: float
 
     def __init__(self, metrics: MetricCollection) -> None:
@@ -302,7 +301,6 @@ class TrainState:
     def copy(self, other: TrainState) -> None:
         #TODO: 
         self.metrics = other.metrics
-        self._started = other._started
 
     def reset(self) -> None:
         self.epoch = 0
@@ -335,6 +333,10 @@ class TrainState:
         self.total_train_steps += 1
         self._current_time = time.time()
 
+    def on_train_step_end(self, preds: torch.Tensor, targets: torch.Tensor) -> None:
+        self._current_time = time.time()
+        self.metrics.update(preds, targets)
+
     def on_val_begin(self) -> None:
         self.epoch_val_steps = 0
         self._current_time = time.time()
@@ -354,24 +356,33 @@ class TrainState:
         self._epoch_val_start_time = None
 
     def on_epoch_end(self) -> None:
-        self._current_time = time.time()                
+        self._current_time = time.time()
+
+    def on_train_end(self) -> None:
+        self._current_time = time.time()
 
     @property
     def total_time(self) -> float:
+        if self._current_time is None or self._start_time is None:
+            return 0
         return self._current_time - self._start_time
 
     @property
     def epoch_total_time(self) -> float:
+        if self._current_time is None or self._epoch_start_time is None:
+            return 0
         return self._current_time - self._epoch_start_time
 
     @property
     def epoch_val_time(self) -> float:
-        if self._epoch_val_start_time is None:
+        if self._epoch_val_start_time is None or self._current_time is None:
             return 0
         return self._current_time - self._epoch_val_start_time
 
     @property
     def total_train_time(self) -> float:
+        if self._current_time is None or self._start_time is None:
+            return 0
         return self._current_time - self._start_time - self.total_val_time
 
     @property
@@ -385,13 +396,6 @@ class TrainState:
         validation).
         """
         return self._current_time - self._epoch_start_time - self.epoch_val_time
-
-    @property
-    def started(self) -> bool:
-        # TODO: review conditions
-        if self._start_time is None or self.stage is None:
-            return False
-        return (self._current_time - self._start_time) > 0
 
     def _get_field(self, unit: PeriodUnit) -> Period:
         value: Optional[int | float]

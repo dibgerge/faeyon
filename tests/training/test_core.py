@@ -1,6 +1,7 @@
 import pytest
 from faeyon.training import Period, FaeOptimizer, TrainState
 from faeyon.enums import PeriodUnit
+from faeyon.metrics import MetricCollection, Accuracy
 
 
 class TestPeriod:
@@ -106,27 +107,37 @@ class TestPeriod:
 
 
 class TestTrainState:
-    def test_init(self):
-        state = TrainState()
-        assert state.epoch == 0
-        assert state.step == 0
+    @pytest.fixture
+    def state(self):
+        metrics = MetricCollection([Accuracy()])
+        return TrainState(metrics=metrics)
 
-    def test_toc(self):
-        state = TrainState()
-        state.toc()
-        assert state.epoch == 1
-        assert state.step == 0
-        assert state.epoch_step == 0
-        assert state.epoch_start is not None 
-
-    
-    def test_toc_val(self):
-        state = TrainState()
-        state.toc(train=False)
+    def test_init(self, state):
         assert state.epoch == 0
-        assert state.step == 0
-        assert state.epoch_step == 0
-        assert state.epoch_start is None
+        assert state.total_train_steps == 0
+        assert state.total_val_steps == 0
+        assert state.epoch_train_steps == 0
+        assert state.epoch_val_steps == 0
+        
+        assert state.total_time == 0
+        assert state.epoch_total_time == 0
+        assert state.epoch_val_time == 0
+
+    # def test_toc(self):
+    #     state = TrainState()
+    #     state.toc()
+    #     assert state.epoch == 1
+    #     assert state.step == 0
+    #     assert state.epoch_step == 0
+    #     assert state.epoch_start is not None 
+
+    # def test_toc_val(self):
+    #     state = TrainState()
+    #     state.toc(train=False)
+    #     assert state.epoch == 0
+    #     assert state.step == 0
+    #     assert state.epoch_step == 0
+    #     assert state.epoch_start is None
 
         
 class TestFaeOptimizer:

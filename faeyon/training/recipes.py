@@ -136,27 +136,6 @@ class Recipe:
         min_period = Period.from_expr(min_period)
         max_period = Period.from_expr(max_period)
 
-        g = self.state.start(train_data, val_data, min_period, max_period)
-        while True:
-            event = next(g)
-
-            match event:
-                case TrainStateMode.TRAIN_BEGIN:
-                    pass
-                case TrainStateMode.TRAIN_END:
-                    break
-                case TrainStateMode.EPOCH_BEGIN:
-                    pass
-                case TrainStateMode.EPOCH_END:
-                    break
-                case TrainStateMode.TRAIN_STEP_BEGIN:
-                    pass
-                case TrainStateMode.TRAIN_STEP_END:
-                    pass
-                case float():
-
-
-
         for batch in self._train_iter(train_data, min_period, max_period):
             self.optimizer.zero_grad()
 
