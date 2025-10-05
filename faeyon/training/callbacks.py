@@ -10,8 +10,8 @@ import time
 from abc import ABC, abstractmethod
 from typing import Any, Optional, Union, Callable
 import torch
-from .core import Period, TrainState, PeriodUnit
-
+from .core import Period, TrainState
+from faeyon.enums import PeriodUnit
 
 class Callback(ABC):
     """Base class for all callbacks"""
@@ -30,31 +30,31 @@ class Callback(ABC):
             self.trigger_count = count
             return self.on_trigger(state)
     
-    def on_train_begin(self, logs: dict[str, Any]) -> Optional[bool]:
+    def on_train_begin(self, state: TrainState) -> Optional[bool]:
         """Called at the beginning of training"""
         pass
     
-    def on_train_end(self, logs: dict[str, Any]) -> Optional[bool]:
+    def on_train_end(self, state: TrainState) -> Optional[bool]:
         """Called at the end of training"""
         pass
     
-    def on_epoch_begin(self, epoch: int, logs: dict[str, Any]) -> Optional[bool]:
+    def on_epoch_begin(self, state: TrainState) -> Optional[bool]:
         """Called at the beginning of each epoch"""
         pass
     
-    def on_epoch_end(self, epoch: int, logs: dict[str, Any]) -> Optional[bool]:
+    def on_epoch_end(self, state: TrainState) -> Optional[bool]:
         """Called at the end of each epoch"""
         pass
     
-    def on_train_step_begin(self, batch: int, logs: dict[str, Any]) -> Optional[bool]:
+    def on_train_step_begin(self, state: TrainState) -> Optional[bool]:
         """Called at the beginning of each batch"""
         pass
     
-    def on_train_step_end(self, batch: int, logs: dict[str, Any]) -> Optional[bool]:
+    def on_train_step_end(self, state: TrainState) -> Optional[bool]:
         """Called at the end of each batch"""
         pass
 
-    def on_trigger(self, state: TrainState, trigger: str) -> Optional[bool]:
+    def on_trigger(self, state: TrainState) -> Optional[bool]:
         pass
 
 
@@ -453,3 +453,37 @@ class CSVLogger(Callback):
         """Close CSV file"""
         if self.file:
             self.file.close()
+
+
+class StoppingCriteria(Callback):
+    """
+    Callback to stop training when a condition is met.
+
+    """
+    
+    def __init__(
+        self, 
+        min_period: Optional[str | Period] = None, 
+        max_period: Optional[str | Period] = None
+    ) -> None:
+        super().__init__()
+
+        if min_period is None:
+            self.min_period = Period(0, PeriodUnit.SECONDS)
+        elif isinstance(min_period, str):
+            self.min_period = Period.from_expr(min_period)
+        else:
+            self.min_period = min_period
+
+        if max_period is None:
+            self.max_period = Period(float('inf'), PeriodUnit.SECONDS)
+        elif isinstance(max_period, str):
+            self.max_period = Period.from_expr(max_period)
+        else:
+            self.max_period = max_period
+    
+    def on_epoch_end(self, state: TrainState) -> Optional[bool]:
+        return state >= self.max_period
+
+    def on_train_step_end(self, state: TrainState) -> Optional[bool]:
+        return state >= self.max_period

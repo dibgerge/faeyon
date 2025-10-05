@@ -1,4 +1,5 @@
 import pytest
+import torch
 from faeyon.training import Period, FaeOptimizer, TrainState
 from faeyon.enums import PeriodUnit
 from faeyon.metrics import MetricCollection, Accuracy
@@ -112,34 +113,306 @@ class TestTrainState:
         metrics = MetricCollection([Accuracy()])
         return TrainState(metrics=metrics)
 
+    def assert_values(
+        self, 
+        state, 
+        epoch=0,
+        epoch_total_time=True,
+        epoch_train_steps=0, 
+        epoch_train_time=True, 
+        epoch_val_steps=0, 
+        epoch_val_time=True,
+        total_time=True,
+        total_train_steps=0, 
+        total_train_time=True, 
+        total_val_steps=0, 
+        total_val_time=True
+    ):
+        """
+        For the time parameters, if True, we assert that the value is zero.
+        """
+        assert state.epoch == epoch
+        assert state.epoch_train_steps == epoch_train_steps
+        assert state.epoch_val_steps == epoch_val_steps
+        assert state.total_train_steps == total_train_steps       
+        assert state.total_val_steps == total_val_steps
+        
+        assert ((state.epoch_total_time == 0) if epoch_total_time else (state.epoch_total_time > 0))
+        assert ((state.epoch_train_time == 0) if epoch_train_time else (state.epoch_train_time > 0))
+        assert ((state.epoch_val_time == 0) if epoch_val_time else (state.epoch_val_time > 0))
+        assert ((state.total_train_time == 0) if total_train_time else (state.total_train_time > 0)  )
+        assert ((state.total_time == 0) if total_time else (state.total_time > 0))
+        assert ((state.total_val_time == 0) if total_val_time else (state.total_val_time > 0))
+
     def test_init(self, state):
-        assert state.epoch == 0
-        assert state.total_train_steps == 0
-        assert state.total_val_steps == 0
-        assert state.epoch_train_steps == 0
-        assert state.epoch_val_steps == 0
+        self.assert_values(state)
+
+    def test_train_begin(self, state):
+        state.on_train_begin()
+        self.assert_values(state)
+
+    def test_epoch_begin(self, state):
+        state.on_train_begin()
+        state.on_epoch_begin()
+        self.assert_values(state, epoch=1, total_time=False, total_train_time=False)
         
-        assert state.total_time == 0
-        assert state.epoch_total_time == 0
-        assert state.epoch_val_time == 0
-
-    # def test_toc(self):
-    #     state = TrainState()
-    #     state.toc()
-    #     assert state.epoch == 1
-    #     assert state.step == 0
-    #     assert state.epoch_step == 0
-    #     assert state.epoch_start is not None 
-
-    # def test_toc_val(self):
-    #     state = TrainState()
-    #     state.toc(train=False)
-    #     assert state.epoch == 0
-    #     assert state.step == 0
-    #     assert state.epoch_step == 0
-    #     assert state.epoch_start is None
-
+    def test_train_step_begin(self, state):
+        state.on_train_begin()
+        state.on_epoch_begin()
+        state.on_train_step_begin()
+        self.assert_values(
+            state, 
+            epoch=1, 
+            epoch_train_steps=1, 
+            total_train_steps=1, 
+            epoch_total_time=False, 
+            epoch_train_time=False,
+            total_train_time=False, 
+            total_time=False
+        )
         
+    def test_train_step_end(self, state):
+        state.on_train_begin()
+        state.on_epoch_begin()
+        state.on_train_step_begin()
+        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_train_begin()
+        state.on_epoch_begin()
+        state.on_train_step_begin()
+        self.assert_values(
+            state, 
+            epoch=1, 
+            epoch_train_steps=1, 
+            epoch_total_time=False,
+            epoch_train_time=False,
+            total_time=False,
+            total_train_time=False, 
+            total_train_steps=1,
+        )
+
+    def test_val_begin(self, state):
+        state.on_train_begin()
+        state.on_epoch_begin()
+        state.on_train_step_begin()
+        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_val_begin()
+        self.assert_values(
+            state, 
+            epoch=1, 
+            epoch_train_steps=1, 
+            epoch_total_time=False,
+            epoch_train_time=False,
+            total_time=False,
+            total_train_time=False, 
+            total_train_steps=1,
+        )
+
+    def test_val_step_begin(self, state):
+        state.on_train_begin()
+        state.on_epoch_begin()
+        state.on_train_step_begin()
+        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_val_begin()
+        state.on_val_step_begin()
+        self.assert_values(
+            state, 
+            epoch=1,
+            epoch_train_steps=1, 
+            epoch_total_time=False,
+            epoch_train_time=False,
+            epoch_val_steps=1,
+            epoch_val_time=False,
+            total_time=False,
+            total_train_time=False, 
+            total_train_steps=1,
+            total_val_steps=1,
+            total_val_time=False,
+        )
+
+    def test_val_step_end(self, state):
+        state.on_train_begin()
+        state.on_epoch_begin()
+        state.on_train_step_begin()
+        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_val_begin()
+        state.on_val_step_begin()
+        state.on_val_step_end()
+        self.assert_values(
+            state, 
+            epoch=1,
+            epoch_train_steps=1, 
+            epoch_total_time=False,
+            epoch_train_time=False,
+            epoch_val_steps=1,
+            epoch_val_time=False,
+            total_time=False,
+            total_train_time=False, 
+            total_train_steps=1,
+            total_val_steps=1,
+            total_val_time=False,
+        )
+    
+    def test_val_end(self, state):
+        state.on_train_begin()
+        state.on_epoch_begin()
+        state.on_train_step_begin()
+        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_train_step_begin()
+        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_val_begin()
+        state.on_val_step_begin()
+        state.on_val_step_end()
+        state.on_val_end()
+        state.on_epoch_end()
+        self.assert_values(
+            state, 
+            epoch=1,
+            epoch_train_steps=2, 
+            epoch_total_time=False,
+            epoch_train_time=False,
+            epoch_val_steps=1,
+            epoch_val_time=False,
+            total_time=False,
+            total_train_time=False, 
+            total_train_steps=2,
+            total_val_steps=1,
+            total_val_time=False,
+        )
+
+    def test_multiple_val_steps(self, state):
+        state.on_train_begin()
+        state.on_epoch_begin()
+        state.on_train_step_begin()
+        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_val_begin()
+        state.on_val_step_begin()
+        state.on_val_step_end()
+        state.on_val_step_begin()
+        state.on_val_step_end()
+        state.on_val_end()
+        state.on_epoch_end()
+        self.assert_values(
+            state, 
+            epoch=1,
+            epoch_train_steps=1, 
+            epoch_total_time=False,
+            epoch_train_time=False,
+            epoch_val_steps=2,
+            epoch_val_time=False,
+            total_time=False,
+            total_train_time=False, 
+            total_train_steps=1,
+            total_val_steps=2,
+            total_val_time=False,
+        )
+
+    def test_train_no_val(self, state):
+        state.on_train_begin()
+        state.on_epoch_begin()
+        state.on_train_step_begin()
+        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_epoch_end()
+        self.assert_values(
+            state, 
+            epoch=1,
+            epoch_train_steps=1, 
+            epoch_total_time=False,
+            epoch_train_time=False,
+            total_time=False,
+            total_train_time=False, 
+            total_train_steps=1,
+        )
+
+    def test_multiple_epochs(self, state):
+        state.on_train_begin()
+        state.on_epoch_begin()
+        state.on_train_step_begin()
+        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_epoch_end()
+        state.on_epoch_begin()
+        state.on_train_step_begin()
+        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_epoch_end()
+        state.on_train_end()
+        self.assert_values(
+            state, 
+            epoch=2,
+            epoch_train_steps=1, 
+            epoch_total_time=False,
+            epoch_train_time=False,
+            total_time=False,
+            total_train_time=False, 
+            total_train_steps=2,
+        )
+    
+    def test_incorrect_transition(self, state):
+        with pytest.raises(RuntimeError):
+            state.on_train_step_begin()
+        
+        with pytest.raises(RuntimeError):
+            state.on_epoch_begin()
+        
+        with pytest.raises(RuntimeError):
+            state.on_val_begin()
+        
+        with pytest.raises(RuntimeError):
+            state.on_val_step_begin()
+
+        with pytest.raises(RuntimeError):
+            state.on_val_step_end()
+        
+        with pytest.raises(RuntimeError):
+            state.on_val_end()
+        
+        with pytest.raises(RuntimeError):
+            state.on_epoch_end()
+
+    def test_incorrect_train_step_transition(self, state):
+        """ Train step not ended """
+        state.on_train_begin()
+        state.on_epoch_begin()
+        state.on_train_step_begin()
+        with pytest.raises(RuntimeError):
+            state.on_train_step_begin()
+
+    def test_incorrect_val_step_transition(self, state):
+        """ Train step not ended """
+        state.on_train_begin()
+        state.on_epoch_begin()
+        state.on_train_step_begin()
+        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_val_begin()
+        state.on_val_step_begin()
+        with pytest.raises(RuntimeError):
+            state.on_val_step_begin()        
+        
+        with pytest.raises(RuntimeError):
+            state.on_val_end()
+
+    def test_incorrect_step_end_transition(self, state):
+        """ Train step not ended """
+        state.on_train_begin()
+        state.on_epoch_begin()
+        with pytest.raises(RuntimeError):
+            state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        
+        with pytest.raises(RuntimeError):
+            state.on_val_step_end()
+        
+        with pytest.raises(RuntimeError):
+            state.on_val_end()
+        
+        with pytest.raises(RuntimeError):
+            state.on_epoch_end()
+        
+    def test_incorrect_train_end_transition(self, state):
+        """ Train step not ended """
+        state.on_train_begin()
+        state.on_epoch_begin()
+        with pytest.raises(RuntimeError):
+            state.on_train_end()
+
+
 class TestFaeOptimizer:
     def test_init(self):
         optimizer = FaeOptimizer("Adam", lr=0.001)

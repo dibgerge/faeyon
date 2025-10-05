@@ -274,6 +274,20 @@ class Period:
 
 @dataclass
 class TrainState:
+    """
+    A state machine for the training process, which assumes the following workflow:
+
+    TrainBegin -> EpochBegin -> TrainStepBegin -> TrainStepEnd  --------
+                    ↑                  ↑_____________|                 |
+                    |                                                  ↓
+    TrainEnd <- EpochEnd <- ValEnd <- ValStepEnd <- ValStepBegin <- ValBegin
+                                            |_____________↑
+    
+    Can be compared to Periods, and arithmetic operations are supported as follows:
+    - If the period is in epoch units, the comparison is done with `epoch`.
+    - If the period is in step units, the comparison is done with `total_train_steps`.
+    - If the period is in time units, the comparison is done with `total_time`.
+    """
     metrics: MetricCollection
     epoch: int
 
@@ -292,15 +306,8 @@ class TrainState:
         self.metrics = metrics
         self.reset()
 
-    @classmethod
-    def from_state(cls, state: TrainState) -> None:
-        obj = object.__new__(cls)
-        obj.metrics = state.metrics
-        return obj
-
-    def copy(self, other: TrainState) -> None:
-        #TODO: 
-        self.metrics = other.metrics
+    def new_state(self, state: type[TrainState]) -> None:
+        self.__class__ = state
 
     def reset(self) -> None:
         self.epoch = 0
@@ -319,53 +326,57 @@ class TrainState:
         If the model was trained before, and epoch is > 0, we continue from where 
         we left off.
         """
+        self.reset()
         self._start_time = time.time()
         self._current_time = self._start_time
+        self.new_state(TrainStateTrainBegin)
 
     def on_epoch_begin(self) -> None:
-        self.epoch += 1
-        self.epoch_train_steps = 0
-        self._epoch_start_time = time.time()
-        self._current_time = self._epoch_start_time
+        self.error()
 
     def on_train_step_begin(self) -> None:
-        self.epoch_train_steps += 1
-        self.total_train_steps += 1
-        self._current_time = time.time()
+        self.error()
 
     def on_train_step_end(self, preds: torch.Tensor, targets: torch.Tensor) -> None:
-        self._current_time = time.time()
-        self.metrics.update(preds, targets)
+        self.error()
 
     def on_val_begin(self) -> None:
-        self.epoch_val_steps = 0
-        self._current_time = time.time()
-        self._epoch_val_start_time = self._current_time
+        self.error()
 
     def on_val_step_begin(self) -> None:
-        self.epoch_val_steps += 1
-        self.total_val_steps += 1
-        self._current_time = time.time()
+        self.error()
     
     def on_val_step_end(self) -> None:
-        self._current_time = time.time()
-    
+        self.error()    
+
     def on_val_end(self) -> None:
-        self._current_time = time.time()
-        self._total_val_time += self.epoch_val_time
-        self._epoch_val_start_time = None
+        self.error()
 
     def on_epoch_end(self) -> None:
-        self._current_time = time.time()
+        self.error()
 
     def on_train_end(self) -> None:
-        self._current_time = time.time()
+        self.error()
+
+    def error(self) -> None:
+        name = self.__class__.__name__
+        raise RuntimeError(f"Cannot transition to this state. Current state: {name}.")
 
     @property
     def total_time(self) -> float:
         if self._current_time is None or self._start_time is None:
             return 0
         return self._current_time - self._start_time
+
+    @property
+    def total_train_time(self) -> float:
+        if self._current_time is None or self._start_time is None:
+            return 0
+        return self._current_time - self._start_time - self.total_val_time
+
+    @property
+    def total_val_time(self) -> float:
+        return self._total_val_time + self.epoch_val_time
 
     @property
     def epoch_total_time(self) -> float:
@@ -380,21 +391,13 @@ class TrainState:
         return self._current_time - self._epoch_val_start_time
 
     @property
-    def total_train_time(self) -> float:
-        if self._current_time is None or self._start_time is None:
-            return 0
-        return self._current_time - self._start_time - self.total_val_time
-
-    @property
-    def total_val_time(self) -> float:
-        return self._total_val_time + self.epoch_val_time
-
-    @property
     def epoch_train_time(self) -> float:
         """ 
         How much time was spent in training at the current epoch so far (excluding 
         validation).
         """
+        if self._current_time is None or self._epoch_start_time is None:
+            return 0
         return self._current_time - self._epoch_start_time - self.epoch_val_time
 
     def _get_field(self, unit: PeriodUnit) -> Period:
@@ -402,9 +405,9 @@ class TrainState:
         if unit == PeriodUnit.EPOCHS:
             value = self.epoch
         elif unit == PeriodUnit.STEPS:
-            value = self.step
+            value = self.total_train_steps
         elif unit == PeriodUnit.SECONDS:
-            value = self.run_time
+            value = self.total_time
         else:
             ValueError(f"Invalid unit: {unit}")
 
@@ -413,29 +416,177 @@ class TrainState:
 
         return Period(value, unit=unit)
 
-    def __eq__(self, period: object) -> bool:
-        if not isinstance(period, Period):
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Period):
             return False
-        return self._get_field(period.unit) == period
+        elif isinstance(other, str):
+            other = Period.from_expr(other)
+        return self._get_field(other.unit) == other
 
-    def __ne__(self, period: object) -> bool:
-        return not self == period
+    def __ne__(self, other: object) -> bool:
+        return not self == other
 
-    def __lt__(self, period: Period) -> bool:
-        return self._get_field(period.unit) < period
+    def __lt__(self, other: Period | str) -> Optional[bool]:
+        if isinstance(other, str):
+            other = Period.from_expr(other)
+        return self._get_field(other.unit) < other
 
-    def __le__(self, period: Period) -> bool:
-        return self._get_field(period.unit) <= period
+    def __le__(self, other: Period | str) -> Optional[bool]:
+        if isinstance(other, str):
+            other = Period.from_expr(other)
+        return self._get_field(other.unit) <= other
 
-    def __gt__(self, period: Period) -> bool:
-        return self._get_field(period.unit) > period
+    def __gt__(self, other: Period | str) -> Optional[bool]:
+        if isinstance(other, str):
+            other = Period.from_expr(other)
+        return self._get_field(other.unit) > other
 
-    def __ge__(self, period: Period) -> bool:
-        return self._get_field(period.unit) >= period
+    def __ge__(self, other: Period | str) -> Optional[bool]:
+        if isinstance(other, str):
+            other = Period.from_expr(other)
+        return self._get_field(other.unit) >= other
 
-    def __truediv__(self, other: Period | Number | str) -> float:
-        return self._get_field(other.unit) / other.value
+    def __add__(self, other: Period | str) -> Period:
+        if isinstance(other, str):
+            other = Period.from_expr(other)
+        return self._get_field(other.unit) + other
+    
+    __radd__ = __add__
+    
+    def __sub__(self, other: Period | str) -> Period:
+        if isinstance(other, str):
+            other = Period.from_expr(other)
+        return self._get_field(other.unit) - other
+    
+    def __rsub__(self, other: Period | str) -> Period:
+        if isinstance(other, str):
+            other = Period.from_expr(other)
+        return other - self._get_field(other.unit)
 
-    def __floordiv__(self, other: Period | Number | str) -> int:
-        return self._get_field(other.unit) // other.value
+    def __mul__(self, other: Period | str) -> Period:
+        if isinstance(other, str):
+            other = Period.from_expr(other)
+        return self._get_field(other.unit) * other
+    
+    __rmul__ = __mul__
+    
+    def __truediv__(self, other: Period | str) -> Period:
+        if isinstance(other, str):
+            other = Period.from_expr(other)
+        return self._get_field(other.unit) / other
 
+    def __rtruediv__(self, other: Period | str) -> Period:
+        if isinstance(other, str):
+            other = Period.from_expr(other)
+        return other / self._get_field(other.unit)
+
+    def __floordiv__(self, other: Period | str) -> Period:
+        if isinstance(other, str):
+            other = Period.from_expr(other)
+        return self._get_field(other.unit) // other
+    
+    def __rfloordiv__(self, other: Period | str) -> Period:
+        if isinstance(other, str):
+            other = Period.from_expr(other)
+        return other // self._get_field(other.unit)
+
+    def __mod__(self, other: Period | str) -> Period:
+        if isinstance(other, str):
+            other = Period.from_expr(other)
+        return self._get_field(other.unit) % other
+    
+    def __rmod__(self, other: Period | str) -> Period:
+        if isinstance(other, str):
+            other = Period.from_expr(other)
+        return other % self._get_field(other.unit)
+
+
+class TrainStateTrainBegin(TrainState):
+    def on_epoch_begin(self) -> None:
+        self.new_state(TrainStateEpochBegin)
+        self._advance_epoch()  # type: ignore[attr-defined]
+
+
+class TrainStateEpochBegin(TrainState):
+    def _advance_epoch(self) -> None:
+        self.epoch += 1
+        self.epoch_train_steps = 0
+        self.epoch_val_steps = 0
+        self._epoch_start_time = time.time()
+        self._epoch_val_start_time = None
+        self._current_time = self._epoch_start_time
+
+    def on_train_step_begin(self) -> None:
+        self.new_state(TrainStateTrainStepBegin)
+        self._advance_train_step()  # type: ignore[attr-defined]
+
+
+class TrainStateTrainStepBegin(TrainState):
+    def _advance_train_step(self) -> None:
+        self.epoch_train_steps += 1
+        self.total_train_steps += 1
+        self._current_time = time.time()
+
+    def on_train_step_end(self, preds: torch.Tensor, targets: torch.Tensor) -> None:
+        self._current_time = time.time()
+        self.metrics.update(preds, targets)
+        self.new_state(TrainStateTrainStepEnd)
+
+
+class TrainStateTrainStepEnd(TrainState):
+    def on_train_step_begin(self) -> None:
+        self.new_state(TrainStateTrainStepBegin)
+        self._advance_train_step()  # type: ignore[attr-defined]
+    
+    def on_val_begin(self) -> None:
+        self._current_time = time.time()
+        self._epoch_val_start_time = self._current_time
+        self.new_state(TrainStateValBegin)
+
+    def on_epoch_end(self) -> None:
+        self._current_time = time.time()
+        self.new_state(TrainStateEpochEnd)
+
+
+class TrainStateValBegin(TrainState):
+    def on_val_step_begin(self) -> None:
+        self.new_state(TrainStateValStepBegin)
+        self._advance_val_step()  # type: ignore[attr-defined]
+
+
+class TrainStateValStepBegin(TrainState):
+    def _advance_val_step(self) -> None:
+        self.epoch_val_steps += 1
+        self.total_val_steps += 1
+        self._current_time = time.time()
+
+    def on_val_step_end(self) -> None:
+        self._current_time = time.time()
+        self._total_val_time += self.epoch_val_time
+        self.new_state(TrainStateValStepEnd)
+
+
+class TrainStateValStepEnd(TrainState):    
+    def on_val_step_begin(self) -> None:
+        self.new_state(TrainStateValStepBegin)
+        self._advance_val_step()  # type: ignore[attr-defined]
+
+    def on_val_end(self) -> None:
+        self._current_time = time.time()
+        self.new_state(TrainStateValEnd)
+
+
+class TrainStateValEnd(TrainState):
+    def on_epoch_end(self) -> None:
+        self._current_time = time.time()
+        self.new_state(TrainStateEpochEnd)
+
+
+class TrainStateEpochEnd(TrainState):
+    def on_epoch_begin(self) -> None:
+        self.new_state(TrainStateEpochBegin)
+        self._advance_epoch()  # type: ignore[attr-defined]
+
+    def on_train_end(self) -> None:
+        self._current_time = time.time()
+        self.new_state(TrainState)

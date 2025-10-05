@@ -6,12 +6,12 @@ from torch import nn, optim
 from torch.utils.data import DataLoader
 
 from .distributed import cleanup_distributed
-from .callbacks import Callback
+from .callbacks import Callback, CallbackCollection
 
-from .core import Period, FaeOptimizer, TrainState
+from .core import Period, FaeOptimizer, TrainState, TrainStateEpochBegin
 from faeyon.metrics.base import Metric
 from faeyon import A
-from faeyon.enums import TrainStateMode
+from faeyon.enums import PeriodUnit
 
 
 class Recipe:
@@ -31,7 +31,15 @@ class Recipe:
     ):
         self.model = model
         self.loss = loss
-        self.callbacks = callbacks or []
+
+        if callbacks is None:
+            callbacks = []
+
+        if not isinstance(callbacks, CallbackCollection):
+            self.callbacks = CallbackCollection(callbacks)
+        else:
+            self.callbacks = callbacks
+
         self.train_metrics = metrics or []
         self.val_metrics = metrics or []
         # self.state = TrainState(train_metrics=self.train_metrics, val_metrics=self.val_metrics)
@@ -51,64 +59,112 @@ class Recipe:
         self._last_flush = 0
         self._last_val = 0
 
-    @abc.abstractmethod
     def train_step(self, batch: Any) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Prepare a batch for training or validation. Must return loss, predictions, and targets.
         """
-        pass
-    
-    @abc.abstractmethod
+        self.optimizer.zero_grad()
+
+        inputs = batch["inputs"]
+        targets = batch["targets"]
+
+        if isinstance(inputs, dict):
+            inputs = A(**inputs)
+
+        preds = inputs >> self.model
+        loss = self.loss(preds, targets)
+        loss.backward()
+        self.optimizer.step()
+        return loss, preds, targets
+
     def val_step(self, batch: Any) -> dict[str, float]:
         """Perform one validation step"""
-        pass
+        inputs = batch["inputs"]
+        targets = batch["targets"]
+
+        if isinstance(inputs, dict):
+            inputs = A(**inputs)
+
+        preds = inputs >> self.model
+        loss = self.loss(preds, targets)
+        return loss, preds, targets
            
     @torch.no_grad()
-    def _val_epoch(self, data: DataLoader) -> None:
+    def _validate_epoch(self, data: DataLoader) -> None:
         """Validate the model on validation data"""
         self.model.eval()
-        self.val_metrics.reset()
+        #self.val_metrics.reset()
+
+        self.state.on_val_begin()
         self.callbacks.on_val_begin(self.state)
         for batch in data:
             self.callbacks.on_val_step_begin(self.state)
             loss, preds, targets = self.val_step(batch)
-            self.state.val_metrics.update(preds, targets)
+            #self.state.val_metrics.update(preds, targets)
+
+            self.state.on_val_step_end(preds, targets)
             self.callbacks.on_val_step_end(self.state)
         
+        self.state.on_val_end()
         self.callbacks.on_val_end(self.state)
         self.model.train()
     
     def _train_iter(
-        self, 
-        data: DataLoader, 
-        min_period: Period, 
-        max_period: Period
-    ) -> Generator[dict[str, Any], None, None]:
-        data_iter = iter(data)
+        self,
+        train_data: DataLoader,
+        val_data: Optional[DataLoader] = None,
+        min_period: Optional[str | Period] = None,
+        max_period: Optional[str | Period] = None,
+    ) -> None:
+        self.model.train()
+
+        if min_period is None:
+            self.min_period = Period(0, PeriodUnit.SECONDS)
+        elif isinstance(min_period, str):
+            self.min_period = Period.from_expr(min_period)
+        else:
+            self.min_period = min_period
+
+        if max_period is None:
+            self.max_period = Period(float("inf"), PeriodUnit.SECONDS)
+        elif isinstance(max_period, str):
+            self.max_period = Period.from_expr(max_period)
+        else:
+            self.max_period = max_period
+
+        data_iter = iter(train_data)
+        self.state.on_train_begin()
         stop_requested = self.callbacks.on_train_begin(self.state)
-        
-        self.state.toc()
+    
         while self.state < max_period and not (stop_requested and self.state >= min_period):
             stop = []
             try:     
                 batch = next(data_iter)
             except StopIteration:
+                if val_data is not None:
+                    val_count = self.state // self.val_period
+                    if val_count > self._last_val:
+                        self._last_val = val_count
+                        self._validate_epoch(val_data)
+                        
+                self.state.on_epoch_end()
                 stop.append(self.callbacks.on_epoch_end(self.state))
-                data_iter = iter(data)
-                self.state.toc()
+                data_iter = iter(train_data)
             else:
-                self.state.tic()
                 stop.append(self.callbacks.trigger(self.state))
 
-                if self.state.is_epoch_begin():
+                if isinstance(self.state, TrainStateEpochBegin):
                     stop.append(self.callbacks.on_epoch_begin(self.state))
 
+                self.state.on_train_step_begin()
                 stop.append(self.callbacks.on_train_step_begin(self.state))
-                yield batch
+                loss, preds, targets = self.train_step(batch)
+                self.state.on_train_step_end(preds, targets)
                 stop.append(self.callbacks.on_train_step_end(self.state))
     
             stop_requested = stop_requested or any(stop)
             
+        self.state.on_train_end()
         self.callbacks.on_train_end(self.state)
 
     def train(

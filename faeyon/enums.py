@@ -30,6 +30,7 @@ class TrainStage(StrEnum):
 
 
 class TrainStateMode(Flag):
+    NONE = auto()
     TRAIN_BEGIN = auto()
     TRAIN_END = auto()
     EPOCH_BEGIN = auto()
