@@ -1,7 +1,6 @@
 import abc
 import torch
-from typing import Optional
-from collections import Counter
+from typing import Optional, overload
 
 
 class Metric(abc.ABC):
@@ -16,6 +15,7 @@ class Metric(abc.ABC):
     @abc.abstractmethod
     def update(self, predictions: torch.Tensor, targets: torch.Tensor) -> None: ...
 
+    @overload
     @abc.abstractmethod
     def compute(self) -> torch.Tensor: ...
 
@@ -24,7 +24,7 @@ class Metric(abc.ABC):
 
 
 class MetricCollection(Metric):
-    def __init__(self, name: Optional[str] = None, metrics: list[Metric] = None):
+    def __init__(self, name: Optional[str] = None, metrics: Optional[list[Metric]] = None):
         super().__init__(name)
 
         if metrics is not None:

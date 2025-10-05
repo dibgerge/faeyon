@@ -1,14 +1,13 @@
-import abc
 import torch
 
-from typing import Generator, Optional, Any, Union
+from typing import Optional, Any
 from torch import nn, optim
 from torch.utils.data import DataLoader
 
 from .distributed import cleanup_distributed
 from .callbacks import Callback, CallbackCollection
 
-from .core import Period, FaeOptimizer, TrainState, TrainStateEpochBegin
+from .core import Period, FaeOptimizer, TrainState, TrainStateEpochEnd
 from faeyon.metrics.base import Metric
 from faeyon import A
 from faeyon.enums import PeriodUnit
@@ -42,7 +41,7 @@ class Recipe:
 
         self.train_metrics = metrics or []
         self.val_metrics = metrics or []
-        # self.state = TrainState(train_metrics=self.train_metrics, val_metrics=self.val_metrics)
+        self.state = TrainState()
 
         if isinstance(train_flush, str):
             self.train_flush = Period.from_expr(train_flush)
@@ -54,10 +53,10 @@ class Recipe:
         else:
             self.optimizer = optimizer
 
-        self.state = TrainState()
-        self.val_period = val_period
-        self._last_flush = 0
-        self._last_val = 0
+        if isinstance(val_period, str):
+            self.val_period = Period.from_expr(val_period)
+        else:
+            self.val_period = val_period
 
     def train_step(self, batch: Any) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -77,7 +76,7 @@ class Recipe:
         self.optimizer.step()
         return loss, preds, targets
 
-    def val_step(self, batch: Any) -> dict[str, float]:
+    def val_step(self, batch: Any) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Perform one validation step"""
         inputs = batch["inputs"]
         targets = batch["targets"]
@@ -92,82 +91,26 @@ class Recipe:
     @torch.no_grad()
     def _validate_epoch(self, data: DataLoader) -> None:
         """Validate the model on validation data"""
-        self.model.eval()
-        #self.val_metrics.reset()
+        mode = self.model.training
 
+        self.model.eval()
         self.state.on_val_begin()
         self.callbacks.on_val_begin(self.state)
-        for batch in data:
-            self.callbacks.on_val_step_begin(self.state)
-            loss, preds, targets = self.val_step(batch)
-            #self.state.val_metrics.update(preds, targets)
 
-            self.state.on_val_step_end(preds, targets)
+        for batch in data:
+            self.state.on_val_step_begin()
+            self.callbacks.on_val_step_begin(self.state)
+
+            loss, preds, targets = self.val_step(batch)
+
+            self.state.on_val_step_end(loss, preds, targets)
             self.callbacks.on_val_step_end(self.state)
         
         self.state.on_val_end()
         self.callbacks.on_val_end(self.state)
-        self.model.train()
+        self.model.train(mode)
     
-    def _train_iter(
-        self,
-        train_data: DataLoader,
-        val_data: Optional[DataLoader] = None,
-        min_period: Optional[str | Period] = None,
-        max_period: Optional[str | Period] = None,
-    ) -> None:
-        self.model.train()
-
-        if min_period is None:
-            self.min_period = Period(0, PeriodUnit.SECONDS)
-        elif isinstance(min_period, str):
-            self.min_period = Period.from_expr(min_period)
-        else:
-            self.min_period = min_period
-
-        if max_period is None:
-            self.max_period = Period(float("inf"), PeriodUnit.SECONDS)
-        elif isinstance(max_period, str):
-            self.max_period = Period.from_expr(max_period)
-        else:
-            self.max_period = max_period
-
-        data_iter = iter(train_data)
-        self.state.on_train_begin()
-        stop_requested = self.callbacks.on_train_begin(self.state)
-    
-        while self.state < max_period and not (stop_requested and self.state >= min_period):
-            stop = []
-            try:     
-                batch = next(data_iter)
-            except StopIteration:
-                if val_data is not None:
-                    val_count = self.state // self.val_period
-                    if val_count > self._last_val:
-                        self._last_val = val_count
-                        self._validate_epoch(val_data)
-                        
-                self.state.on_epoch_end()
-                stop.append(self.callbacks.on_epoch_end(self.state))
-                data_iter = iter(train_data)
-            else:
-                stop.append(self.callbacks.trigger(self.state))
-
-                if isinstance(self.state, TrainStateEpochBegin):
-                    stop.append(self.callbacks.on_epoch_begin(self.state))
-
-                self.state.on_train_step_begin()
-                stop.append(self.callbacks.on_train_step_begin(self.state))
-                loss, preds, targets = self.train_step(batch)
-                self.state.on_train_step_end(preds, targets)
-                stop.append(self.callbacks.on_train_step_end(self.state))
-    
-            stop_requested = stop_requested or any(stop)
-            
-        self.state.on_train_end()
-        self.callbacks.on_train_end(self.state)
-
-    def train(
+    def fit(
         self,
         train_data: DataLoader,
         val_data: Optional[DataLoader] = None,
@@ -189,34 +132,59 @@ class Recipe:
         """
         self.model.train()
 
-        min_period = Period.from_expr(min_period)
-        max_period = Period.from_expr(max_period)
+        if min_period is None:
+            min_period = Period(0, PeriodUnit.SECONDS)
+        elif isinstance(min_period, str):
+            min_period = Period.from_expr(min_period)
 
-        for batch in self._train_iter(train_data, min_period, max_period):
-            self.optimizer.zero_grad()
+        if max_period is None:
+            max_period = Period(float("inf"), PeriodUnit.SECONDS)
+        elif isinstance(max_period, str):
+            max_period = Period.from_expr(max_period)
 
-            inputs = batch["inputs"]
-            targets = batch["targets"]
+        next_val = self.val_period
+        last_flush = 0
+        reset_epoch = True
+        data_iter = iter(train_data)
+        self.state.on_train_begin()
+        stop_requested = self.callbacks.on_train_begin(self.state)
+    
+        while self.state < max_period and not (stop_requested and self.state >= min_period):
+            stop: list[Optional[bool]] = []
 
-            if isinstance(inputs, dict):
-                inputs = A(**inputs)
+            if reset_epoch:
+                self.state.on_epoch_begin()
+                stop.append(self.callbacks.on_epoch_begin(self.state))
+                reset_epoch = False
+            try:     
+                batch = next(data_iter)
+            except StopIteration:
+                data_iter = iter(train_data)
+                reset_epoch = True
+            else:
+                self.state.on_train_step_begin()
+                stop.append(self.callbacks.on_train_step_begin(self.state))
+                
+                loss, preds, targets = self.train_step(batch)
+                
+                self.state.on_train_step_end(loss, preds, targets)
+                stop.append(self.callbacks.on_train_step_end(self.state))
+                stop.append(self.callbacks.trigger(self.state))
 
-            preds = inputs >> self.model
-            loss = self.loss(preds, targets)
-            loss.backward()
-            self.optimizer.step()
-            self.state.train_metrics.update(preds, targets)
-
-            flush_count = self.state // self.train_flush
-            if flush_count > self._last_flush:
-                self._last_flush = flush_count
-                self.state.train_metrics.reset()
-             
             if val_data is not None:
-                val_count = self.state // self.val_period
-                if val_count > self._last_val:
-                    self._last_val = val_count
-                self._validate_epoch(val_data)
+                val_count = self.state // next_val
+                if val_count > 0:
+                    next_val += val_count * self.val_period
+                    stop.append(self._validate_epoch(val_data))
+            
+            if reset_epoch:
+                self.state.on_epoch_end()
+                stop.append(self.callbacks.on_epoch_end(self.state))
+
+            stop_requested = stop_requested or any(stop)
+            
+        self.state.on_train_end()
+        self.callbacks.on_train_end(self.state)
                 
     def cleanup(self):
         """Clean up distributed training"""

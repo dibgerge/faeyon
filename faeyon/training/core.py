@@ -337,7 +337,12 @@ class TrainState:
     def on_train_step_begin(self) -> None:
         self.error()
 
-    def on_train_step_end(self, preds: torch.Tensor, targets: torch.Tensor) -> None:
+    def on_train_step_end(
+        self, 
+        loss: torch.Tensor, 
+        preds: torch.Tensor, 
+        targets: torch.Tensor
+    ) -> None:
         self.error()
 
     def on_val_begin(self) -> None:
@@ -346,7 +351,12 @@ class TrainState:
     def on_val_step_begin(self) -> None:
         self.error()
     
-    def on_val_step_end(self) -> None:
+    def on_val_step_end(
+        self, 
+        loss: torch.Tensor, 
+        preds: torch.Tensor, 
+        targets: torch.Tensor
+    ) -> None:
         self.error()    
 
     def on_val_end(self) -> None:
@@ -527,7 +537,12 @@ class TrainStateTrainStepBegin(TrainState):
         self.total_train_steps += 1
         self._current_time = time.time()
 
-    def on_train_step_end(self, preds: torch.Tensor, targets: torch.Tensor) -> None:
+    def on_train_step_end(
+        self, 
+        loss: torch.Tensor, 
+        preds: torch.Tensor, 
+        targets: torch.Tensor
+    ) -> None:
         self._current_time = time.time()
         self.metrics.update(preds, targets)
         self.new_state(TrainStateTrainStepEnd)
@@ -560,7 +575,12 @@ class TrainStateValStepBegin(TrainState):
         self.total_val_steps += 1
         self._current_time = time.time()
 
-    def on_val_step_end(self) -> None:
+    def on_val_step_end(
+        self, 
+        loss: torch.Tensor, 
+        preds: torch.Tensor, 
+        targets: torch.Tensor
+    ) -> None:
         self._current_time = time.time()
         self._total_val_time += self.epoch_val_time
         self.new_state(TrainStateValStepEnd)
