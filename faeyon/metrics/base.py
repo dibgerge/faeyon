@@ -1,55 +1,43 @@
+from __future__ import annotations
 import abc
+import inspect
 import torch
-from typing import Optional, overload
+from typing import Optional
+from collections import OrderedDict
 
 
 class Metric(abc.ABC):
     name: str
+    _arguments: inspect.BoundArguments
+
+    def __new__(cls, *args, **kwargs):
+        instance = super().__new__(cls)
+        sig = inspect.signature(instance.__init__)
+        bound = sig.bind(*args, **kwargs)
+        bound.apply_defaults()
+        super(cls, instance).__setattr__("_arguments", bound)
+        return instance
 
     def __init__(self, name: Optional[str] = None):
         if name is None:
             self.name = self.__class__.__name__.lower()
         else:
             self.name = name
-
+        
     @abc.abstractmethod
     def update(self, predictions: torch.Tensor, targets: torch.Tensor) -> None: ...
 
-    @overload
     @abc.abstractmethod
     def compute(self) -> torch.Tensor: ...
 
     @abc.abstractmethod
     def reset(self) -> None: ...
 
-
-class MetricCollection(Metric):
-    def __init__(self, name: Optional[str] = None, metrics: Optional[list[Metric]] = None):
-        super().__init__(name)
-
-        if metrics is not None:
-            self.metrics = {metric.name: metric for metric in metrics}
-
-            if len(self.metrics) != len(metrics):
-                raise ValueError(
-                    f"Metrics must have unique names. Found duplicate names: {self.metrics.keys()}"
-                )
-        else:
-            self.metrics = {}
-
-    def __getitem__(self, key: str) -> Metric:
-        return self.metrics[key]
-
-    def update(self, predictions: torch.Tensor, targets: torch.Tensor) -> None:
-        for metric in self.metrics.values():
-            metric.update(predictions, targets)
-    
-    def compute(self) -> dict[str, torch.Tensor]:
-        return {name: metric.compute() for name, metric in self.metrics.items()}
-    
-    def reset(self) -> None:
-        for metric in self.metrics.values():
-            metric.reset()
-
-    def __len__(self) -> int:
-        return len(self.metrics)
+    def clone[T: Metric](self: T, *args, **kwargs) -> T:
+        cls = self.__class__
+        sig = inspect.signature(cls.__init__)
+        bound = sig.bind_partial(*args, **kwargs)
+        cur_arguments = OrderedDict(self._arguments.arguments)
+        cur_arguments.update(bound.arguments)
+        new_bound = inspect.BoundArguments(sig, cur_arguments)
+        return cls(*new_bound.args, **new_bound.kwargs)

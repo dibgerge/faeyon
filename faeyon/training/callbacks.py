@@ -13,6 +13,7 @@ import torch
 from .core import Period, TrainState
 from faeyon.enums import PeriodUnit
 
+
 class Callback(ABC):
     """Base class for all callbacks"""
     
@@ -25,10 +26,15 @@ class Callback(ABC):
 
     def trigger(self, state: TrainState) -> bool:
         # For time triggers, sometimes things are not exactly on the trigger
+        if self._trigger is None:
+            return False
+        
         count = state // self._trigger
         if count > self.trigger_count:
             self.trigger_count = count
             return self.on_trigger(state)
+        
+        return False
     
     def on_train_begin(self, state: TrainState) -> Optional[bool]:
         """Called at the beginning of training"""
@@ -61,13 +67,17 @@ class Callback(ABC):
 class CallbackCollection(Callback):
     """Collection of callbacks"""
     
-    def __init__(self, callbacks: list[Callback]):
+    def __init__(self, callbacks: Optional[list[Callback]] = None) -> None:
         super().__init__()
         self.callbacks = callbacks
     
     def __getattr__(self, name: str) -> Callable:
         """Called at the beginning of training"""
         def proxy(state: TrainState) -> Optional[bool]:
+
+            if self.callbacks is None:
+                return False
+
             should_stop = False
             for callback in self.callbacks:
                 func = getattr(callback, name)

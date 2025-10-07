@@ -348,6 +348,23 @@ class TestClfMetricBase:
             metric.update(preds, targets)
             torch.testing.assert_close(metric._state.to_dense(), torch.tensor(expected))
 
+    @pytest.mark.parametrize("args, kwargs", [
+        ([], {"num_classes": 3}),
+        (["foo"], {"thresholds": 0.5, "average": "micro"}),
+        (["bar", 3], {"average": "micro"}),
+        (["baz", 2, 0.5], {"multilabel": True}),
+    ])
+    def test_clone(self, args, kwargs):
+        metric = ClfMetricBase(*args, **kwargs)
+        cloned_metric = metric.clone()
+        assert cloned_metric.name == metric.name
+        assert cloned_metric.multilabel == metric.multilabel
+        assert cloned_metric.thresholds == metric.thresholds
+        assert cloned_metric.average == metric.average
+        assert cloned_metric.num_classes == metric.num_classes
+        assert cloned_metric.task == metric.task
+        assert cloned_metric is not metric
+
 
 class TestAccuracy:
 

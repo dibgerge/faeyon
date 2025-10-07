@@ -116,8 +116,8 @@ def __new__(cls, *args, **kwargs):
     out = []
     for c_args, c_kwargs in zip(args, kwargs):
         inst = _new_instance(cls, *c_args, **c_kwargs)
-        # Call __init__ on each instance since it will not be called when different class type is 
-        # returned in __new__
+        # Call __init__ on each instance since it will not be called when different class type
+        # is returned in __new__
         cls.__init__(inst, *c_args, **c_kwargs)
         out.append(inst)
     

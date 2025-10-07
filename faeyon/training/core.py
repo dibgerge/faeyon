@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
+from functools import wraps
 import time
 import fnmatch
 import importlib
@@ -8,10 +9,10 @@ import torch
 
 from datetime import timedelta
 
-from typing import Optional, Iterable, Union
+from typing import Callable, Optional, Iterable, Union
 from torch import nn, optim
 from faeyon.enums import PeriodUnit
-from faeyon.metrics import MetricCollection
+from faeyon.metrics import MeanMetric, MetricCollection, Metric
 
 
 PeriodT = Union["Period", float, int, str]
@@ -288,23 +289,62 @@ class TrainState:
     - If the period is in step units, the comparison is done with `total_train_steps`.
     - If the period is in time units, the comparison is done with `total_time`.
     """
-    metrics: MetricCollection
+    train_metrics: MetricCollection
+    train_loss: MeanMetric
+    val_metrics: MetricCollection
+    val_loss: MeanMetric
+
     epoch: int
 
     total_train_steps: int
     total_val_steps: int
     epoch_train_steps: int
     epoch_val_steps: int
+    is_epoch_last_step: bool
 
     _start_time: Optional[float]
     _epoch_start_time: Optional[float]
     _epoch_val_start_time: Optional[float]
     _current_time: Optional[float]
     _total_val_time: float
+    _next_flush: Period
+    _expected_train_steps: Optional[int]
 
-    def __init__(self, metrics: MetricCollection) -> None:
-        self.metrics = metrics
+    def __init__(
+        self, 
+        metrics: Optional[list[Metric] | MetricCollection] = None,
+        train_flush: str | Period = "1e",
+    ) -> None:
+        if metrics is None:
+            self.train_metrics = MetricCollection()
+        elif isinstance(metrics, list):
+            self.train_metrics = MetricCollection(metrics=metrics)
+        elif isinstance(metrics, MetricCollection):
+            self.train_metrics = metrics
+        else:
+            raise ValueError(f"Invalid metrics: {metrics}.")
+        self.val_metrics = self.train_metrics.clone()
+        self.val_loss = MeanMetric()
+        self.train_loss = MeanMetric()
+
+        if isinstance(train_flush, str):
+            self._train_flush = Period.from_expr(train_flush)
+        else:
+            self._train_flush = train_flush
         self.reset()
+
+    @property
+    def transitions(self) -> set[str]:
+        return {"on_train_begin"}
+
+    @staticmethod
+    def valid_transition(func: Callable) -> Callable:
+        @wraps(func)
+        def wrapper(self, *args, **kwargs) -> None:
+            if func.__name__ not in self.transitions:
+                self.error(func.__name__)
+            return func(self, *args, **kwargs)
+        return wrapper
 
     def new_state(self, state: type[TrainState]) -> None:
         self.__class__ = state
@@ -320,8 +360,16 @@ class TrainState:
         self.total_val_steps = 0
         self.epoch_train_steps = 0
         self.epoch_val_steps = 0
+        self.train_metrics.reset()
+        self.val_metrics.reset()
+        self.val_loss.reset()
+        self.train_loss.reset()
+        self._next_flush = self._train_flush
+        self._expected_train_steps = None
+        self.is_epoch_last_step = False
 
-    def on_train_begin(self) -> None:
+    @valid_transition
+    def on_train_begin(self, train_data_size: Optional[int] = None) -> None:
         """
         If the model was trained before, and epoch is > 0, we continue from where 
         we left off.
@@ -329,48 +377,92 @@ class TrainState:
         self.reset()
         self._start_time = time.time()
         self._current_time = self._start_time
+        self._train_data_size = train_data_size
         self.new_state(TrainStateTrainBegin)
 
+    @valid_transition
     def on_epoch_begin(self) -> None:
-        self.error()
+        self.new_state(TrainStateEpochBegin)
+        self.epoch += 1
+        self.epoch_train_steps = 0
+        self.epoch_val_steps = 0
+        self._epoch_start_time = time.time()
+        self._epoch_val_start_time = None
+        self._current_time = self._epoch_start_time
+    
+    @valid_transition
+    def on_train_step_begin(self, is_last: bool) -> None:
+        self.new_state(TrainStateTrainStepBegin)
+        self.epoch_train_steps += 1
+        self.total_train_steps += 1
+        self._current_time = time.time()
+        if is_last:
+            self.is_epoch_last_step = True
+            if self._expected_train_steps is None:
+                self._expected_train_steps = self.epoch_train_steps
 
-    def on_train_step_begin(self) -> None:
-        self.error()
-
+    @valid_transition
     def on_train_step_end(
         self, 
         loss: torch.Tensor, 
         preds: torch.Tensor, 
         targets: torch.Tensor
     ) -> None:
-        self.error()
+        self._current_time = time.time()
+        self.train_metrics.update(preds, targets)
+        self.train_loss.update(loss, count=preds.numel())
+        self.new_state(TrainStateTrainStepEnd)
 
+        flush_count = self // self._next_flush
+        if flush_count > 0:
+            self._next_flush += flush_count * self._next_flush
+            self.train_metrics.reset()
+            self.train_loss.reset()
+
+    @valid_transition
     def on_val_begin(self) -> None:
-        self.error()
+        self.new_state(TrainStateValBegin)
+        self._current_time = time.time()
+        self._epoch_val_start_time = self._current_time
 
+    @valid_transition
     def on_val_step_begin(self) -> None:
-        self.error()
-    
+        self.epoch_val_steps += 1
+        self.total_val_steps += 1
+        self._current_time = time.time()
+        self.new_state(TrainStateValStepBegin)
+
+    @valid_transition
     def on_val_step_end(
         self, 
         loss: torch.Tensor, 
         preds: torch.Tensor, 
         targets: torch.Tensor
     ) -> None:
-        self.error()    
+        self.new_state(TrainStateValStepEnd)
+        self._current_time = time.time()
+        self._total_val_time += self.epoch_val_time
+        self.val_metrics.update(preds, targets)
+        self.val_loss.update(loss, count=preds.numel())
 
+    @valid_transition
     def on_val_end(self) -> None:
-        self.error()
+        self._current_time = time.time()
+        self.new_state(TrainStateValEnd)
 
+    @valid_transition
     def on_epoch_end(self) -> None:
-        self.error()
+        self._current_time = time.time()
+        self.new_state(TrainStateEpochEnd)
 
+    @valid_transition
     def on_train_end(self) -> None:
-        self.error()
+        self.new_state(TrainState)
+        self._current_time = time.time()
 
-    def error(self) -> None:
+    def error(self, method: str) -> None:
         name = self.__class__.__name__
-        raise RuntimeError(f"Cannot transition to this state. Current state: {name}.")
+        raise RuntimeError(f"Cannot transition to state {method}. Current state: {name}.")
 
     @property
     def total_time(self) -> float:
@@ -414,6 +506,9 @@ class TrainState:
         value: Optional[int | float]
         if unit == PeriodUnit.EPOCHS:
             value = self.epoch
+
+            if self._expected_train_steps is not None:
+                value += self._expected_train_steps / self.epoch_train_steps
         elif unit == PeriodUnit.STEPS:
             value = self.total_train_steps
         elif unit == PeriodUnit.SECONDS:
@@ -510,103 +605,67 @@ class TrainState:
             other = Period.from_expr(other)
         return other % self._get_field(other.unit)
 
+    def __repr__(self) -> str:
+        return (
+            f"\nTrainState:\n"
+            f"\tepoch={self.epoch}\n"
+            f"\tepoch train steps={self.epoch_train_steps}\n"
+            f"\tepoch val steps={self.epoch_val_steps}\n"
+            f"\ttotal_train_steps={self.total_train_steps}\n"
+            f"\ttotal time={self.total_time:.2f} seconds\n"
+            f"\tis epoch last step={self.is_epoch_last_step}\n"
+        )
+
 
 class TrainStateTrainBegin(TrainState):
-    def on_epoch_begin(self) -> None:
-        self.new_state(TrainStateEpochBegin)
-        self._advance_epoch()  # type: ignore[attr-defined]
+    @property
+    def transitions(self) -> set[str]:
+        return {"on_epoch_begin"}
 
 
 class TrainStateEpochBegin(TrainState):
-    def _advance_epoch(self) -> None:
-        self.epoch += 1
-        self.epoch_train_steps = 0
-        self.epoch_val_steps = 0
-        self._epoch_start_time = time.time()
-        self._epoch_val_start_time = None
-        self._current_time = self._epoch_start_time
-
-    def on_train_step_begin(self) -> None:
-        self.new_state(TrainStateTrainStepBegin)
-        self._advance_train_step()  # type: ignore[attr-defined]
+    @property
+    def transitions(self) -> set[str]:
+        return {"on_train_step_begin"}
 
 
 class TrainStateTrainStepBegin(TrainState):
-    def _advance_train_step(self) -> None:
-        self.epoch_train_steps += 1
-        self.total_train_steps += 1
-        self._current_time = time.time()
-
-    def on_train_step_end(
-        self, 
-        loss: torch.Tensor, 
-        preds: torch.Tensor, 
-        targets: torch.Tensor
-    ) -> None:
-        self._current_time = time.time()
-        self.metrics.update(preds, targets)
-        self.new_state(TrainStateTrainStepEnd)
+    @property
+    def transitions(self) -> set[str]:
+        return {"on_train_step_end"}
 
 
 class TrainStateTrainStepEnd(TrainState):
-    def on_train_step_begin(self) -> None:
-        self.new_state(TrainStateTrainStepBegin)
-        self._advance_train_step()  # type: ignore[attr-defined]
-    
-    def on_val_begin(self) -> None:
-        self._current_time = time.time()
-        self._epoch_val_start_time = self._current_time
-        self.new_state(TrainStateValBegin)
-
-    def on_epoch_end(self) -> None:
-        self._current_time = time.time()
-        self.new_state(TrainStateEpochEnd)
+    @property
+    def transitions(self) -> set[str]:
+        return {"on_val_begin", "on_epoch_end", "on_train_step_begin", "on_train_end"}
 
 
 class TrainStateValBegin(TrainState):
-    def on_val_step_begin(self) -> None:
-        self.new_state(TrainStateValStepBegin)
-        self._advance_val_step()  # type: ignore[attr-defined]
+    @property
+    def transitions(self) -> set[str]:
+        return {"on_val_step_begin"}
 
 
 class TrainStateValStepBegin(TrainState):
-    def _advance_val_step(self) -> None:
-        self.epoch_val_steps += 1
-        self.total_val_steps += 1
-        self._current_time = time.time()
-
-    def on_val_step_end(
-        self, 
-        loss: torch.Tensor, 
-        preds: torch.Tensor, 
-        targets: torch.Tensor
-    ) -> None:
-        self._current_time = time.time()
-        self._total_val_time += self.epoch_val_time
-        self.new_state(TrainStateValStepEnd)
+    @property
+    def transitions(self) -> set[str]:
+        return {"on_val_step_end"}
 
 
-class TrainStateValStepEnd(TrainState):    
-    def on_val_step_begin(self) -> None:
-        self.new_state(TrainStateValStepBegin)
-        self._advance_val_step()  # type: ignore[attr-defined]
-
-    def on_val_end(self) -> None:
-        self._current_time = time.time()
-        self.new_state(TrainStateValEnd)
+class TrainStateValStepEnd(TrainState): 
+    @property
+    def transitions(self) -> set[str]:
+        return {"on_val_step_begin", "on_val_end"}
 
 
 class TrainStateValEnd(TrainState):
-    def on_epoch_end(self) -> None:
-        self._current_time = time.time()
-        self.new_state(TrainStateEpochEnd)
+    @property
+    def transitions(self) -> set[str]:
+        return {"on_epoch_end"}
 
 
 class TrainStateEpochEnd(TrainState):
-    def on_epoch_begin(self) -> None:
-        self.new_state(TrainStateEpochBegin)
-        self._advance_epoch()  # type: ignore[attr-defined]
-
-    def on_train_end(self) -> None:
-        self._current_time = time.time()
-        self.new_state(TrainState)
+    @property
+    def transitions(self) -> set[str]:
+        return {"on_epoch_begin", "on_train_end"}

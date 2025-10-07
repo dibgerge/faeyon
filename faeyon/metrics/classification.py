@@ -4,7 +4,6 @@ import sys
 import torch
 
 from typing import Optional
-from faeyon.enums import ClfTask
 from torch.nn.functional import one_hot
 from .base import Metric
 from faeyon import utils
@@ -565,6 +564,9 @@ class ClfMetricBase(Metric):
         else:
             self._state += data
 
+    def compute(self) -> torch.Tensor:
+        raise NotImplementedError("Not implemented for base class.")
+
 
 class Accuracy(ClfMetricBase):
     def _compute_sparse(self, confusion: dict[str, torch.Tensor]) -> torch.Tensor:
@@ -593,12 +595,15 @@ class Accuracy(ClfMetricBase):
         return (tp + tn) / cardinality
 
     def compute(self) -> torch.Tensor:
+        """
+        Returns a list of  
+        """
         if self._state is None or self.task is None:
             raise ValueError("State is empty. Call update() before compute().")
 
         confusion = self.task.compute(self._state)
         if self._state.ndim == 2:
-            return  self._compute_sparse(confusion)
+            return self._compute_sparse(confusion)
         else:
             return self._compute_categorical(confusion)
 

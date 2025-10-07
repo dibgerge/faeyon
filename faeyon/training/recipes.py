@@ -7,14 +7,19 @@ from torch.utils.data import DataLoader
 from .distributed import cleanup_distributed
 from .callbacks import Callback, CallbackCollection
 
-from .core import Period, FaeOptimizer, TrainState, TrainStateEpochEnd
+from .core import Period, FaeOptimizer, TrainState
 from faeyon.metrics.base import Metric
 from faeyon import A
 from faeyon.enums import PeriodUnit
 
 
 class Recipe:
-    """ The base class for training recipes """
+    """ 
+    The base class for training recipes. 
+
+    metrics : Optional[list[Metric]]
+        A list of metrics which will be used for training and validation.
+    """
 
     optimizer: optim.Optimizer
 
@@ -23,7 +28,7 @@ class Recipe:
         model: nn.Module,
         loss: nn.Module,
         optimizer: optim.Optimizer | FaeOptimizer,
-        metrics: Optional[list[dict[str, str | Period] | Metric]] = None,
+        metrics: Optional[list[Metric]] = None,
         callbacks: Optional[list[Callback]] = None,
         train_flush: str | Period = "1e",
         val_period: str | Period = "1e"
@@ -39,14 +44,7 @@ class Recipe:
         else:
             self.callbacks = callbacks
 
-        self.train_metrics = metrics or []
-        self.val_metrics = metrics or []
-        self.state = TrainState()
-
-        if isinstance(train_flush, str):
-            self.train_flush = Period.from_expr(train_flush)
-        else:
-            self.train_flush = train_flush
+        self.state = TrainState(metrics, train_flush=train_flush)
 
         if isinstance(optimizer, FaeOptimizer):
             self.optimizer = optimizer(self.model)
@@ -109,7 +107,38 @@ class Recipe:
         self.state.on_val_end()
         self.callbacks.on_val_end(self.state)
         self.model.train(mode)
-    
+
+    def _should_stop(self, stop_requested: bool, min_period: Period, max_period: Period) -> bool:
+        condition = (stop_requested and self.state > min_period) or self.state > max_period
+        # Avoid None condition
+        if condition:
+            return True
+        else:
+            return False
+
+    def _data_iter(self, data: DataLoader):
+        """
+        Iterate over the data with lookahead to determine if the current batch is the last one.
+
+        Returns:
+            A tuple of (is_first, is_last, batch).
+        """
+        while True:
+            data_iter = iter(data)
+            try:
+                batch = next(data_iter)
+            except StopIteration:
+                return True, True, None
+            
+            # For loop never runs if there's only one batch, can't use enumerate...
+            count = 0
+            for next_batch in data_iter:
+                yield count == 0, False, batch
+                batch = next_batch
+                count += 1
+
+            yield count == 0, True, batch
+
     def fit(
         self,
         train_data: DataLoader,
@@ -143,33 +172,29 @@ class Recipe:
             max_period = Period.from_expr(max_period)
 
         next_val = self.val_period
-        last_flush = 0
-        reset_epoch = True
         data_iter = iter(train_data)
-        self.state.on_train_begin()
-        stop_requested = self.callbacks.on_train_begin(self.state)
-    
-        while self.state < max_period and not (stop_requested and self.state >= min_period):
+        self.state.on_train_begin(len(train_data))
+        self.callbacks.on_train_begin(self.state)
+        stop_requested = False
+
+        # while self.state <= max_period and not (stop_requested and self.state > min_period):
+
+        for is_first, is_last, batch in self._data_iter(train_data):
+            print(self.state)
             stop: list[Optional[bool]] = []
 
-            if reset_epoch:
+            if is_first:
                 self.state.on_epoch_begin()
-                stop.append(self.callbacks.on_epoch_begin(self.state))
-                reset_epoch = False
-            try:     
-                batch = next(data_iter)
-            except StopIteration:
-                data_iter = iter(train_data)
-                reset_epoch = True
-            else:
-                self.state.on_train_step_begin()
-                stop.append(self.callbacks.on_train_step_begin(self.state))
-                
-                loss, preds, targets = self.train_step(batch)
-                
-                self.state.on_train_step_end(loss, preds, targets)
-                stop.append(self.callbacks.on_train_step_end(self.state))
-                stop.append(self.callbacks.trigger(self.state))
+                self.callbacks.on_epoch_begin(self.state)
+
+            self.state.on_train_step_begin(is_last)
+            self.callbacks.on_train_step_begin(self.state)
+            
+            loss, preds, targets = self.train_step(batch)
+            
+            self.state.on_train_step_end(loss, preds, targets)
+            stop.append(self.callbacks.on_train_step_end(self.state))
+            stop.append(self.callbacks.trigger(self.state))
 
             if val_data is not None:
                 val_count = self.state // next_val
@@ -177,12 +202,15 @@ class Recipe:
                     next_val += val_count * self.val_period
                     stop.append(self._validate_epoch(val_data))
             
-            if reset_epoch:
+            if is_last:                
                 self.state.on_epoch_end()
                 stop.append(self.callbacks.on_epoch_end(self.state))
 
             stop_requested = stop_requested or any(stop)
-            
+
+            if self.state > max_period or (stop_requested and self.state > min_period):
+                break
+
         self.state.on_train_end()
         self.callbacks.on_train_end(self.state)
                 
