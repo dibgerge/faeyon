@@ -110,7 +110,7 @@ class TestPeriod:
 class TestTrainState:
     @pytest.fixture
     def state(self):
-        metrics = MetricCollection([Accuracy()])
+        metrics = MetricCollection([Accuracy(num_classes=1)])
         return TrainState(metrics=metrics)
 
     def assert_values(
@@ -154,7 +154,7 @@ class TestTrainState:
     def test_epoch_begin(self, state):
         state.on_train_begin()
         state.on_epoch_begin()
-        self.assert_values(state, epoch=1, total_time=False, total_train_time=False)
+        self.assert_values(state, epoch=0, total_time=False, total_train_time=False)
         
     def test_train_step_begin(self, state):
         state.on_train_begin()
@@ -162,9 +162,9 @@ class TestTrainState:
         state.on_train_step_begin()
         self.assert_values(
             state, 
-            epoch=1, 
-            epoch_train_steps=1, 
-            total_train_steps=1, 
+            epoch=0, 
+            epoch_train_steps=0, 
+            total_train_steps=0, 
             epoch_total_time=False, 
             epoch_train_time=False,
             total_train_time=False, 
@@ -175,13 +175,15 @@ class TestTrainState:
         state.on_train_begin()
         state.on_epoch_begin()
         state.on_train_step_begin()
-        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
-        state.on_train_begin()
-        state.on_epoch_begin()
-        state.on_train_step_begin()
+        state.on_train_step_end(
+            loss=torch.tensor(0.1),
+            preds=torch.tensor([1, 0]), 
+            targets=torch.tensor([1, 1]),
+            is_last=False
+        )
         self.assert_values(
             state, 
-            epoch=1, 
+            epoch=0, 
             epoch_train_steps=1, 
             epoch_total_time=False,
             epoch_train_time=False,
@@ -194,11 +196,16 @@ class TestTrainState:
         state.on_train_begin()
         state.on_epoch_begin()
         state.on_train_step_begin()
-        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_train_step_end(
+            loss=torch.tensor(0.1),
+            preds=torch.tensor([1, 0]), 
+            targets=torch.tensor([1, 1]),
+            is_last=False
+        )
         state.on_val_begin()
         self.assert_values(
             state, 
-            epoch=1, 
+            epoch=0, 
             epoch_train_steps=1, 
             epoch_total_time=False,
             epoch_train_time=False,
@@ -211,21 +218,26 @@ class TestTrainState:
         state.on_train_begin()
         state.on_epoch_begin()
         state.on_train_step_begin()
-        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_train_step_end(
+            loss=torch.tensor(0.1),
+            preds=torch.tensor([1, 0]), 
+            targets=torch.tensor([1, 1]),
+            is_last=False
+        )
         state.on_val_begin()
         state.on_val_step_begin()
         self.assert_values(
             state, 
-            epoch=1,
+            epoch=0,
             epoch_train_steps=1, 
             epoch_total_time=False,
             epoch_train_time=False,
-            epoch_val_steps=1,
+            epoch_val_steps=0,
             epoch_val_time=False,
             total_time=False,
             total_train_time=False, 
             total_train_steps=1,
-            total_val_steps=1,
+            total_val_steps=0,
             total_val_time=False,
         )
 
@@ -233,13 +245,22 @@ class TestTrainState:
         state.on_train_begin()
         state.on_epoch_begin()
         state.on_train_step_begin()
-        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_train_step_end(
+            loss=torch.tensor(0.1),
+            preds=torch.tensor([1, 0]), 
+            targets=torch.tensor([1, 1]),
+            is_last=False
+        )
         state.on_val_begin()
         state.on_val_step_begin()
-        state.on_val_step_end()
+        state.on_val_step_end(
+            loss=torch.tensor(0.1),
+            preds=torch.tensor([1, 0]), 
+            targets=torch.tensor([1, 1]),
+        )
         self.assert_values(
             state, 
-            epoch=1,
+            epoch=0,
             epoch_train_steps=1, 
             epoch_total_time=False,
             epoch_train_time=False,
@@ -256,12 +277,26 @@ class TestTrainState:
         state.on_train_begin()
         state.on_epoch_begin()
         state.on_train_step_begin()
-        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_train_step_end(
+            loss=torch.tensor(0.1),
+            preds=torch.tensor([1, 0]), 
+            targets=torch.tensor([1, 1]),
+            is_last=False
+        )
         state.on_train_step_begin()
-        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_train_step_end(
+            loss=torch.tensor(0.1),
+            preds=torch.tensor([1, 0]), 
+            targets=torch.tensor([1, 1]),
+            is_last=True
+        )
         state.on_val_begin()
         state.on_val_step_begin()
-        state.on_val_step_end()
+        state.on_val_step_end(
+            loss=torch.tensor(0.1),
+            preds=torch.tensor([1, 0]), 
+            targets=torch.tensor([1, 1]),
+        )
         state.on_val_end()
         state.on_epoch_end()
         self.assert_values(
@@ -283,12 +318,25 @@ class TestTrainState:
         state.on_train_begin()
         state.on_epoch_begin()
         state.on_train_step_begin()
-        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_train_step_end(
+            loss=torch.tensor(0.1),
+            preds=torch.tensor([1, 0]), 
+            targets=torch.tensor([1, 1]),
+            is_last=True
+        )
         state.on_val_begin()
         state.on_val_step_begin()
-        state.on_val_step_end()
+        state.on_val_step_end(
+            loss=torch.tensor(0.1),
+            preds=torch.tensor([1, 0]), 
+            targets=torch.tensor([1, 1]),
+        )
         state.on_val_step_begin()
-        state.on_val_step_end()
+        state.on_val_step_end(
+            loss=torch.tensor(0.1),
+            preds=torch.tensor([1, 0]), 
+            targets=torch.tensor([1, 1]),
+        )
         state.on_val_end()
         state.on_epoch_end()
         self.assert_values(
@@ -310,7 +358,12 @@ class TestTrainState:
         state.on_train_begin()
         state.on_epoch_begin()
         state.on_train_step_begin()
-        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_train_step_end(
+            loss=torch.tensor(0.1),
+            preds=torch.tensor([1, 0]), 
+            targets=torch.tensor([1, 1]),
+            is_last=True
+        )
         state.on_epoch_end()
         self.assert_values(
             state, 
@@ -327,11 +380,21 @@ class TestTrainState:
         state.on_train_begin()
         state.on_epoch_begin()
         state.on_train_step_begin()
-        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_train_step_end(
+            loss=torch.tensor(0.1),
+            preds=torch.tensor([1, 0]), 
+            targets=torch.tensor([1, 1]),
+            is_last=True
+        )
         state.on_epoch_end()
         state.on_epoch_begin()
         state.on_train_step_begin()
-        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_train_step_end(
+            loss=torch.tensor(0.1),
+            preds=torch.tensor([1, 0]), 
+            targets=torch.tensor([1, 1]),
+            is_last=True
+        )
         state.on_epoch_end()
         state.on_train_end()
         self.assert_values(
@@ -380,7 +443,12 @@ class TestTrainState:
         state.on_train_begin()
         state.on_epoch_begin()
         state.on_train_step_begin()
-        state.on_train_step_end(torch.tensor([0.5]), torch.tensor([0.5]))
+        state.on_train_step_end(
+            loss=torch.tensor(0.1),
+            preds=torch.tensor([1, 0]), 
+            targets=torch.tensor([1, 1]),
+            is_last=True
+        )
         state.on_val_begin()
         state.on_val_step_begin()
         with pytest.raises(RuntimeError):

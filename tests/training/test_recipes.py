@@ -24,7 +24,8 @@ def recipe():
     return Recipe(
         model=model, 
         loss=nn.BCEWithLogitsLoss(), 
-        optimizer=optimizer
+        optimizer=optimizer,
+        val_period="1e",
     )
 
 
@@ -47,5 +48,24 @@ def val_data():
 
 
 class TestRecipe:
-    def test_fit(self, recipe, train_data, val_data):
-        recipe.fit(train_data, max_period="2e")
+    @pytest.mark.parametrize("use_val_data", [True, False])
+    def test_fit(self, recipe, train_data, val_data, mocker, use_val_data):
+        events = [
+            ("on_epoch_begin", 2),
+            ("on_train_step_begin", 6),
+            ("on_train_step_end", 6),
+            ("on_epoch_end", 2),
+            ("on_val_begin", 0 if not use_val_data else 2),
+            ("on_val_step_begin", 0 if not use_val_data else 6),
+            ("on_val_step_end", 0 if not use_val_data else 6),
+            ("on_val_end", 0 if not use_val_data else 2),
+        ]
+        _, expected = zip(*events)
+        spies = [mocker.spy(recipe.state, event) for event, _ in events]
+        recipe.fit(
+            train_data, 
+            max_period="2e", 
+            val_data=val_data if use_val_data else None
+        )
+        for spy, count in zip(spies, expected):
+            assert spy.call_count == count        

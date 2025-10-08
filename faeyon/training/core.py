@@ -383,7 +383,6 @@ class TrainState:
     @valid_transition
     def on_epoch_begin(self) -> None:
         self.new_state(TrainStateEpochBegin)
-        self.epoch += 1
         self.epoch_train_steps = 0
         self.epoch_val_steps = 0
         self._epoch_start_time = time.time()
@@ -391,23 +390,20 @@ class TrainState:
         self._current_time = self._epoch_start_time
     
     @valid_transition
-    def on_train_step_begin(self, is_last: bool) -> None:
+    def on_train_step_begin(self) -> None:
         self.new_state(TrainStateTrainStepBegin)
-        self.epoch_train_steps += 1
-        self.total_train_steps += 1
         self._current_time = time.time()
-        if is_last:
-            self.is_epoch_last_step = True
-            if self._expected_train_steps is None:
-                self._expected_train_steps = self.epoch_train_steps
-
+       
     @valid_transition
     def on_train_step_end(
         self, 
         loss: torch.Tensor, 
         preds: torch.Tensor, 
-        targets: torch.Tensor
+        targets: torch.Tensor,
+        is_last: bool
     ) -> None:
+        self.epoch_train_steps += 1
+        self.total_train_steps += 1
         self._current_time = time.time()
         self.train_metrics.update(preds, targets)
         self.train_loss.update(loss, count=preds.numel())
@@ -419,6 +415,11 @@ class TrainState:
             self.train_metrics.reset()
             self.train_loss.reset()
 
+        if is_last:
+            self.is_epoch_last_step = True
+            if self._expected_train_steps is None:
+                self._expected_train_steps = self.epoch_train_steps
+
     @valid_transition
     def on_val_begin(self) -> None:
         self.new_state(TrainStateValBegin)
@@ -427,8 +428,6 @@ class TrainState:
 
     @valid_transition
     def on_val_step_begin(self) -> None:
-        self.epoch_val_steps += 1
-        self.total_val_steps += 1
         self._current_time = time.time()
         self.new_state(TrainStateValStepBegin)
 
@@ -440,6 +439,8 @@ class TrainState:
         targets: torch.Tensor
     ) -> None:
         self.new_state(TrainStateValStepEnd)
+        self.epoch_val_steps += 1
+        self.total_val_steps += 1
         self._current_time = time.time()
         self._total_val_time += self.epoch_val_time
         self.val_metrics.update(preds, targets)
@@ -452,6 +453,7 @@ class TrainState:
 
     @valid_transition
     def on_epoch_end(self) -> None:
+        self.epoch += 1
         self._current_time = time.time()
         self.new_state(TrainStateEpochEnd)
 
@@ -506,9 +508,8 @@ class TrainState:
         value: Optional[int | float]
         if unit == PeriodUnit.EPOCHS:
             value = self.epoch
-
             if self._expected_train_steps is not None:
-                value += self._expected_train_steps / self.epoch_train_steps
+                value += self.epoch_train_steps / self._expected_train_steps
         elif unit == PeriodUnit.STEPS:
             value = self.total_train_steps
         elif unit == PeriodUnit.SECONDS:

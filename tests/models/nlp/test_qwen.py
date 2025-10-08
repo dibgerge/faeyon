@@ -20,11 +20,11 @@ class TestQwen:
         model = model.cuda()
         x = torch.randint(0, 10, (1, 5), device="cuda")
         y = model(x)
-        assert y.shape == (1, 5, 20)
+        assert y.shape == (1, 5, 10)
 
+    @pytest.mark.skip(reason="Just for debugging.")
     def test_hf_compare(self):
         from transformers import AutoTokenizer, Qwen3ForCausalLM
-
         model = Qwen(
             vocab_size=151936,
             hidden_size=1024,

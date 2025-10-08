@@ -108,14 +108,6 @@ class Recipe:
         self.callbacks.on_val_end(self.state)
         self.model.train(mode)
 
-    def _should_stop(self, stop_requested: bool, min_period: Period, max_period: Period) -> bool:
-        condition = (stop_requested and self.state > min_period) or self.state > max_period
-        # Avoid None condition
-        if condition:
-            return True
-        else:
-            return False
-
     def _data_iter(self, data: DataLoader):
         """
         Iterate over the data with lookahead to determine if the current batch is the last one.
@@ -172,27 +164,23 @@ class Recipe:
             max_period = Period.from_expr(max_period)
 
         next_val = self.val_period
-        data_iter = iter(train_data)
         self.state.on_train_begin(len(train_data))
         self.callbacks.on_train_begin(self.state)
         stop_requested = False
 
-        # while self.state <= max_period and not (stop_requested and self.state > min_period):
-
         for is_first, is_last, batch in self._data_iter(train_data):
-            print(self.state)
             stop: list[Optional[bool]] = []
 
             if is_first:
                 self.state.on_epoch_begin()
                 self.callbacks.on_epoch_begin(self.state)
 
-            self.state.on_train_step_begin(is_last)
+            self.state.on_train_step_begin()
             self.callbacks.on_train_step_begin(self.state)
             
             loss, preds, targets = self.train_step(batch)
             
-            self.state.on_train_step_end(loss, preds, targets)
+            self.state.on_train_step_end(loss, preds, targets, is_last)
             stop.append(self.callbacks.on_train_step_end(self.state))
             stop.append(self.callbacks.trigger(self.state))
 

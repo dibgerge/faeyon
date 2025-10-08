@@ -367,6 +367,7 @@ class TestClfMetricBase:
 
 
 class TestAccuracy:
+    # TODO: Test edge case when preds = [1] and targets = [1], I am getting an error.
 
     @pytest.mark.parametrize("kwargs, preds, targets, expected", [
         # Sparse task - (C, C) state
