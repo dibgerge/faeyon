@@ -2,6 +2,24 @@
 requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[project]
+name = "faeyon"
+version = "0.1.0"
+authors = [
+    {name = "George Dib"}
+]
+dependencies = [
+    "torch",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["faeyon*"]
+
+[tool.setuptools.package-data]
+faeyon = ["py.typed"]
+"faeyon.models.configs" = ["*.yaml", "*.yml"]
+
 
 [tool.ruff]
 line-length = 100

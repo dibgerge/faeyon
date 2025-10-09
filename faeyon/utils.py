@@ -1,6 +1,6 @@
 from collections import namedtuple
 import torch
-from typing import Optional
+from typing import Optional, Any
 
 
 ImageSize = namedtuple("ImageSize", ["height", "width"])
@@ -88,3 +88,18 @@ def is_inrange(x: torch.Tensor, min: Optional[float] = None, max: Optional[float
             return False
     
     return True
+
+
+class Singleton(type):
+    """
+    This is a singleton metaclass intended to be used as a metaclass for the `FaeMagic` class, 
+    so that we cannot create multiple instances of `FaeMagic`.
+    """
+    def __init__(self, *args, **kwargs) -> None:
+        self.__instance = None
+        super().__init__(*args, **kwargs)
+
+    def __call__(self, *args, **kwargs) -> Any:
+        if self.__instance is None:
+            self.__instance = super().__call__(*args, **kwargs)
+        return self.__instance

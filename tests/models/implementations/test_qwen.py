@@ -29,7 +29,7 @@ class TestQwen:
             vocab_size=151936,
             hidden_size=1024,
             num_heads=16,
-            num_heads_kv=8,
+            group_size=2,
             num_layers=28,
             dropout=0.0,
             intermediate_size=3072,
@@ -51,7 +51,7 @@ class TestQwen:
             tokenize=False,
 
             add_generation_prompt=True,
-            enable_thinking=True # Switches between thinking and non-thinking modes. Default is True.
+            enable_thinking=True
         )
         model_inputs = tokenizer([text], return_tensors="pt").to("cuda:0")
         y = model(model_inputs["input_ids"])

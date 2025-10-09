@@ -1,0 +1,7 @@
+_target_: faeyon.models.ViT
+embed_size: 768
+heads: 12
+image_size: [224, 224]
+patch_size: 16
+num_layers: 12
+mlp_size: 3072

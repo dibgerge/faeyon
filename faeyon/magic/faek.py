@@ -8,6 +8,8 @@ from collections.abc import Callable
 
 from .spells import Op, FList, FDict, A, X, FVar, binary_operators, unary_operators, Delayable
 
+from faeyon.utils import Singleton
+
 
 class FState:
     """ A simple container which generate fVar on demand. """
@@ -267,21 +269,6 @@ def delayed_binary_method[T: nn.Module](
         
         return NotImplemented
     return func
-
-
-class Singleton(type):
-    """
-    This is a singleton metaclass intended to be used as a metaclass for the `FaeMagic` class, 
-    so that we cannot create multiple instances of `FaeMagic`.
-    """
-    def __init__(self, *args, **kwargs) -> None:
-        self.__instance = None
-        super().__init__(*args, **kwargs)
-
-    def __call__(self, *args, **kwargs) -> Any:
-        if self.__instance is None:
-            self.__instance = super().__call__(*args, **kwargs)
-        return self.__instance
 
 
 class Faek(metaclass=Singleton):
