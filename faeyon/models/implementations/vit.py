@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from typing import Optional
-from faeyon.utils import ImageSize
+from faeyon.enums import ImageSize
 from faeyon.nn import (
     PosInterpEmbedding, 
     TokenizedMask, 

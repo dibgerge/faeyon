@@ -1,5 +1,3 @@
-import pytest
-from faeyon.models import load_model
 from faeyon.models.core import ModelConfigs, configs
 from torch import nn
 

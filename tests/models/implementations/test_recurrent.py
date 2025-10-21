@@ -2,7 +2,13 @@ import pytest
 import torch
 
 from torch import nn
-from faeyon.models.nlp import Encoder, Decoder, Seq2Seq, CellType, DefaultEmbedding
+from faeyon.models.implementations.recurrent import (
+    Encoder, 
+    Decoder, 
+    Seq2Seq, 
+    CellType, 
+    DefaultEmbedding
+)
 from faeyon.nn import AdditiveAttention
 
 

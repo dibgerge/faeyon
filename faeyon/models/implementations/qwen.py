@@ -66,7 +66,7 @@ class Qwen(nn.Module):
         self, 
         x: torch.LongTensor, 
         attn_mask: Optional[torch.Tensor] = None,
-        is_causal = True
+        is_causal: bool = True
     ) -> torch.Tensor:
          return (
             x 

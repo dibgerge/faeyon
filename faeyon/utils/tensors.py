@@ -1,31 +1,5 @@
-from collections import namedtuple
 import torch
-from typing import Optional, Any
-
-
-ImageSize = namedtuple("ImageSize", ["height", "width"])
-
-
-def is_ipython() -> bool:
-    try:
-        from IPython import get_ipython
-        return get_ipython() is not None
-    except ImportError:
-        return False
-
-
-def is_notebook():
-    try:
-        from IPython import get_ipython
-        shell = get_ipython().__class__.__name__
-        if shell == 'ZMQInteractiveShell':
-            return True   # Jupyter notebook or qtconsole
-        elif shell == 'TerminalInteractiveShell':
-            return False  # Terminal running IPython
-        else:
-            return False  # Other type (?)
-    except (NameError, ImportError):
-        return False      # Probably standard Python interpreter
+from typing import Optional
 
 
 def is_probability(x: torch.Tensor, dim: Optional[int] = None) -> bool:
@@ -89,17 +63,3 @@ def is_inrange(x: torch.Tensor, min: Optional[float] = None, max: Optional[float
     
     return True
 
-
-class Singleton(type):
-    """
-    This is a singleton metaclass intended to be used as a metaclass for the `FaeMagic` class, 
-    so that we cannot create multiple instances of `FaeMagic`.
-    """
-    def __init__(self, *args, **kwargs) -> None:
-        self.__instance = None
-        super().__init__(*args, **kwargs)
-
-    def __call__(self, *args, **kwargs) -> Any:
-        if self.__instance is None:
-            self.__instance = super().__call__(*args, **kwargs)
-        return self.__instance

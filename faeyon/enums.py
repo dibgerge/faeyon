@@ -1,4 +1,8 @@
 from enum import Flag, auto, StrEnum
+from collections import namedtuple
+
+
+ImageSize = namedtuple("ImageSize", ["height", "width"])
 
 
 class ClfTask(StrEnum):
