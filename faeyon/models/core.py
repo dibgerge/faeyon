@@ -156,14 +156,17 @@ def _read_config(name: str, trust_code: bool = False, **kwargs: Any) -> tuple[di
 def _read_yaml(name: str, trust_code: bool = False, **kwargs: Any) -> tuple[Any, Optional[str]]:
     loader = yaml.Loader if trust_code else yaml.SafeLoader
 
-    try:
-        with fsspec.open(name, "r", **kwargs) as f:
-            data = yaml.load(f, Loader=loader)
-    except FileNotFoundError as e:
-        config = BuiltinConfigs()
-        if not config.valid(name):
-            raise e
-        data = config.read(name)
+    if isinstance(name, str):
+        try:
+            with fsspec.open(name, "r", **kwargs) as f:
+                data = yaml.load(f, Loader=loader)
+        except FileNotFoundError as e:
+            config = BuiltinConfigs()
+            if not config.valid(name):
+                raise e
+            data = config.read(name)
+    else:
+        data = yaml.load(name, Loader=loader)
 
     output = _parse_config(data)
 
@@ -174,6 +177,32 @@ def _read_yaml(name: str, trust_code: bool = False, **kwargs: Any) -> tuple[Any,
 
     return output, state_file
 
+
+def _read_pt(
+    name: str, 
+    cache: bool = True, 
+    **kwargs: Any
+) -> tuple[Any, Optional[str]]:
+    fs, remote_path = fsspec.core.url_to_fs(name, **kwargs)
+    protocol = getattr(fs, "protocol", None)
+    if isinstance(protocol, (tuple, list)):
+        protocol = protocol[0]
+    is_remote = protocol not in (None, "file", "local")
+
+    # Only wrap with filecache if protocol is remote and caching is desired
+    if is_remote and cache:
+        fs = fsspec.filesystem(
+            "filecache",
+            target_protocol=fs,
+            cache_storage=cache_dir(),
+            check_files=True,
+            expiry_time=None,
+        )
+
+    with fs.open(name, "rb", **kwargs) as f:
+        data = torch.load(f)
+
+    return data
 
 
 def load(
@@ -196,99 +225,41 @@ def load(
     load(model, "weights_path.pt") -- should only contain the state dict
     load(ModelClass, "model.pt"/model.yaml) -- should only contain the state dict
     """
-    loader = yaml.Loader if trust_code else yaml.SafeLoader
+    if isinstance(name, str):
+        if state_file is not None:
+            raise ValueError("`state_file` is not supported when `name` is a string.")
 
-    fs, remote_path = fsspec.core.url_to_fs(name, **kwargs)
+        try:
+            model, state_file = _read_yaml(name, trust_code, **kwargs)
 
-    # Determine whether the protocol is remote (i.e., not 'file')
-    protocol = getattr(fs, "protocol", None)
-    if isinstance(protocol, (tuple, list)):
-        protocol = protocol[0]
-    is_remote = protocol not in (None, "file", "local")
+            if not isinstance(model, nn.Module):
+                raise ValueError(f"Expected a model, but got a {model.__class__.__name__}.")
+            
+            # Precendence over the state file in the yaml file, if any
+            if isinstance(load_state, str):
+                state_file = load_state
 
-    # Only wrap with filecache if protocol is remote and caching is desired
-    if is_remote and cache:
-        fs = fsspec.filesystem(
-            "filecache",
-            target_protocol=fs,
-            cache_storage=cache_dir(),
-            check_files=True,
-            expiry_time=None,
-        )
+            if load_state:
+                if state_file is None:
+                    raise ValueError(
+                        "No state file found in the yaml file. Please provide a path for the state "
+                        "file, or update the YAML file to include the state file path."
+                    )
 
-    try:
-        with fs.open(name, "r", **kwargs) as f:
-            try:
-                data = torch.load(f)
+                state = _read_pt(state_file, trust_code, cache, **kwargs)
+                model.load_state_dict(state)
 
-                config = data.get("config")
-                state = data.get("state")
+        except yaml.YAMLError as e:
+            data = _read_pt(name, trust_code, cache, **kwargs)
 
-                model = _parse_config(config, force_class=True)
+            # Read the state from the pt file
+            data["_config_"]
 
-                if not isinstance(load_state, str) and load_state:
-                    model.load_state_dict(state)
-                return model
-
-            except UnpicklingError as e:
-                data = yaml.load(f, Loader=loader)
-    except FileNotFoundError as e:
-        config = BuiltinConfigs()
-        
-        if not config.valid(name):
-            raise e
-
-        return config.read(name)
-
-
-
-
-
-
-    dumper = yaml.Dumper if trust_code else yaml.SafeDumper
-    if is_yaml(name):
-        with fsspec.open(name, "r", **kwargs) as f:
-            cfg = yaml.load(f, Loader=dumper)
-
-
-    else:
-    cfg, is_builtin = _read_config(name)
-    keys = set(cfg.keys())
-
-    model = _parse_config(model_cfg, force_class=True)
-
-    if pretrained:
-        # TODO
-        # Find model in the hub, download it and load the weights
-        #from huggingface_hub import hf_hub_download, snapshot_download
-
-        if is_builtin:
-            name = f"hf://dibgerges/faeyon/{name}"
-        
-        fs, remote_path = fsspec.core.url_to_fs(name, **kwargs)
-
-        # Determine whether the protocol is remote (i.e., not 'file')
-        protocol = getattr(fs, "protocol", None)
-        if isinstance(protocol, (tuple, list)):
-            protocol = protocol[0]
-        is_remote = protocol not in (None, "file", "local")
-
-        # Only wrap with filecache if protocol is remote and caching is desired
-        if is_remote and cache:
-            fs = fsspec.filesystem(
-                "filecache",
-                target_protocol=fs,
-                cache_storage=cache_dir(),
-                check_files=True,
-                expiry_time=None,
-            )
-
-        with fs.open(remote_path) as f:
-            state_dict = torch.load(f)
-            model.load_state_dict(state_dict)
+    elif isinstance(name, nn.Module):
+        if isinstance(load_state, str):
+            pass
 
     return model
-
 
 class FaeModel(nn.Module):
     """
@@ -358,28 +329,32 @@ class FaeModel(nn.Module):
             "_target_": target,
             "_args_": args,
             "_kwargs_": kwargs,
+            "_meta_": {}
         }
 
         dumper = yaml.Dumper if trust_code else yaml.SafeDumper
 
         if is_yaml:
             if isinstance(save_state, str):
-                config["_state_"] = save_state
+                config["_meta_"]["state_file"] = save_state
             elif save_state:
-                config["_state_"] = f"{base_file}.pt"
-            
+                config["_meta_"]["state_file"] = f"{base_file}.pt"
+
             with fsspec.open(file_name, "w") as f:
                 yaml.dump(config, f, Dumper=dumper)
 
-            with fsspec.open(config["_state_"], "wb") as f:
-                torch.save(self.state_dict(), f)
+            state_file = config["_meta_"].get("state_file")
+
+            if state_file is not None:
+                with fsspec.open(state_file, "wb") as f:
+                    torch.save(self.state_dict(), f)
 
             return None
 
         else:
             output = {
-                "config": yaml.dump(config, Dumper=dumper),
-                "state": self.state_dict(),   
+                "_config_": yaml.dump(config, Dumper=dumper),
+                "_state_": self.state_dict(),   
             }
 
             if file_name is not None:
