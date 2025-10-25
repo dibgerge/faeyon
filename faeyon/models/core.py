@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+from pickle import UnpicklingError
 import re
 import torch
 import yaml
@@ -11,18 +12,15 @@ from pathlib import Path
 from typing import Optional, IO, Generator, Any
 from faeyon.utils import Singleton
 from faeyon.utils.io import cache_dir
+from faeyon import A
 
 
-YAML_TYPES = (str, int, float, bool, type(None), list, dict)
+def is_yaml(file_name: str) -> bool:
+    """ 
+    Checks if the file extension is for a YAML file.
+    """
+    return os.path.splitext(file_name)[1].lower() in [".yml", ".yaml"]
 
-
-class ModelConfig:
-    def __init__(self, name: str):
-        pass
-
-    def is_builtin(self) -> bool:
-        pass
-    
 
 class BuiltinConfigs:
     """
@@ -42,9 +40,10 @@ class BuiltinConfigs:
             )
         return self.traversable.joinpath(name).open("r")
 
-    def read(self, name: str) -> dict[str, Any]:
+    def read(self, name: str, trust_code: bool = False) -> dict[str, Any]:
+        loader = yaml.Loader if trust_code else yaml.SafeLoader
         with self.open(name) as f:
-            return yaml.safe_load(f)
+            return yaml.load(f, Loader=loader)
 
     def ls(self) -> Generator[str, None, None]:
         for base, _, files in self.traversable.walk():  # type: ignore[attr-defined]
@@ -62,6 +61,54 @@ class BuiltinConfigs:
         return not (is_absolute or has_dots or has_protocol)
 
 
+def _parse_dict(cfg: dict[str, Any]) -> Any:
+    try:
+        target = cfg.pop("_target_")
+    except KeyError:
+        return {k: _parse_config(v) for k, v in cfg.items()}
+
+    args, kwargs, other = [], {}, {}
+    target = None
+    for k, v in cfg.items():
+        match k:
+            case "_args_":
+                if not isinstance(v, list):
+                    raise ValueError("'_args_' must be a list of arguments.")
+                args = [_parse_config(arg) for arg in v]
+
+            case "_kwargs_":
+                if not isinstance(v, dict):
+                    raise ValueError("'_kwargs_' must be a dict of keyword arguments.")
+                for kwarg, kwval in v.items():
+                    kwargs[kwarg] = _parse_config(kwval)
+
+            case "_target_":
+                target = v
+
+            # _meta_ is not used by the parser
+            case "_meta_":
+                pass
+
+            case _:
+                other[k] = _parse_config(v)
+
+    if target is not None:
+        mod_name, cls_name = target.rsplit(".", 1)
+        mod = importlib.import_module(mod_name)
+        cls = getattr(mod, cls_name)
+        
+        # All remaining keys are treated as keyword arguments
+        if other:
+            kwargs.update(other)
+
+        return cls(*args, **kwargs) 
+    else:
+        if args or kwargs:
+            return A(*args, **kwargs, **other)
+        
+        return other
+
+
 def _parse_config(cfg: Any, force_class: bool = False) -> Any:
     """
     Parse a configuration section recursively and return loaded objects. 
@@ -72,85 +119,143 @@ def _parse_config(cfg: Any, force_class: bool = False) -> Any:
 
     match cfg:
         case dict():
-            try:
-                target = cfg.pop("_target_")
-            except KeyError:
-                return {k: _parse_config(v) for k, v in cfg.items()}
-
-            args, kwargs = [], {}
-
-            if "_args_" in cfg:
-                if not isinstance(cfg["_args_"], list):
-                    raise ValueError("'_args_' must be a list of arguments.")
-                args = [_parse_config(arg) for arg in cfg["_args_"]]
-
-            if "_kwargs_" in cfg:
-                if not isinstance(cfg["_kwargs_"], dict):
-                    raise ValueError("'_kwargs_' must be a dict of keyword arguments.")
-
-                for k, v in cfg["_kwargs_"].items():
-                    kwargs[k] = _parse_config(v)
-
-            # All remaining keys are treated as keyword arguments
-            for k, v in cfg.items():
-                kwargs[k] = _parse_config(v)
-
-            mod_name, cls_name = target.rsplit(".", 1)
-            mod = importlib.import_module(mod_name)
-
-            cls = getattr(mod, cls_name)
-            return cls(*args, **kwargs) 
-
+            return _parse_dict(cfg)
         case list():
             return [_parse_config(item) for item in cfg]
-
         case _:
             return cfg
 
 
-def _read_config(name: str) -> tuple[dict[str, Any], bool]:
+def _read_config(name: str, trust_code: bool = False, **kwargs: Any) -> tuple[dict[str, Any], bool]:
     """
-    A given name can either be a local path, a remote URL/filesystem path, or a file in the package configs. The lookup logic is as follows:
-    * If path is normalized (no . or .. segments, or trailing slash/protocol), look in current working directory. If not found, look in package configs.
+    A given name can either be a local path, a remote URL/filesystem path, or a file in the 
+    package configs. The lookup logic is as follows:
+    * If path is normalized (no . or .. segments, or trailing slash/protocol), look in current 
+      working directory. If not found, look in package configs.
     * Otherwise lookup with fsspec.
-
 
     Returns a configuration file and a boolean indicating if the file is a builtin config.
     """
+    # loader = yaml.Loader if trust_code else yaml.SafeLoader
+
+    # try:
+    #     with fsspec.open(name, "r", **kwargs) as f:
+    #         try:
+    #             data = torch.load(f)
+    #         except UnpicklingError as e:
+    #             data = yaml.load(f, Loader=loader)
+    # except FileNotFoundError as e:
+    #     config = BuiltinConfigs()
+        
+    #     if not config.valid(name):
+    #         raise e
+
+    #     return config.read(name)
+
+
+def _read_yaml(name: str, trust_code: bool = False, **kwargs: Any) -> tuple[Any, Optional[str]]:
+    loader = yaml.Loader if trust_code else yaml.SafeLoader
 
     try:
-        with fsspec.open(name, "r") as f:
-            return yaml.safe_load(f), False
+        with fsspec.open(name, "r", **kwargs) as f:
+            data = yaml.load(f, Loader=loader)
+    except FileNotFoundError as e:
+        config = BuiltinConfigs()
+        if not config.valid(name):
+            raise e
+        data = config.read(name)
+
+    output = _parse_config(data)
+
+    if "_meta_" in data:
+        state_file = data["_meta_"].get("state_file")
+    else:
+        state_file = None
+
+    return output, state_file
+
+
+
+def load(
+    name: str | nn.Module | type[nn.Module],
+    load_state: bool | str = True,
+    state_file: str | None = None,
+    /,
+    cache: bool = True,
+    trust_code: bool = False,
+    **kwargs: Any
+) -> nn.Module:
+    """
+    Loads a model from a YAML configuration file or a pytorch serialized file. Can also be a 
+    builtin model configuration, which is a YAML file in the package configs.
+
+    Usages
+    load("model.yaml", "weights_path.pt") -- should contain the state dict
+    load("model.yaml", True/False) -- path to the weights file in yaml if True
+    load("model.pt", True/False) -- should contain both {state, config} keys
+    load(model, "weights_path.pt") -- should only contain the state dict
+    load(ModelClass, "model.pt"/model.yaml) -- should only contain the state dict
+    """
+    loader = yaml.Loader if trust_code else yaml.SafeLoader
+
+    fs, remote_path = fsspec.core.url_to_fs(name, **kwargs)
+
+    # Determine whether the protocol is remote (i.e., not 'file')
+    protocol = getattr(fs, "protocol", None)
+    if isinstance(protocol, (tuple, list)):
+        protocol = protocol[0]
+    is_remote = protocol not in (None, "file", "local")
+
+    # Only wrap with filecache if protocol is remote and caching is desired
+    if is_remote and cache:
+        fs = fsspec.filesystem(
+            "filecache",
+            target_protocol=fs,
+            cache_storage=cache_dir(),
+            check_files=True,
+            expiry_time=None,
+        )
+
+    try:
+        with fs.open(name, "r", **kwargs) as f:
+            try:
+                data = torch.load(f)
+
+                config = data.get("config")
+                state = data.get("state")
+
+                model = _parse_config(config, force_class=True)
+
+                if not isinstance(load_state, str) and load_state:
+                    model.load_state_dict(state)
+                return model
+
+            except UnpicklingError as e:
+                data = yaml.load(f, Loader=loader)
     except FileNotFoundError as e:
         config = BuiltinConfigs()
         
         if not config.valid(name):
             raise e
 
-        return config.read(name), True
+        return config.read(name)
 
 
-def load(
-    name: str,
-    pretrained: bool | str = False,
-    cache: bool = True,
-    **kwargs: Any
-) -> nn.Module:
+
+
+
+
+    dumper = yaml.Dumper if trust_code else yaml.SafeDumper
+    if is_yaml(name):
+        with fsspec.open(name, "r", **kwargs) as f:
+            cfg = yaml.load(f, Loader=dumper)
+
+
+    else:
     cfg, is_builtin = _read_config(name)
     keys = set(cfg.keys())
 
-    if "_model_" in cfg:
-        model_cfg = cfg["_model_"]
-    else:
-        model_cfg = cfg
-
     model = _parse_config(model_cfg, force_class=True)
-    if "_model_" not in keys or keys == {"_model_"}:
-        return model
-
-    if keys != {"_model_", "_optimizer_", "_dataloader_"}:
-        # TODO: Implement recipe loading
-        raise ValueError(f"Trying to load a recipe here...")
 
     if pretrained:
         # TODO
