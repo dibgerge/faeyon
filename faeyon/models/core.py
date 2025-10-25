@@ -1,14 +1,25 @@
+from __future__ import annotations
 import os
 import re
 import torch
 import yaml
+import fsspec
 import importlib
 from torch import nn
 from importlib import resources
 from pathlib import Path
-from typing import Optional, IO, Generator
+from typing import Optional, IO, Generator, Any
 from faeyon.utils import Singleton
+from faeyon.utils.io import cache_dir
 
+
+class ModelConfig:
+    def __init__(self, name: str):
+        pass
+
+    def is_builtin(self) -> bool:
+        pass
+    
 
 class BuiltinConfigs:
     """
@@ -21,11 +32,16 @@ class BuiltinConfigs:
         self.traversable = resources.files(__package__).joinpath("configs")
 
     def open(self, name: str) -> IO[str]:
+        if not self.valid(name):
+            raise ValueError(
+                f"Invalid builtin config path: {name}. The path should not be an absolute path, "
+                f"contain . or .. sections, or start with a protocol like protocol://."
+            )
         return self.traversable.joinpath(name).open("r")
 
-    def read(self, name: str) -> str:
+    def read(self, name: str) -> dict[str, Any]:
         with self.open(name) as f:
-            return f.read()
+            return yaml.safe_load(f)
 
     def ls(self) -> Generator[str, None, None]:
         for base, _, files in self.traversable.walk():  # type: ignore[attr-defined]
@@ -34,121 +50,150 @@ class BuiltinConfigs:
                 if ext not in [".yml", ".yaml"]:
                     continue
 
-                yield base / file
+                yield base / key
 
-    # @property
-    # def files(self) -> dict[str, Path]:
-    #     if self._files is not None:
-    #         return self._files
+    def valid(self, name: str) -> bool:
+        has_protocol = "://" in name.split("/")[0]
+        is_absolute = os.path.isabs(name)
+        has_dots = any(part in ('.', '..') for part in Path(name).parts)
+        return not (is_absolute or has_dots or has_protocol)
 
-    #     self._files = {}
 
-        
-
-            
-    #     return self._files
-    
-
-class ModelConfigs(metaclass=Singleton):
+def _parse_config(cfg: Any, force_class: bool = False) -> Any:
     """
-    Base class for all model configurations.
+    Parse a configuration section recursively and return loaded objects. 
     """
-   
+    if force_class:
+        if not isinstance(cfg, dict) or "_target_" not in cfg:
+            raise ValueError("Config must be a dict with a _target_ key.")
 
-    def __getitem__(self, name: str) -> dict:
-        # Check for remote URLs (e.g., s3://, etc.)
-        if re.match(r"^\w+://", name):
-            # TODO: Make sure fsspec is installed
-            import fsspec            
-            file_obj = fsspec.open(name, "r")
-        # Check if it's a path (has '/' or is a file in current directory)
-        elif "/" in name or os.path.isfile(name):
-            path = Path(name)
-            if not path.is_file():
-                raise FileNotFoundError(f"Could not find the config file at {name}.")
-            file_object = path.open("r")
-        # Else, load from the package configs
-        else:
-            file_object = self.files[name].open()
-        
-        with file_object as f:
-            return yaml.safe_load(f)
-
-    def _instantiate_config(self, cfg, force_class: bool = False):
-        if force_class:
-            if not isinstance(cfg, dict) or "_target_" not in cfg:
-                raise ValueError("Config must be a dict with a _target_ key.")
-                
-        if isinstance(cfg, dict):
+    match cfg:
+        case dict():
             try:
                 target = cfg.pop("_target_")
             except KeyError:
-                return {k: self._instantiate_config(v) for k, v in cfg.items()}
+                return {k: _parse_config(v) for k, v in cfg.items()}
 
             args, kwargs = [], {}
 
             if "_args_" in cfg:
                 if not isinstance(cfg["_args_"], list):
                     raise ValueError("'_args_' must be a list of arguments.")
-                args = [self._instantiate_config(arg) for arg in cfg.pop("_args_")]
+                args = [_parse_config(arg) for arg in cfg["_args_"]]
 
             if "_kwargs_" in cfg:
                 if not isinstance(cfg["_kwargs_"], dict):
                     raise ValueError("'_kwargs_' must be a dict of keyword arguments.")
 
-                for k, v in cfg.pop("_kwargs_").items():
-                    kwargs[k] = self._instantiate_config(v)
+                for k, v in cfg["_kwargs_"].items():
+                    kwargs[k] = _parse_config(v)
 
             # All remaining keys are treated as keyword arguments
             for k, v in cfg.items():
-                kwargs[k] = self._instantiate_config(v)
+                kwargs[k] = _parse_config(v)
 
             mod_name, cls_name = target.rsplit(".", 1)
             mod = importlib.import_module(mod_name)
 
             cls = getattr(mod, cls_name)
-            return cls(*args, **kwargs)
-        elif isinstance(cfg, list):
-            return [self._instantiate_config(item) for item in cfg]
-        else:
+            return cls(*args, **kwargs) 
+
+        case list():
+            return [_parse_config(item) for item in cfg]
+
+        case _:
             return cfg
 
-    def load_model(
-        self,
-        name: str,
-        pretrained: bool = False
-    ) -> nn.Module:
 
-        model = self._instantiate_config(self[name], force_class=True)
+def _read_config(name: str) -> tuple[dict[str, Any], bool]:
+    """
+    A given name can either be a local path, a remote URL/filesystem path, or a file in the package configs. The lookup logic is as follows:
+    * If path is normalized (no . or .. segments, or trailing slash/protocol), look in current working directory. If not found, look in package configs.
+    * Otherwise lookup with fsspec.
 
-        if pretrained:
-            # TODO
-            # Find model in the hub, download it and load the weights
-            from huggingface_hub import hf_hub_download, snapshot_download
-            model.load_pretrained(name)
 
+    Returns a configuration file and a boolean indicating if the file is a builtin config.
+    """
+
+    try:
+        with fsspec.open(name, "r") as f:
+            return yaml.safe_load(f), False
+    except FileNotFoundError as e:
+        config = BuiltinConfigs()
+        
+        if not config.valid(name):
+            raise e
+
+        return config.read(name), True
+
+
+def load(
+    name: str,
+    pretrained: bool | str = False,
+    cache: bool = True,
+    **kwargs: Any
+) -> nn.Module:
+    cfg, is_builtin = _read_config(name)
+    keys = set(cfg.keys())
+
+    if "_model_" in cfg:
+        model_cfg = cfg["_model_"]
+    else:
+        model_cfg = cfg
+
+    model = _parse_config(model_cfg, force_class=True)
+    if "_model_" not in keys or keys == {"_model_"}:
         return model
 
-    def save_model(self, model: nn.Module, name: str, path: str) -> None:
-        """
-        Save the model to a file.
-        """
-        model.save_pretrained(path)
-        model.push_to_hub(name)
+    if keys != {"_model_", "_optimizer_", "_dataloader_"}:
+        # TODO: Implement recipe loading
+        raise ValueError(f"Trying to load a recipe here...")
+
+    if pretrained:
+        # TODO
+        # Find model in the hub, download it and load the weights
+        #from huggingface_hub import hf_hub_download, snapshot_download
+
+        if is_builtin:
+            name = f"hf://dibgerges/faeyon/{name}"
+        
+        fs, remote_path = fsspec.core.url_to_fs(name, **kwargs)
+
+        # Determine whether the protocol is remote (i.e., not 'file')
+        protocol = getattr(fs, "protocol", None)
+        if isinstance(protocol, (tuple, list)):
+            protocol = protocol[0]
+        is_remote = protocol not in (None, "file", "local")
+
+        # Only wrap with filecache if protocol is remote and caching is desired
+        if is_remote and cache:
+            fs = fsspec.filesystem(
+                "filecache",
+                target_protocol=fs,
+                cache_storage=cache_dir(),
+                check_files=True,
+                expiry_time=None,
+            )
+
+        with fs.open(remote_path) as f:
+            state_dict = torch.load(f)
+            model.load_state_dict(state_dict)
+
+    return model
 
 
 class FaeModel(nn.Module):
     """
     Base class for all Faeyon model, which allows to save and load the model.
     """
-    def save(self, path: str) -> None:
+    def save(self, file_name: Optional[str] = None, config_only: bool = False) -> None:
         """
         Save the model to a file.
         """
         name = self.__class__.name
         state = self.state_dict()
 
-        # Need to save configuration of the model, 
+        self._arguments
     
         output = {
             "model":{
@@ -157,12 +202,37 @@ class FaeModel(nn.Module):
             }
         }
 
-        torch.save(output, path)
-        from huggingface_hub import snapshot_download, hf_hub_download
+    @classmethod
+    def from_config(cls, name: str) -> FaeModel:
+        """
+        Loads a model from a YAML configuration file.
+        """
+        cfg, is_builtin = _read_config(name)
+        keys = set(cfg.keys())
 
-    def init_weights(self, pretrained: bool = False) -> None:
+        if "_model_" in cfg:
+            model_cfg = cfg["_model_"]
+        else:
+            model_cfg = cfg
+
+        parsed_cfg = _parse_config(model_cfg, force_class=False)
+
+        if isinstance(parsed_cfg, nn.Module):
+            if not isinstance(parsed_cfg, cls):
+                raise ValueError(
+                    f"Expected a {cls.__name__} model, but got a {parsed_cfg.__class__.__name__} model."
+                )
+            return parsed_cfg
+        
+        # TODO: use `A` to represent an arguments object.
+        if isinstance(parsed_cfg, dict):
+            return cls(**parsed_cfg)
+
+    def load(self, path: str, strict: bool = True, assign: bool = False) -> None:
+        with fsspec.open(path, "rb") as f:
+            state_dict = torch.load(f)
+            self.load_state_dict(state_dict, strict=strict, assign=assign)
+
+    def init_weights(self, initializer: str) -> None:
         pass
 
-
-configs = ModelConfigs()
-load_model = configs.load_model
