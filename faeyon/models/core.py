@@ -13,6 +13,9 @@ from faeyon.utils import Singleton
 from faeyon.utils.io import cache_dir
 
 
+YAML_TYPES = (str, int, float, bool, type(None), list, dict)
+
+
 class ModelConfig:
     def __init__(self, name: str):
         pass
@@ -186,21 +189,100 @@ class FaeModel(nn.Module):
     """
     Base class for all Faeyon model, which allows to save and load the model.
     """
-    def save(self, file_name: Optional[str] = None, config_only: bool = False) -> None:
+    def save(
+        self, 
+        file_name: Optional[str] = None, 
+        save_state: bool | str = True, 
+        trust_code: bool = False
+    ) -> Optional[dict[str, Any]]:
         """
-        Save the model to a file.
-        """
-        name = self.__class__.name
-        state = self.state_dict()
+        Save the model to a file, including information to load the model later.
 
-        self._arguments
-    
-        output = {
-            "model":{
-                "name": name,
-                "state": state,
-            }
+        Parameters
+        ----------
+        file_name : str, optional
+            If the file name is not given, then the model saved state and configuration will be 
+            returned as a string.
+
+            If file_name extension is .yml or .yaml, then the model configuration only will be saved 
+            to the file. Otherwise, use `torch.save` to save the model state (if requested) and 
+            configuration to the file.
+        
+        save_state : bool or str, optional
+            If `True`, then the model state will be saved to the file if it is a pytorch 
+            serialized file. If file_name is yaml, then the model state will be saved as a file 
+            with same name but with .pt extension in the same directory.
+            
+            A string is allowed only if file_name is yaml, in which case the string should be the 
+            name of the file to save the model state to.
+
+        trust_code : bool, optional
+            If `True`, then the code will be trusted and the model configuration can saved 
+            unknown objects.If `False`, then the model configuration will be saved as a YAML string
+            using safe_dump.
+        """
+        if file_name is not None:
+            base_file, ext = os.path.splitext(file_name)
+            is_yaml =  ext.lower() in [".yml", ".yaml"]
+        else:
+            is_yaml = False
+            base_file = None
+
+        if not is_yaml and isinstance(save_state, str):
+            raise ValueError(
+                "If `file_name` does have have a yaml extension, then save_state must be a boolean."
+            )
+                
+        target = f"{self.__class__.__module__}.{self.__class__.__name__}"
+
+        args = []
+        for arg in self._arguments.args:
+            if isinstance(arg, nn.Module):
+                args.append(arg.save())
+            else:
+                args.append(arg)
+
+        kwargs = {}
+        for k, v in self._arguments.kwargs.items():
+            if isinstance(v, nn.Module):
+                kwargs[k] = v.save()
+            else:
+                kwargs[k] = v
+        
+        config = {
+            "_target_": target,
+            "_args_": args,
+            "_kwargs_": kwargs,
         }
+
+        dumper = yaml.Dumper if trust_code else yaml.SafeDumper
+
+        if is_yaml:
+            if isinstance(save_state, str):
+                config["_state_"] = save_state
+            elif save_state:
+                config["_state_"] = f"{base_file}.pt"
+            
+            with fsspec.open(file_name, "w") as f:
+                yaml.dump(config, f, Dumper=dumper)
+
+            with fsspec.open(config["_state_"], "wb") as f:
+                torch.save(self.state_dict(), f)
+
+            return None
+
+        else:
+            output = {
+                "config": yaml.dump(config, Dumper=dumper),
+                "state": self.state_dict(),   
+            }
+
+            if file_name is not None:
+                with fsspec.open(file_name, "wb") as f:
+                    torch.save(output, f)
+
+            return output
+
 
     @classmethod
     def from_config(cls, name: str) -> FaeModel:
