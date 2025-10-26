@@ -1,7 +1,6 @@
 from __future__ import annotations
+import io
 import os
-from pickle import UnpicklingError
-import re
 import torch
 import yaml
 import fsspec
@@ -9,8 +8,7 @@ import importlib
 from torch import nn
 from importlib import resources
 from pathlib import Path
-from typing import Optional, IO, Generator, Any
-from faeyon.utils import Singleton
+from typing import Optional, Generator, Any
 from faeyon.utils.io import cache_dir
 from faeyon import A
 
@@ -126,34 +124,11 @@ def _parse_config(cfg: Any, force_class: bool = False) -> Any:
             return cfg
 
 
-def _read_config(name: str, trust_code: bool = False, **kwargs: Any) -> tuple[dict[str, Any], bool]:
-    """
-    A given name can either be a local path, a remote URL/filesystem path, or a file in the 
-    package configs. The lookup logic is as follows:
-    * If path is normalized (no . or .. segments, or trailing slash/protocol), look in current 
-      working directory. If not found, look in package configs.
-    * Otherwise lookup with fsspec.
-
-    Returns a configuration file and a boolean indicating if the file is a builtin config.
-    """
-    # loader = yaml.Loader if trust_code else yaml.SafeLoader
-
-    # try:
-    #     with fsspec.open(name, "r", **kwargs) as f:
-    #         try:
-    #             data = torch.load(f)
-    #         except UnpicklingError as e:
-    #             data = yaml.load(f, Loader=loader)
-    # except FileNotFoundError as e:
-    #     config = BuiltinConfigs()
-        
-    #     if not config.valid(name):
-    #         raise e
-
-    #     return config.read(name)
-
-
-def _read_yaml(name: str, trust_code: bool = False, **kwargs: Any) -> tuple[Any, Optional[str]]:
+def _read_yaml(
+    name: str | io.IOBase, 
+    trust_code: bool = False, 
+    **kwargs: Any
+) -> tuple[Any, Optional[str]]:
     loader = yaml.Loader if trust_code else yaml.SafeLoader
 
     if isinstance(name, str):
@@ -165,7 +140,7 @@ def _read_yaml(name: str, trust_code: bool = False, **kwargs: Any) -> tuple[Any,
             if not config.valid(name):
                 raise e
             data = config.read(name)
-    else:
+    elif isinstance(name, io.IOBase):
         data = yaml.load(name, Loader=loader)
 
     output = _parse_config(data)
@@ -182,7 +157,7 @@ def _read_pt(
     name: str, 
     cache: bool = True, 
     **kwargs: Any
-) -> tuple[Any, Optional[str]]:
+) -> dict[str, Any]:
     fs, remote_path = fsspec.core.url_to_fs(name, **kwargs)
     protocol = getattr(fs, "protocol", None)
     if isinstance(protocol, (tuple, list)):
@@ -205,10 +180,58 @@ def _read_pt(
     return data
 
 
+def _load_from_files(
+    config_file: str, 
+    load_state: bool | str = True, 
+    trust_code: bool = False,
+    cache: bool = True,
+    module: Optional[type[nn.Module]] = None,
+    **kwargs: Any
+) -> nn.Module:
+   
+    try:
+        parsed, state_file = _read_yaml(config_file, trust_code, **kwargs)
+        state = None
+
+    except yaml.YAMLError as e:
+        data = _read_pt(config_file, cache, **kwargs)
+
+        # Read the state from the pt file
+        parsed, state_file = _read_yaml(io.StringIO(data["_config_"]))
+        state = data["_state_"]
+    
+    if isinstance(parsed, A):
+        if module is None:
+            raise ValueError(f"Expected a model, but got a {model.__class__.__name__}.")
+        
+        model = parsed.call(module)
+    elif isinstance(parsed, nn.Module):
+        model = parsed
+    else:
+        raise ValueError(f"Expected a model, but got a {parsed.__class__.__name__}.")
+
+    # Precendence over the state file in the yaml file, if any
+    if isinstance(load_state, str):
+        state_file = load_state
+
+    if load_state:
+        if state_file is None:
+            raise ValueError(
+                "No state file found in the yaml file. Please provide a path for the state "
+                "file, or update the YAML file to include the state file path."
+            )
+        state = _read_pt(state_file, cache, **kwargs)
+
+    if state is not None:
+        model.load_state_dict(state)
+
+    return model
+
+
 def load(
-    name: str | nn.Module | type[nn.Module],
+    name: str | nn.Module,
     load_state: bool | str = True,
-    state_file: str | None = None,
+    module: Optional[type[nn.Module]] = None,
     /,
     cache: bool = True,
     trust_code: bool = False,
@@ -226,44 +249,35 @@ def load(
     load(ModelClass, "model.pt"/model.yaml) -- should only contain the state dict
     """
     if isinstance(name, str):
-        if state_file is not None:
-            raise ValueError("`state_file` is not supported when `name` is a string.")
-
-        try:
-            model, state_file = _read_yaml(name, trust_code, **kwargs)
-
-            if not isinstance(model, nn.Module):
-                raise ValueError(f"Expected a model, but got a {model.__class__.__name__}.")
-            
-            # Precendence over the state file in the yaml file, if any
-            if isinstance(load_state, str):
-                state_file = load_state
-
-            if load_state:
-                if state_file is None:
-                    raise ValueError(
-                        "No state file found in the yaml file. Please provide a path for the state "
-                        "file, or update the YAML file to include the state file path."
-                    )
-
-                state = _read_pt(state_file, trust_code, cache, **kwargs)
-                model.load_state_dict(state)
-
-        except yaml.YAMLError as e:
-            data = _read_pt(name, trust_code, cache, **kwargs)
-
-            # Read the state from the pt file
-            data["_config_"]
+        return _load_from_files(
+            config_file=name, 
+            load_state=load_state,
+            module=module,
+            cache=cache, 
+            trust_code=trust_code, 
+            **kwargs
+        )
 
     elif isinstance(name, nn.Module):
-        if isinstance(load_state, str):
-            pass
+        if not isinstance(load_state, str):
+            raise ValueError("`load_state` must be a string if `name` is a model.")
+    
+        if module is not None:
+            raise ValueError("`module` is not supported when `name` is a model instance.")
 
-    return model
+        state = _read_pt(load_state, cache, **kwargs)
+        name.load_state_dict(state)
+        return name
+    else:
+        raise ValueError(
+            f"`name` expected a string or `nn.Module` instance, but got a "
+            f" {name.__class__.__name__}."
+        )
+
 
 class FaeModel(nn.Module):
     """
-    Base class for all Faeyon model, which allows to save and load the model.
+    Base class for all Faeyon models, which allows to save and load the model.
     """
     def save(
         self, 
@@ -362,39 +376,3 @@ class FaeModel(nn.Module):
                     torch.save(output, f)
 
             return output
-
-
-    @classmethod
-    def from_config(cls, name: str) -> FaeModel:
-        """
-        Loads a model from a YAML configuration file.
-        """
-        cfg, is_builtin = _read_config(name)
-        keys = set(cfg.keys())
-
-        if "_model_" in cfg:
-            model_cfg = cfg["_model_"]
-        else:
-            model_cfg = cfg
-
-        parsed_cfg = _parse_config(model_cfg, force_class=False)
-
-        if isinstance(parsed_cfg, nn.Module):
-            if not isinstance(parsed_cfg, cls):
-                raise ValueError(
-                    f"Expected a {cls.__name__} model, but got a {parsed_cfg.__class__.__name__} model."
-                )
-            return parsed_cfg
-        
-        # TODO: use `A` to represent an arguments object.
-        if isinstance(parsed_cfg, dict):
-            return cls(**parsed_cfg)
-
-    def load(self, path: str, strict: bool = True, assign: bool = False) -> None:
-        with fsspec.open(path, "rb") as f:
-            state_dict = torch.load(f)
-            self.load_state_dict(state_dict, strict=strict, assign=assign)
-
-    def init_weights(self, initializer: str) -> None:
-        pass
-
