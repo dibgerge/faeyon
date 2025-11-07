@@ -6,7 +6,12 @@ import torch
 from typing import Optional
 from torch.nn.functional import one_hot
 from .base import Metric
-from faeyon import utils
+from faeyon.utils.tensors import (
+    is_inrange, 
+    is_onehot, 
+    is_binary, 
+    is_probability
+)
 
 
 class Task(abc.ABC):
@@ -73,13 +78,13 @@ class SparseTask(Task):
 
         conditions = [nclasses > 2]
         if tc == 1:
-            conditions.append(utils.is_inrange(targets, min=0, max=nclasses-1))
+            conditions.append(is_inrange(targets, min=0, max=nclasses-1))
         else:
-            conditions.append(utils.is_onehot(targets))
+            conditions.append(is_onehot(targets))
      
         if pc == 1:
             conditions.append(self.metric.topk is None)
-            conditions.append(utils.is_inrange(preds, min=0, max=nclasses-1))
+            conditions.append(is_inrange(preds, min=0, max=nclasses-1))
             conditions.append(not preds.is_floating_point())
         else:
             conditions.append(preds.is_floating_point())
@@ -184,7 +189,7 @@ class CategoricalTask(Task):
 
         conditions = [
             pc >= 2,
-            utils.is_probability(preds, dim=-1),
+            is_probability(preds, dim=-1),
         ]
         if tc == 1:
             max_target = targets.max().item()
@@ -192,7 +197,7 @@ class CategoricalTask(Task):
             conditions.append((max_target < pc) and min_target >= 0)
         else:
             conditions.extend([
-                utils.is_onehot(targets),
+                is_onehot(targets),
                 tc == pc
             ])
 
@@ -250,11 +255,11 @@ class BinaryProbabilityTask(CategoricalTask):
         conditions = [
             # Targets conditions
             tc in [1, 2],
-            utils.is_binary(targets) if tc == 1 else utils.is_onehot(targets),
+            is_binary(targets) if tc == 1 else is_onehot(targets),
 
             # Preds conditions
             pc == 1,
-            utils.is_probability(preds),
+            is_probability(preds),
         ]
     
         if self.metric.num_classes is not None:
@@ -364,11 +369,11 @@ class BinarySparseTask(BinaryTwoClassTask):
         conditions = [
             # Targets conditions
             tc in [1, 2],
-            utils.is_binary(targets) if tc == 1 else utils.is_onehot(targets),
+            is_binary(targets) if tc == 1 else is_onehot(targets),
 
             # Preds conditions
             pc == 1,
-            utils.is_binary(preds),
+            is_binary(preds),
         ]
         if tc == 1:
             # Numclasses must be specified if 1-D targets
@@ -394,8 +399,8 @@ class MultilabelTask(CategoricalTask):
         return all([
             tc == pc,
             pc >= 2,
-            utils.is_binary(targets),
-            utils.is_probability(preds),
+            is_binary(targets),
+            is_probability(preds),
         ])
     
 

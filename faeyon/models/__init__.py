@@ -1,2 +1,2 @@
 from .implementations import *
-from .core import FaeModel
+from .core import save

@@ -1,5 +1,7 @@
 import torch
 from torch import nn
+from typing import Optional
+from faeyon import X, Op
 
 
 class ConstantLayer(nn.Module):
@@ -20,3 +22,24 @@ class ConstantLayer(nn.Module):
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x * self.weight
+
+
+class BasicModel(nn.Module):
+    def __init__(
+        self, 
+        num_inputs: int = 5,
+        embedding: Optional[nn.Embedding] = None,
+        num_hidden: int = 20, 
+        num_outputs: int = 3
+    ) -> None:
+        super().__init__()
+        if embedding is not None:
+            self.embedding = embedding
+        else:
+            self.embedding = Op(X)
+
+        self.layer1 = nn.Linear(num_inputs, num_hidden)
+        self.layer2 = nn.Linear(num_hidden, num_outputs)
+
+    def forward(self, x):
+        return x >> self.embedding >> self.layer1 >> self.layer2

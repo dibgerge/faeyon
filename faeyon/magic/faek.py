@@ -1,6 +1,11 @@
 import sys
 import inspect
 import itertools
+# import os 
+
+# import yaml
+# import fsspec
+# import torch
 
 from torch import nn
 from typing import Any, overload
@@ -271,6 +276,130 @@ def delayed_binary_method[T: nn.Module](
     return func
 
 
+# def save(
+#     self, 
+#     file_name: Optional[str] = None, 
+#     save_state: bool | str = True, 
+#     trust_code: bool = False
+# ) -> Optional[dict[str, Any]]:
+#     """
+#     Save the model to a file, including information to load the model later.
+
+#     Parameters
+#     ----------
+#     file_name : str, optional
+#         If the file name is not given, then the model saved state and configuration will be 
+#         returned as a string.
+
+#         If file_name extension is .yml or .yaml, then the model configuration only will be saved 
+#         to the file. Otherwise, use `torch.save` to save the model state (if requested) and 
+#         configuration to the file.
+    
+#     save_state : bool or str, optional
+#         If `True`, then the model state will be saved to the file if it is a pytorch 
+#         serialized file. If file_name is yaml, then the model state will be saved as a file 
+#         with same name but with .pt extension in the same directory.
+        
+#         A string is allowed only if file_name is yaml, in which case the string should be the 
+#         name of the file to save the model state to.
+
+#     trust_code : bool, optional
+#         If `True`, then the code will be trusted and the model configuration can saved 
+#         unknown objects.If `False`, then the model configuration will be saved as a YAML string
+#         using safe_dump.
+#     """
+#     if file_name is not None:
+#         base_file, ext = os.path.splitext(file_name)
+#         is_yaml =  ext.lower() in [".yml", ".yaml"]
+#     else:
+#         is_yaml = False
+#         base_file = None
+
+#     if not is_yaml and isinstance(save_state, str):
+#         raise ValueError(
+#             "If `file_name` does have have a yaml extension, then save_state must be a boolean."
+#         )
+            
+#     target = f"{self.__class__.__module__}.{self.__class__.__name__}"
+
+#     args = []
+#     for arg in self._arguments.args:
+#         if isinstance(arg, nn.Module):
+#             args.append(arg.save())
+#         else:
+#             args.append(arg)
+
+#     kwargs = {}
+#     for k, v in self._arguments.kwargs.items():
+#         if isinstance(v, nn.Module):
+#             kwargs[k] = v.save()
+#         else:
+#             kwargs[k] = v
+    
+#     config = {
+#         "_target_": target,
+#         "_args_": args,
+#         "_kwargs_": kwargs,
+#         "_meta_": {}
+#     }
+
+#     dumper = yaml.Dumper if trust_code else yaml.SafeDumper
+
+#     if is_yaml:
+#         if isinstance(save_state, str):
+#             config["_meta_"]["state_file"] = save_state
+#         elif save_state:
+#             config["_meta_"]["state_file"] = f"{base_file}.pt"
+
+#         with fsspec.open(file_name, "w") as f:
+#             yaml.dump(config, f, Dumper=dumper)
+
+#         state_file = config["_meta_"].get("state_file")
+
+#         if state_file is not None:
+#             with fsspec.open(state_file, "wb") as f:
+#                 torch.save(self.state_dict(), f)
+
+#         return None
+
+#     else:
+#         output = {
+#             "_config_": yaml.dump(config, Dumper=dumper),
+#             "_state_": self.state_dict(),   
+#         }
+
+#         if file_name is not None:
+#             with fsspec.open(file_name, "wb") as f:
+#                 torch.save(output, f)
+
+#         return output
+
+
+def from_file(
+    cls, 
+    name: str,
+    load_state: bool | str = True,
+    /,
+    cache: bool = True,
+    trust_code: bool = False,
+    **kwargs: Any,
+) -> nn.Module:
+    from faeyon.models.core import load as load_model
+    return load_model(name, load_state, cls, cache=cache, trust_code=trust_code, **kwargs)
+
+
+def load(
+    self, 
+    load_state: str,
+    /,
+    cache: bool = True,
+    trust_code: bool = False,
+    **kwargs: Any,
+) -> nn.Module:
+    from faeyon.models.core import load as load_model
+    return load_model(self, load_state, cache=cache, trust_code=trust_code, **kwargs)
+
+
 class Faek(metaclass=Singleton):
     """
     This is a singleton class intended to be used as a context manager or as a general tool
@@ -290,10 +419,15 @@ class Faek(metaclass=Singleton):
         if self._is_on:
             return
 
+        from faeyon.models.core import save
+
         current_module = sys.modules[__name__]
         nn.Module.__new__ = staticmethod(__new__)
         nn.Module.__call__ = __call__
         nn.Module.clone = clone
+        nn.Module.save = save
+        nn.Module.from_file = classmethod(from_file)
+        nn.Module.load = load
 
         for i, method in enumerate(itertools.chain.from_iterable(binary_operators.values())):
             setattr(

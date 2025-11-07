@@ -5,10 +5,12 @@ import torch
 import yaml
 import fsspec
 import importlib
+
+from os import PathLike
 from torch import nn
 from importlib import resources
 from pathlib import Path
-from typing import Optional, Generator, Any
+from typing import Optional, Generator, Any, IO
 from faeyon.utils.io import cache_dir
 from faeyon import A
 
@@ -229,7 +231,7 @@ def _load_from_files(
 
 
 def load(
-    name: str | nn.Module,
+    name: str | PathLike | nn.Module,
     load_state: bool | str = True,
     module: Optional[type[nn.Module]] = None,
     /,
@@ -248,7 +250,7 @@ def load(
     load(model, "weights_path.pt") -- should only contain the state dict
     load(ModelClass, "model.pt"/model.yaml) -- should only contain the state dict
     """
-    if isinstance(name, str):
+    if isinstance(name, str | PathLike):
         return _load_from_files(
             config_file=name, 
             load_state=load_state,
@@ -275,104 +277,100 @@ def load(
         )
 
 
-class FaeModel(nn.Module):
+def save(
+    model: nn.Module, 
+    file_name: Optional[str | PathLike] = None, 
+    save_state: bool | str | PathLike = True, 
+    trust_code: bool = False
+) -> Optional[dict[str, Any]]:
     """
-    Base class for all Faeyon models, which allows to save and load the model.
-    """
-    def save(
-        self, 
-        file_name: Optional[str] = None, 
-        save_state: bool | str = True, 
-        trust_code: bool = False
-    ) -> Optional[dict[str, Any]]:
-        """
-        Save the model to a file, including information to load the model later.
+    Save the model to a file, including information to load the model later.
 
-        Parameters
-        ----------
-        file_name : str, optional
-            If the file name is not given, then the model saved state and configuration will be 
-            returned as a string.
+    Parameters
+    ----------
+    file_name : str, optional
+        If the file name is not given, then the model saved state and configuration will be 
+        returned as a string.
 
-            If file_name extension is .yml or .yaml, then the model configuration only will be saved 
-            to the file. Otherwise, use `torch.save` to save the model state (if requested) and 
-            configuration to the file.
+        If file_name extension is .yml or .yaml, then the model configuration only will be saved 
+        to the file. Otherwise, use `torch.save` to save the model state (if requested) and 
+        configuration to the file.
+    
+    save_state : bool or str, optional
+        If `True`, then the model state will be saved to the file if it is a pytorch 
+        serialized file. If file_name is yaml, then the model state will be saved as a file 
+        with same name but with .pt extension in the same directory.
         
-        save_state : bool or str, optional
-            If `True`, then the model state will be saved to the file if it is a pytorch 
-            serialized file. If file_name is yaml, then the model state will be saved as a file 
-            with same name but with .pt extension in the same directory.
+        A string is allowed only if file_name is yaml, in which case the string should be the 
+        name of the file to save the model state to.
+
+    trust_code : bool, optional
+        If `True`, then the code will be trusted and the model configuration can saved 
+        unknown objects.If `False`, then the model configuration will be saved as a YAML string
+        using safe_dump.
+    """
+    if file_name is not None:
+        base_file, ext = os.path.splitext(file_name)
+        is_yaml =  ext.lower() in [".yml", ".yaml"]
+    else:
+        is_yaml = False
+        base_file = None
+
+    if not is_yaml and not isinstance(save_state, bool):
+        raise ValueError(
+            "If `file_name` does have have a yaml extension, then save_state must be a boolean."
+        )
             
-            A string is allowed only if file_name is yaml, in which case the string should be the 
-            name of the file to save the model state to.
+    target = f"{model.__class__.__module__}.{model.__class__.__name__}"
 
-        trust_code : bool, optional
-            If `True`, then the code will be trusted and the model configuration can saved 
-            unknown objects.If `False`, then the model configuration will be saved as a YAML string
-            using safe_dump.
-        """
-        if file_name is not None:
-            base_file, ext = os.path.splitext(file_name)
-            is_yaml =  ext.lower() in [".yml", ".yaml"]
+    args = []
+    for arg in model._arguments.args:
+        if isinstance(arg, nn.Module):
+            args.append(arg.save())
         else:
-            is_yaml = False
-            base_file = None
+            args.append(arg)
 
-        if not is_yaml and isinstance(save_state, str):
-            raise ValueError(
-                "If `file_name` does have have a yaml extension, then save_state must be a boolean."
-            )
-                
-        target = f"{self.__class__.__module__}.{self.__class__.__name__}"
+    kwargs = {}
+    for k, v in model._arguments.kwargs.items():
+        if isinstance(v, nn.Module):
+            kwargs[k] = v.save(save_state=False, trust_code=trust_code)["_config_"]
+        else:
+            kwargs[k] = v
+    
+    config = {
+        "_target_": target,
+        "_args_": args,
+        "_kwargs_": kwargs,
+        "_meta_": {}
+    }
 
-        args = []
-        for arg in self._arguments.args:
-            if isinstance(arg, nn.Module):
-                args.append(arg.save())
-            else:
-                args.append(arg)
+    dumper = yaml.Dumper if trust_code else yaml.SafeDumper
 
-        kwargs = {}
-        for k, v in self._arguments.kwargs.items():
-            if isinstance(v, nn.Module):
-                kwargs[k] = v.save()
-            else:
-                kwargs[k] = v
-        
-        config = {
-            "_target_": target,
-            "_args_": args,
-            "_kwargs_": kwargs,
-            "_meta_": {}
+    if is_yaml:
+        if not isinstance(save_state, bool):
+            config["_meta_"]["state_file"] = str(save_state)
+        elif save_state:
+            config["_meta_"]["state_file"] = f"{base_file}.pt"
+
+        with fsspec.open(file_name, "w") as f:
+            yaml.dump(config, f, Dumper=dumper)
+
+        if state_file := config["_meta_"].get("state_file"):
+            with fsspec.open(state_file, "wb") as f:
+                torch.save(model.state_dict(), f)
+
+        return None
+
+    else:
+        output = {
+            "_config_": yaml.dump(config, Dumper=dumper),
         }
 
-        dumper = yaml.Dumper if trust_code else yaml.SafeDumper
+        if save_state:
+            output["_state_"] = model.state_dict()
 
-        if is_yaml:
-            if isinstance(save_state, str):
-                config["_meta_"]["state_file"] = save_state
-            elif save_state:
-                config["_meta_"]["state_file"] = f"{base_file}.pt"
+        if file_name is not None:
+            with fsspec.open(file_name, "wb") as f:
+                torch.save(output, f)
 
-            with fsspec.open(file_name, "w") as f:
-                yaml.dump(config, f, Dumper=dumper)
-
-            state_file = config["_meta_"].get("state_file")
-
-            if state_file is not None:
-                with fsspec.open(state_file, "wb") as f:
-                    torch.save(self.state_dict(), f)
-
-            return None
-
-        else:
-            output = {
-                "_config_": yaml.dump(config, Dumper=dumper),
-                "_state_": self.state_dict(),   
-            }
-
-            if file_name is not None:
-                with fsspec.open(file_name, "wb") as f:
-                    torch.save(output, f)
-
-            return output
+        return output
