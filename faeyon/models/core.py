@@ -38,7 +38,7 @@ class BuiltinConfigs:
                 f"Invalid builtin config path: {name}. The path should not be an absolute path, "
                 f"contain . or .. sections, or start with a protocol like protocol://."
             )
-        return self.traversable.joinpath(name).open("r")
+        return self.traversable.joinpath(f"{name}.yaml").open("r")
 
     def read(self, name: str, trust_code: bool = False) -> dict[str, Any]:
         loader = yaml.Loader if trust_code else yaml.SafeLoader
@@ -55,10 +55,12 @@ class BuiltinConfigs:
                 yield base / key
 
     def valid(self, name: str) -> bool:
-        has_protocol = "://" in name.split("/")[0]
-        is_absolute = os.path.isabs(name)
-        has_dots = any(part in ('.', '..') for part in Path(name).parts)
-        return not (is_absolute or has_dots or has_protocol)
+        if not isinstance(name, str):
+            return False
+        file_name = Path(name)
+        has_protocol = "://" in name
+        has_dots = any(part == ".." for part in file_name.parts)
+        return not (file_name.is_absolute() or has_dots or has_protocol or file_name.suffix)
 
 
 def _parse_dict(cfg: dict[str, Any]) -> Any:
@@ -68,7 +70,6 @@ def _parse_dict(cfg: dict[str, Any]) -> Any:
         return {k: _parse_config(v) for k, v in cfg.items()}
 
     args, kwargs, other = [], {}, {}
-    target = None
     for k, v in cfg.items():
         match k:
             case "_args_":
@@ -127,23 +128,29 @@ def _parse_config(cfg: Any, force_class: bool = False) -> Any:
 
 
 def _read_yaml(
-    name: str | io.IOBase, 
+    name: str | PathLike | io.IOBase,
     trust_code: bool = False, 
     **kwargs: Any
 ) -> tuple[Any, Optional[str]]:
     loader = yaml.Loader if trust_code else yaml.SafeLoader
 
-    if isinstance(name, str):
+    if isinstance(name, str | PathLike):
         try:
             with fsspec.open(name, "r", **kwargs) as f:
                 data = yaml.load(f, Loader=loader)
         except FileNotFoundError as e:
             config = BuiltinConfigs()
-            if not config.valid(name):
+            if isinstance(name, str) and config.valid(name):
+                data = config.read(name)
+            else:
                 raise e
-            data = config.read(name)
+            
     elif isinstance(name, io.IOBase):
         data = yaml.load(name, Loader=loader)
+    else:
+        raise ValueError(
+            f"Expected a string | PathLike | IOBase, but got a {name.__class__.__name__}."
+        )
 
     output = _parse_config(data)
 
@@ -156,7 +163,7 @@ def _read_yaml(
 
 
 def _read_pt(
-    name: str, 
+    name: str | PathLike[str], 
     cache: bool = True, 
     **kwargs: Any
 ) -> dict[str, Any]:
@@ -183,28 +190,34 @@ def _read_pt(
 
 
 def _load_from_files(
-    config_file: str, 
-    load_state: bool | str = True, 
+    config_file: str | PathLike[str],
+    load_state: bool | str | PathLike[str] = True, 
     trust_code: bool = False,
     cache: bool = True,
     module: Optional[type[nn.Module]] = None,
     **kwargs: Any
 ) -> nn.Module:
+    """
+    The precedence order for loading the state is:
+    1. load_state argument given as a string or pathlike object
+    2. state saved in the .pt file
+    3. state_file name in the YAML config (can be its own file, or inside .pt file)
+    """
    
     try:
         parsed, state_file = _read_yaml(config_file, trust_code, **kwargs)
         state = None
 
-    except yaml.YAMLError as e:
+    except (yaml.YAMLError, UnicodeError):
         data = _read_pt(config_file, cache, **kwargs)
 
         # Read the state from the pt file
         parsed, state_file = _read_yaml(io.StringIO(data["_config_"]))
-        state = data["_state_"]
+        state = data.get("_state_")
     
     if isinstance(parsed, A):
         if module is None:
-            raise ValueError(f"Expected a model, but got a {model.__class__.__name__}.")
+            raise ValueError(f"Expected a model, but got a arguments object {parsed}.")
         
         model = parsed.call(module)
     elif isinstance(parsed, nn.Module):
@@ -212,17 +225,17 @@ def _load_from_files(
     else:
         raise ValueError(f"Expected a model, but got a {parsed.__class__.__name__}.")
 
-    # Precendence over the state file in the yaml file, if any
-    if isinstance(load_state, str):
-        state_file = load_state
-
     if load_state:
-        if state_file is None:
+        # Based on file loading precedence, load the state
+        if isinstance(load_state, str | PathLike):
+            state = _read_pt(load_state, cache, **kwargs)
+        elif state is None and state_file is not None: 
+            state = _read_pt(state_file, cache, **kwargs)
+        elif state is None:
             raise ValueError(
-                "No state file found in the yaml file. Please provide a path for the state "
-                "file, or update the YAML file to include the state file path."
+                "No state found in the yaml file or the .pt file. Please provide a path for the "
+                "state file, or update the YAML file to include the state file path."
             )
-        state = _read_pt(state_file, cache, **kwargs)
 
     if state is not None:
         model.load_state_dict(state)
@@ -232,7 +245,7 @@ def _load_from_files(
 
 def load(
     name: str | PathLike | nn.Module,
-    load_state: bool | str = True,
+    load_state: bool | str | PathLike = True,
     module: Optional[type[nn.Module]] = None,
     /,
     cache: bool = True,
@@ -326,7 +339,7 @@ def save(
     args = []
     for arg in model._arguments.args:
         if isinstance(arg, nn.Module):
-            args.append(arg.save())
+            args.append(arg.save(save_state=False, trust_code=trust_code)["_config_"])
         else:
             args.append(arg)
 
@@ -345,7 +358,6 @@ def save(
     }
 
     dumper = yaml.Dumper if trust_code else yaml.SafeDumper
-
     if is_yaml:
         if not isinstance(save_state, bool):
             config["_meta_"]["state_file"] = str(save_state)
@@ -362,14 +374,13 @@ def save(
         return None
 
     else:
-        output = {
-            "_config_": yaml.dump(config, Dumper=dumper),
-        }
+        output = {"_config_": config}
 
         if save_state:
             output["_state_"] = model.state_dict()
 
         if file_name is not None:
+            output["_config_"] = yaml.dump(output["_config_"], Dumper=dumper)
             with fsspec.open(file_name, "wb") as f:
                 torch.save(output, f)
 
