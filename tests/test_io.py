@@ -3,8 +3,7 @@ import pytest
 import yaml
 
 from unittest.mock import MagicMock
-from faeyon.models.core import BuiltinConfigs
-from faeyon.models import save, load
+from faeyon.io import BuiltinConfigs, save, load
 
 import torch
 from torch import nn
@@ -33,7 +32,7 @@ class TestBuiltinConfigs:
 
         config_files = []
         for i in range(self.num_files):
-            model = BasicModel(num_hidden=2 *(i + 1))
+            model = BasicModel(num_hidden=2 * (i + 1))
             config_path = tmp_path / f"model{i}.yaml"
             model.save(config_path, save_state=True)
             config_files.append(config_path)

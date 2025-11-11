@@ -1,2 +1,2 @@
 from .implementations import *
-from .core import save, load
+from .tasks import ClassifyTask, ImageDecoder, Task

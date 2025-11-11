@@ -134,3 +134,5 @@ scratch/
 /stubs/
 .VSCodeCounter/
 try*.py
+site/
+docs/_build/

@@ -86,7 +86,6 @@ class ViT(nn.Module):
         }, repeats=num_layers)
 
         self.dropout = nn.Dropout(dropout)
-        self.classifier = nn.Linear(embed_size, 1000)
         self.lnorm = nn.LayerNorm(embed_size, eps=lnorm_eps)
         self.concat = Concat()
 

@@ -5,7 +5,11 @@ from torch import nn
 from faeyon import X
 
 
-class ClassifyTask(nn.Module):
+class Task(nn.Module):
+    pass
+
+
+class ClassifyTask(Task):
     dropout: nn.Dropout | type[X]
     pooling: X | type[X]
 

@@ -5,14 +5,39 @@ import torch
 import yaml
 import fsspec
 import importlib
+import platform
 
 from os import PathLike
 from torch import nn
 from importlib import resources
 from pathlib import Path
 from typing import Optional, Generator, Any, IO
-from faeyon.utils.io import cache_dir
 from faeyon import A
+
+
+def cache_dir(mkdir: bool = True) -> Path:
+    """ 
+    Get the cache directory for Faeyon, which is used to store downloaded models
+    and other cached data.
+    """
+    home = Path.home()
+
+    try:
+        cache_dir = Path(os.environ["FAEYON_CACHE_DIR"])
+    except KeyError:
+        match platform.system():
+            case "Windows":
+                base = Path(os.getenv("LOCALAPPDATA", home / "AppData" / "Local"))
+            case "Darwin":
+                base = home / "Library" / "Caches"
+            case _:
+                base = Path(os.getenv("XDG_CACHE_HOME", home / ".cache"))
+
+        cache_dir = base / "faeyon"
+
+    if mkdir:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
 
 
 def is_yaml(file_name: str) -> bool:
@@ -102,7 +127,11 @@ def _parse_dict(cfg: dict[str, Any]) -> Any:
         if other:
             kwargs.update(other)
 
-        return cls(*args, **kwargs) 
+        # Special handling for X. The ar
+        # if isinstance(cls, X) and not (args and kwargs):
+        #     return cls
+
+        return cls(*args, **kwargs)
     else:
         if args or kwargs:
             return A(*args, **kwargs, **other)
@@ -247,7 +276,6 @@ def load(
     name: str | PathLike | nn.Module,
     load_state: bool | str | PathLike = True,
     module: Optional[type[nn.Module]] = None,
-    /,
     cache: bool = True,
     trust_code: bool = False,
     **kwargs: Any
@@ -281,6 +309,10 @@ def load(
             raise ValueError("`module` is not supported when `name` is a model instance.")
 
         state = _read_pt(load_state, cache, **kwargs)
+
+        if "_state_" in state:
+            state = state["_state_"]
+
         name.load_state_dict(state)
         return name
     else:
@@ -291,7 +323,7 @@ def load(
 
 
 def save(
-    model: nn.Module, 
+    model: nn.Module,
     file_name: Optional[str | PathLike] = None, 
     save_state: bool | str | PathLike = True, 
     trust_code: bool = False

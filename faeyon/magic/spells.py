@@ -216,7 +216,8 @@ class ContainerBase(Delayable, ABC):
     def __init__(self, *args) -> None:
         self._expression: Optional[X | Op] = None
         self._value = _Variable(*args)
-        # parent is used when morphing to higher type container, we need to make sure parent is morphed too. Current setup has only two level tree (fvar -> fdict/flist, )
+        # parent is used when morphing to higher type container, we need to make sure parent is 
+        # morphed too. Current setup has only two level tree (fvar -> fdict/flist, )
         self._parents: list[ContainerBase] = []
 
     def morph(self, tobj: type[ContainerBase]) -> None:
@@ -549,7 +550,17 @@ class Op(_OpBase):
         return f"Op({self.strategy!r})"
 
 
-class _NoopStrategy:
+class _StrategyBase(ABC):
+    @abstractmethod
+    def __call__(self, data: Any) -> Any:
+        pass
+    
+    @abstractmethod
+    def __repr__(self) -> str:
+        pass
+
+
+class _NoopStrategy(_StrategyBase):
     def __call__(self, data: Any) -> Any:
         return data
     
@@ -557,7 +568,7 @@ class _NoopStrategy:
         return "<noop>"
 
 
-class _XStrategy:
+class _XStrategy(_StrategyBase):
     """ 
     Op Strategy when `op` is an instance of `X`. E.g.:
     
@@ -575,7 +586,7 @@ class _XStrategy:
         return f"{self._op!r}"
 
 
-class _CallableStrategy:
+class _CallableStrategy(_StrategyBase):
     """ 
     Op Strategy when `op` is a Callable.out._condition = self._condition
         out._else_ = self._else_
@@ -626,6 +637,9 @@ class Serials(_OpBase):
             else:
                 new_ops.append(op)
         self.ops = tuple(new_ops)
+
+    def __getitem__(self, idx: int) -> Delayable:
+        return self.ops[idx]
 
     def copy(self):
         out = Serials(*self.ops)
