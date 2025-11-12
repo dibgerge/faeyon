@@ -55,7 +55,7 @@ class BuiltinConfigs:
     # _files: Optional[dict[str, Path]] = None
 
     def __init__(self) -> None:
-        self.traversable = resources.files(__package__).joinpath("configs")
+        self.traversable = resources.files(__package__).joinpath("models/configs")
 
     def open(self, name: str) -> IO[str]:
         if not self.valid(name):
@@ -88,7 +88,7 @@ class BuiltinConfigs:
         return not (file_name.is_absolute() or has_dots or has_protocol or file_name.suffix)
 
 
-def _parse_dict(cfg: dict[str, Any]) -> Any:
+def _parse_dict(cfg: dict[str, Any], overrides: Optional[dict[str, Any]] = None) -> Any:
     try:
         target = cfg.pop("_target_")
     except KeyError:
@@ -118,28 +118,28 @@ def _parse_dict(cfg: dict[str, Any]) -> Any:
             case _:
                 other[k] = _parse_config(v)
 
+    has_args = args or kwargs
+
+    # All remaining keys are treated as keyword arguments
+    if other:
+        kwargs.update(other)
+
+    if overrides is not None:
+        for k, v in overrides.items():
+            kwargs[k] = v
+
     if target is not None:
         mod_name, cls_name = target.rsplit(".", 1)
         mod = importlib.import_module(mod_name)
-        cls = getattr(mod, cls_name)
-        
-        # All remaining keys are treated as keyword arguments
-        if other:
-            kwargs.update(other)
-
-        # Special handling for X. The ar
-        # if isinstance(cls, X) and not (args and kwargs):
-        #     return cls
-
+        cls = getattr(mod, cls_name)        
         return cls(*args, **kwargs)
     else:
-        if args or kwargs:
-            return A(*args, **kwargs, **other)
-        
-        return other
+        if has_args:
+            return A(*args, **kwargs)
+        return kwargs
 
 
-def _parse_config(cfg: Any, force_class: bool = False) -> Any:
+def _parse_config(cfg: Any, overrides: Optional[dict[str, Any]] = None, force_class: bool = False) -> Any:
     """
     Parse a configuration section recursively and return loaded objects. 
     """
@@ -149,7 +149,7 @@ def _parse_config(cfg: Any, force_class: bool = False) -> Any:
 
     match cfg:
         case dict():
-            return _parse_dict(cfg)
+            return _parse_dict(cfg, overrides)
         case list():
             return [_parse_config(item) for item in cfg]
         case _:
@@ -160,7 +160,7 @@ def _read_yaml(
     name: str | PathLike | io.IOBase,
     trust_code: bool = False, 
     **kwargs: Any
-) -> tuple[Any, Optional[str]]:
+) -> tuple[Any, Optional[dict[str, Any]]]:
     loader = yaml.Loader if trust_code else yaml.SafeLoader
 
     if isinstance(name, str | PathLike):
@@ -182,13 +182,7 @@ def _read_yaml(
         )
 
     output = _parse_config(data)
-
-    if "_meta_" in data:
-        state_file = data["_meta_"].get("state_file")
-    else:
-        state_file = None
-
-    return output, state_file
+    return output, data.get("_meta_")
 
 
 def _read_pt(
@@ -196,7 +190,7 @@ def _read_pt(
     cache: bool = True, 
     **kwargs: Any
 ) -> dict[str, Any]:
-    fs, remote_path = fsspec.core.url_to_fs(name, **kwargs)
+    fs, _ = fsspec.core.url_to_fs(name, **kwargs)
     protocol = getattr(fs, "protocol", None)
     if isinstance(protocol, (tuple, list)):
         protocol = protocol[0]
@@ -234,14 +228,14 @@ def _load_from_files(
     """
    
     try:
-        parsed, state_file = _read_yaml(config_file, trust_code, **kwargs)
+        parsed, meta = _read_yaml(config_file, trust_code, **kwargs)
         state = None
 
     except (yaml.YAMLError, UnicodeError):
         data = _read_pt(config_file, cache, **kwargs)
 
         # Read the state from the pt file
-        parsed, state_file = _read_yaml(io.StringIO(data["_config_"]))
+        parsed, meta = _read_yaml(io.StringIO(data["_config_"]))
         state = data.get("_state_")
     
     if isinstance(parsed, A):
@@ -255,6 +249,12 @@ def _load_from_files(
         raise ValueError(f"Expected a model, but got a {parsed.__class__.__name__}.")
 
     if load_state:
+
+        if meta is not None:
+            state_file = meta.get("state")
+        else:
+            state_file = None
+
         # Based on file loading precedence, load the state
         if isinstance(load_state, str | PathLike):
             state = _read_pt(load_state, cache, **kwargs)
@@ -278,6 +278,7 @@ def load(
     module: Optional[type[nn.Module]] = None,
     cache: bool = True,
     trust_code: bool = False,
+    overrides: Optional[dict[str, Any]] = None,
     **kwargs: Any
 ) -> nn.Module:
     """
@@ -362,9 +363,7 @@ def save(
         base_file = None
 
     if not is_yaml and not isinstance(save_state, bool):
-        raise ValueError(
-            "If `file_name` does have have a yaml extension, then save_state must be a boolean."
-        )
+        raise ValueError("If `file_name` is not a YAML file, then `save_state` must be a boolean.")
             
     target = f"{model.__class__.__module__}.{model.__class__.__name__}"
 
@@ -381,25 +380,28 @@ def save(
             kwargs[k] = v.save(save_state=False, trust_code=trust_code)["_config_"]
         else:
             kwargs[k] = v
-    
+
     config = {
         "_target_": target,
-        "_args_": args,
-        "_kwargs_": kwargs,
         "_meta_": {}
     }
+    if args:
+        config["_args_"] = args
+        config["_kwargs_"] = kwargs
+    else:
+        config.update(kwargs)
 
     dumper = yaml.Dumper if trust_code else yaml.SafeDumper
     if is_yaml:
         if not isinstance(save_state, bool):
-            config["_meta_"]["state_file"] = str(save_state)
+            config["_meta_"]["state"] = str(save_state)
         elif save_state:
-            config["_meta_"]["state_file"] = f"{base_file}.pt"
+            config["_meta_"]["state"] = f"{base_file}.pt"
 
         with fsspec.open(file_name, "w") as f:
             yaml.dump(config, f, Dumper=dumper)
 
-        if state_file := config["_meta_"].get("state_file"):
+        if state_file := config["_meta_"].get("state"):
             with fsspec.open(state_file, "wb") as f:
                 torch.save(model.state_dict(), f)
 

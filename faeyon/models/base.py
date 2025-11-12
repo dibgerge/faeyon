@@ -1,7 +1,9 @@
 from __future__ import annotations
 from torch import nn
 
-from faeyon import X, Op
+from typing import Optional, Any
+from faeyon import Op, A
+from faeyon.io import load
 from .tasks import Task
 
 
@@ -30,19 +32,19 @@ class Pipeline(nn.Module):
         if transforms is not None:
             self.transforms = transforms
         else:
-            self.transforms = Op(X)
+            self.transforms = Op(None)
         
         self.model = model
 
         if pooling is not None:
             self.pooling = pooling
         else:
-            self.pooling = Op(X)
+            self.pooling = Op(None)
 
         if task is not None:
             self.task = task
         else:
-            self.task = Op(X)
+            self.task = Op(None)
 
     @classmethod
     def from_file(
@@ -55,12 +57,29 @@ class Pipeline(nn.Module):
         cache: bool = True, 
         trust_code: bool = False, 
         **kwargs: Any
-    ) -> Pipeline:
-        from faeyon.io import load 
-        pipeline = load(name, load_state, cls, cache=cache, trust_code=trust_code, **kwargs)
+    ) -> Pipeline | nn.Module:
+        overrides : dict[str, Any] = {}
+        if not load_transforms:
+            overrides["transforms"] = None
+        if not load_pooling:
+            overrides["pooling"] = None
+        if not load_task:
+            overrides["task"] = None
 
+        pipeline = load(
+            name, 
+            load_state, 
+            cls, 
+            cache=cache, 
+            trust_code=trust_code, 
+            overrides=overrides, 
+            **kwargs
+        )
+        if not (load_transforms or load_pooling or load_task):
+            return pipeline.model
+        return pipeline
 
-    def forward(self, *args, **kwargs) -> Any:
+    def forward(self, x: Any) -> Any:
         """ This is the basic linear pipeline forward pass. """
-        return self.transforms(*args, **kwargs) >> self.model >> self.pooling >> self.task
+        return x >> self.transforms >> self.model >> self.pooling >> self.task
 

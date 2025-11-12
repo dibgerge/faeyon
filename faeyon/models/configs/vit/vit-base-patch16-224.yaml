@@ -1,7 +1,28 @@
-_target_: faeyon.models.ViT
-embed_size: 768
-heads: 12
-image_size: [224, 224]
-patch_size: 16
-num_layers: 12
-mlp_size: 3072
+_meta_:
+  state: hf://dibgerges/faeyon/vit/vit-base-patch16-224.pt
+_target_: faeyon.models.base.Pipeline
+model:
+  _meta_: {}
+  _target_: faeyon.models.implementations.vit.ViT
+  dropout: 0.1
+  embed_size: 768
+  heads: 12
+  image_size:
+  - 224
+  - 224
+  in_channels: 3
+  lnorm_eps: 1.0e-12
+  mlp_size: 3072
+  num_layers: 12
+  patch_size: 16
+  use_patch_mask: false
+pooling: null
+task:
+  _meta_: {}
+  _target_: faeyon.models.tasks.ClassifyTask
+  bias: true
+  dropout: null
+  num_hidden: 768
+  num_labels: 1000
+  pooling: 0
+transforms: null

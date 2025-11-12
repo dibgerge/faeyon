@@ -5,10 +5,21 @@ from torch import nn
 from typing import Any, overload
 from collections.abc import Callable
 
-from .spells import Op, FList, FDict, A, X, FVar, binary_operators, unary_operators, Delayable
+from .spells import (
+    Op, 
+    FList, 
+    FDict, 
+    A, 
+    X, 
+    FVar, 
+    binary_operators, 
+    unary_operators, 
+    Delayable,
+    _new_instance
+)
 
 from faeyon.utils import Singleton
-
+  
 
 class FState:
     """ A simple container which generate fVar on demand. """
@@ -38,21 +49,9 @@ class FState:
         return out
 
 
-def _new_instance(cls, *args, **kwargs):
-    instance = object.__new__(cls)
-    sig = inspect.signature(cls.__init__)
-
-    # Bypass Dynamo's GraphModule, which overrides __new__, but does not pass arguments to super...
-    # TODO: File a bug report/PR to PyTorch
-    try:
-        bound = sig.bind(instance, *args, **kwargs)
-        bound.apply_defaults()
-        del bound.arguments["self"]
-    except TypeError:
-        bound = None
-    
+def _new_module(cls, *args, **kwargs):
+    instance = _new_instance(cls, *args, **kwargs)
     super(cls, instance).__setattr__("fstate", FState())
-    super(cls, instance).__setattr__("_arguments", bound)
     return instance
 
 
@@ -107,7 +106,7 @@ def __new__(cls, *args, **kwargs):
 
     # No argument parametrization, return a regular nn.Module instance
     if num_fae == 0:
-        return _new_instance(cls, *args, **kwargs)
+        return _new_module(cls, *args, **kwargs)
 
     nkeys = len(kwargs_keys)
     nargs = len(raveled_args)
@@ -116,7 +115,7 @@ def __new__(cls, *args, **kwargs):
 
     out = []
     for c_args, c_kwargs in zip(args, kwargs):
-        inst = _new_instance(cls, *c_args, **c_kwargs)
+        inst = _new_module(cls, *c_args, **c_kwargs)
         # Call __init__ on each instance since it will not be called when different class type
         # is returned in __new__
         cls.__init__(inst, *c_args, **c_kwargs)

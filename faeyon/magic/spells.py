@@ -37,9 +37,6 @@ unary_operators: dict[Callable[[Any], Any], str] = {
     operator.pos: "__pos__",
 }
 
-# OMType = Union["Op", nn.Module]
-# OMXType = Union[OMType, X]
-
 
 def conjure(x: Any, data: Any) -> Any:
     """ 
@@ -62,6 +59,63 @@ def conjure(x: Any, data: Any) -> Any:
         else:
             data = getattr(data, name)(*args, **kwargs)
     return data
+
+
+def _new_instance(cls, *args, **kwargs):
+    instance = object.__new__(cls)
+    sig = inspect.signature(cls.__init__)
+
+    # Bypass Dynamo's GraphModule, which overrides __new__, but does not pass arguments to super...
+    # TODO: File a bug report/PR to PyTorch
+    try:
+        bound = sig.bind(instance, *args, **kwargs)
+        bound.apply_defaults()
+        del bound.arguments["self"]
+    except TypeError:
+        bound = None
+    
+    super(cls, instance).__setattr__("_arguments", bound)
+    return instance
+
+
+class Exportable:
+    """
+    TODO: Update code to incorporate this to model and other objects IO.
+    Right now, load and save methods are implemented in the `faeyon.io` module, and only work 
+    for `nn.Module` objects, I need to generalize this to other Faeyon objects.
+    """
+    _arguments: Optional[inspect.BoundArguments] = None
+    
+    def __new__(cls, *args, **kwargs) -> Any:
+        return _new_instance(cls, *args, **kwargs)
+
+    def export(self, trust_code: bool = False) -> dict[str, Any]:
+        target = f"{self.__class__.__module__}.{self.__class__.__name__}"
+
+        if self._arguments is None:
+            raise ValueError(f"Cannot export `{self.__class__.__name__}` with no arguments.")
+
+        args = []
+        for arg in self._arguments.args:
+            if isinstance(arg, nn.Module):
+                args.append(arg.save(save_state=False, trust_code=trust_code)["_config_"])
+            else:
+                args.append(arg)
+
+        kwargs = {}
+        for k, v in self._arguments.kwargs.items():
+            if isinstance(v, nn.Module):
+                kwargs[k] = v.save(save_state=False, trust_code=trust_code)["_config_"]
+            else:
+                kwargs[k] = v
+        
+        config = {
+            "_target_": target,
+            "_args_": args,
+            "_kwargs_": kwargs,
+            "_meta_": {}
+        }
+        return config
 
 
 class A:
@@ -147,7 +201,7 @@ class _Variable:
         return f"{self.value!r}"
 
 
-class Delayable(ABC):
+class Delayable(Exportable, ABC):
     _condition: Optional[bool | X | Delayable]
     _else_: Optional[Delayable]
     

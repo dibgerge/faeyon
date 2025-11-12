@@ -30,7 +30,6 @@ class ViT(nn.Module):
         patch_size: int | tuple[int, int],
         num_layers: int,
         mlp_size: int,
-        task: Optional[nn.Module] = None,
         use_patch_mask: bool = False,
         in_channels: int = 3,
         dropout: float = 0.1,
@@ -88,11 +87,6 @@ class ViT(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.lnorm = nn.LayerNorm(embed_size, eps=lnorm_eps)
         self.concat = Concat()
-
-        if task is not None:
-            self.task = task
-        else:
-            self.task = X
 
     def forward(
         self,
@@ -166,5 +160,4 @@ class ViT(nn.Module):
                 << self.fstate.hidden.if_(keep_hidden)
             )
             >> self.lnorm
-            >> self.task
         )
