@@ -1,7 +1,8 @@
-import math
 import torch
+from collections.abc import Sequence
 from torch import nn
 from typing import Optional
+from functools import lru_cache
 
 
 class PosInterpEmbedding(nn.Module):
@@ -16,7 +17,6 @@ class PosInterpEmbedding(nn.Module):
         self,
         size: int | tuple[int, ...],
         embedding_dim: int,
-        non_positional: Optional[int] = None,
         interpolate: Optional[str] = "nearest",
         align_corners: Optional[bool] = None,
     ) -> None:
@@ -26,13 +26,7 @@ class PosInterpEmbedding(nn.Module):
             size = (size,)
 
         self.size = size
-        self.embeddings = nn.Parameter(torch.randn(1, embedding_dim, *size))
-
-        if non_positional is not None:
-            self.non_positional = nn.Parameter(torch.randn(1, embedding_dim, non_positional))
-        else:
-            self.non_positional = None
-        
+        self.embeddings = nn.Parameter(torch.randn(1, embedding_dim, *size))       
         self.interpolate = interpolate
         self.align_corners = align_corners
 
@@ -41,8 +35,7 @@ class PosInterpEmbedding(nn.Module):
         Input tensor expected to be of shape `(B, E, *size)`. This tells the embedding what the 
         batch size should be and what is the size of the input. Actual inputs values are not used.
 
-        Output tensor will be of shape `(B, E, *size)` if `non_positional` is not specified.
-        Otherwise, the output will be of shape `(B, E, prod(size) + non_positional)`.
+        Output tensor is of shape (B, E, *size).
         """
         if len(input_size) != len(self.size):
             raise ValueError(
@@ -64,8 +57,6 @@ class PosInterpEmbedding(nn.Module):
             align_corners=self.align_corners,
         )
 
-        if self.non_positional is not None:
-            return torch.cat((self.non_positional, out.flatten(2)), dim=2)
         return out
 
 
@@ -115,3 +106,52 @@ class RotaryEmbedding(nn.Module):
         out1 =  x[..., :d] * cos - x[..., d:] * sin
         out2 =  x[..., d:] * cos + x[..., :d] * sin
         return torch.cat([out1, out2], dim=-1)
+
+
+class SinCosPosEmbedding(nn.Module):
+    """
+    Implements the sine and cosine positional embeddings as first proposed in the original Attention Is All You Need paper.
+    """
+    def __init__(self, embed_dim: int, base: float = 10000.0) -> None:
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.base = base
+
+        # Register a dummy buffer to track device
+        self.register_buffer("_device_tracker", torch.zeros(1))
+
+    @property
+    def device(self) -> torch.device:
+        return self._device_tracker.device
+
+    @device.setter
+    def device(self, value: torch.device) -> None:
+        raise NotImplementedError("Use `to` method to move the module to a different device.")
+
+    @lru_cache(maxsize=1000)
+    def calculate(self, input_size: tuple[int, ...]) -> torch.Tensor:
+        if self.embed_dim % len(input_size) != 0:
+            raise ValueError(
+                "Embedding dimension must be divisible by the number of input dimensions for "
+                "sine and cosine embeddings."
+            )
+        
+        embed_dim = self.embed_dim // len(input_size)
+        
+        axes = [torch.arange(sz, device=self.device) for sz in input_size]
+        components = []
+        for grid in torch.meshgrid(*axes, indexing="xy"):
+            d =  2 * torch.arange(embed_dim // 2, device=self.device) / embed_dim
+            omega = 1.0 / self.base ** d
+
+            x = torch.outer(grid.ravel(), omega)
+            components.append(torch.cat([x.sin(), x.cos()], dim=-1))
+        return torch.cat(components, dim=-1)
+
+    def forward(self, input_size: Sequence[int]) -> torch.Tensor:
+        """
+        Input size represents the spatial/temporal size of the input, so it should 
+        be of shape (H, W) for images, (T) for sequences, (T, H, W) for videos, etc.
+        """
+        # Get device from module's parameters or buffers
+        return self.calculate(tuple(input_size))

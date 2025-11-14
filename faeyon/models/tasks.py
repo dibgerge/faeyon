@@ -42,7 +42,7 @@ class ClassifyTask(Task):
         return x >> self.pooling >> self.dropout >> self.classifier
 
 
-class ImageDecoder(nn.Module):
+class PatchedImageDecoder(nn.Module):
     """
     ignore_first is used to remove the "cls" token in ViT like models.
     """

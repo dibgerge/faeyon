@@ -9,6 +9,13 @@ edit_uri: edit/main/docs/
 
 theme:
   name: material
+  logo: assets/logo.svg
+  favicon: assets/logo-icon.svg
+  custom_dir: docs/overrides
+  extra_css:
+    - assets/homepage.css
+  extra_javascript:
+    - assets/homepage.js
   palette:
     - scheme: default
       primary: pink

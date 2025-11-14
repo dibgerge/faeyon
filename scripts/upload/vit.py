@@ -38,7 +38,10 @@ def copy_weights(hf_model, pipeline):
     hf_patch_embedding = hf_vit.embeddings.patch_embeddings.projection
     model.patch_embedding.weight.copy_(hf_patch_embedding.weight)
     model.patch_embedding.bias.copy_(hf_patch_embedding.bias)
-    model.cls_token.copy_(hf_vit.embeddings.cls_token)
+    model.cls_token.copy_(
+        hf_vit.embeddings.cls_token
+        + hf_vit.embeddings.position_embeddings[:, :1, :]
+    )
     model.pos_embeddings.embeddings.copy_(
         hf_vit
         .embeddings
@@ -46,7 +49,7 @@ def copy_weights(hf_model, pipeline):
         .reshape([1, 14, 14, -1])
         .permute(0, 3, 1, 2)
     )
-    model.pos_embeddings.non_positional.copy_(hf_vit.embeddings.position_embeddings[:, 0, :].mT)
+    # model.pos_embeddings.non_positional.copy_(hf_vit.embeddings.position_embeddings[:, 0, :].mT)
 
     model.lnorm.weight.copy_(hf_vit.layernorm.weight)
     model.lnorm.bias.copy_(hf_vit.layernorm.bias)
@@ -86,7 +89,7 @@ copy_weights(hf_model, pipeline)
 image_processor = AutoImageProcessor.from_pretrained(repo)
 imagenet = load_dataset("ILSVRC/imagenet-1k", trust_remote_code=True)
 inputs = image_processor(
-    images=imagenet["train"][10]["image"],
+    images=imagenet["train"][0]["image"],
     return_tensors="np"
 )
 img = torch.tensor(inputs["pixel_values"])
@@ -102,16 +105,16 @@ print(pipeline.fstate.collect())
 print(y.argmax(), y_hf.logits.argmax())
 
 
-if torch.allclose(y, y_hf.logits, atol=1e-4, rtol=1e-8):
-    print("[SUCCESS] The saved model is the same as the original model.")
-    state_file = "hf://dibgerges/faeyon/vit/vit-base-patch16-224.pt"
-    save(
-        pipeline, 
-        "faeyon/models/configs/vit/vit-base-patch16-224.yaml", 
-        save_state=state_file
-    )
-else:
-    print("[ERROR] The saved model is not the same as the original model.")
+# if torch.allclose(y, y_hf.logits, atol=1e-4, rtol=1e-8):
+#     print("[SUCCESS] The saved model is the same as the original model.")
+#     state_file = "hf://dibgerges/faeyon/vit/vit-base-patch16-224.pt"
+#     save(
+#         pipeline, 
+#         "faeyon/models/configs/vit/vit-base-patch16-224.yaml", 
+#         save_state=state_file
+#     )
+# else:
+#     print("[ERROR] The saved model is not the same as the original model.")
 
 
 

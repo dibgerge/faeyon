@@ -14,11 +14,12 @@ from faeyon import W, X, Op
 
 class ViT(nn.Module):
     """
+    The vision transformer model
     TODO:
     - [ ] Weight initialize
     - [x] parameter saving and adding parameters to constructor
-    - [ ] checkpointing
-    - [ ] Loading pre-trained model
+    - [-] checkpointing (I don't think I need this right now, since pausing training features)
+    - [x] Loading pre-trained model
     """
     task: nn.Module | type[X]
 
@@ -65,7 +66,6 @@ class ViT(nn.Module):
             size=self.feature_count,
             embedding_dim=embed_size,
             interpolate="bicubic",
-            non_positional=1,
             align_corners=False,
         )
 
@@ -132,11 +132,9 @@ class ViT(nn.Module):
         return (
             img 
             >> self.patch_embedding
-            >> (self.pos_embeddings(X.shape[2:]) >> X.mT) + (
-                self.mask_token(X, mask=patch_mask)
-                >> X.flatten(-2).mT
-                >> self.concat(cls_token, X, dim=1)
-            )
+            >> self.pos_embeddings(X.shape[2:]) + self.mask_token(X, mask=patch_mask)
+            >> X.flatten(-2).mT
+            >> self.concat(cls_token, X, dim=1)
             >> self.dropout
             >> self.fstate.hidden.if_(keep_hidden)
             >> (
