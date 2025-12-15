@@ -1,3 +1,4 @@
+import threading
 from typing import Any
 
 
@@ -30,9 +31,11 @@ class Singleton(type):
     """
     def __init__(self, *args, **kwargs) -> None:
         self.__instance = None
+        self._lock = threading.Lock()
         super().__init__(*args, **kwargs)
 
     def __call__(self, *args, **kwargs) -> Any:
         if self.__instance is None:
-            self.__instance = super().__call__(*args, **kwargs)
+            with self._lock:
+                self.__instance = super().__call__(*args, **kwargs)
         return self.__instance

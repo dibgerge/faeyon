@@ -15,6 +15,7 @@ model:
   mlp_size: 3072
   num_layers: 12
   patch_size: 16
+  pos_embedding: null
   use_patch_mask: false
 pooling: null
 task:

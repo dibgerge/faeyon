@@ -1,6 +1,6 @@
 import inspect
 from torch import nn
-from typing import Any, Optional, overload, Iterator
+from typing import Any, Optional, overload, Iterator, Iterable
 from collections import OrderedDict
 
 from faeyon.magic.spells import ContainerBase, Wire, X, A, Wiring, Parallels
@@ -101,8 +101,16 @@ class FaeModuleList(nn.ModuleList):
     # def __init__(self, modules: Optional[Iterable[nn.Module]] = None) -> None:
     #     super().__init__(modules)
 
+    def __init__(self, modules: Optional[Iterable[nn.Module]] = None) -> None:
+        super().__init__(modules)
+        self._op = None
+
     def __call__(self, *args: Any, **kwargs: Any) -> Parallels:
         # TODO: What if args/kwargs are already resolved?
+
+        # if self._op is not None:
+        #     return self._op
+
         ops = []
         for name, layer in self.named_children():
             i = int(name)
@@ -112,7 +120,9 @@ class FaeModuleList(nn.ModuleList):
                 for k, arg in kwargs.items()
             }
             ops.append(layer(*layer_args, **layer_kwargs))
-        return Parallels(ops)
+
+        self._op = Parallels(ops)
+        return self._op
 
 
 class FaeBlock(nn.Module):

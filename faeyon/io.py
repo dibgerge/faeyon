@@ -191,6 +191,7 @@ def _read_pt(
     **kwargs: Any
 ) -> dict[str, Any]:
     fs, _ = fsspec.core.url_to_fs(name, **kwargs)
+
     protocol = getattr(fs, "protocol", None)
     if isinstance(protocol, (tuple, list)):
         protocol = protocol[0]
@@ -200,8 +201,8 @@ def _read_pt(
     if is_remote and cache:
         fs = fsspec.filesystem(
             "filecache",
-            target_protocol=fs,
-            cache_storage=cache_dir(),
+            fs=fs,
+            cache_storage=str(cache_dir()),
             check_files=True,
             expiry_time=None,
         )

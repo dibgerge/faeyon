@@ -12,3 +12,4 @@ from .spells import (
 )
 from .faek import faek
 from .x import X
+from .mode import fae_mode

@@ -50,9 +50,14 @@ class FState:
 
 
 def _new_module(cls, *args, **kwargs):
-    instance = _new_instance(cls, *args, **kwargs)
-    super(cls, instance).__setattr__("fstate", FState())
-    return instance
+    a = A(*args, **kwargs)
+
+    if a.is_resolved:
+        instance = _new_instance(cls, *args, **kwargs)
+        super(cls, instance).__setattr__("fstate", FState())
+        return instance
+    else:
+        return Op(cls, *args, **kwargs)
 
 
 def __new__(cls, *args, **kwargs):
@@ -253,19 +258,20 @@ def delayed_binary_method[T: nn.Module](
     """
     def func(self: T, other: nn.Module | Delayable) -> Op:
         if isinstance(other, nn.Module):
+            # module >> module
             if is_right:
                 # This should not ever happen... 
                 return getattr(other(X), op_name.replace("r", "", count=1))(self(X))
             else:
                 return getattr(self(X), op_name)(other(X))
-        
-        if isinstance(other, Delayable):
+        else:
             if is_right:
+                # any >> module 
                 return getattr(other, op_name.replace("r", "", count=1))(self(X))
             else:
+                # module >> any
                 return getattr(self(X), op_name)(other)
-        
-        return NotImplemented
+
     return func
 
 

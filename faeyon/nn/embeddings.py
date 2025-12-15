@@ -5,18 +5,28 @@ from typing import Optional
 from functools import lru_cache
 
 
-class PosInterpEmbedding(nn.Module):
+class InterpolatedPosEmbedding(nn.Module):
     """
-    Interpolates positional embeddings to match the input size. Also supports 
-    non-positional embeddings. If this is specified, the outputs will be 
-    flattened.
-    """
-    non_positional: Optional[nn.Parameter]
+    Interpolates positional embeddings to match the input size. 
 
+    Parameters
+    ----------
+    size : int | tuple[int, ...]
+        The size of the positional embeddings during training. 
+
+    embedding_dim : int
+        The dimension of the embedding.
+
+    interpolate : str | None
+        The interpolation mode. If not specified, no interpolation is performed.
+
+    align_corners : bool | None
+        Argument for the interpolation function.
+    """
     def __init__(
         self,
         size: int | tuple[int, ...],
-        embedding_dim: int,
+        embeddings: int | torch.Tensor,
         interpolate: Optional[str] = "nearest",
         align_corners: Optional[bool] = None,
     ) -> None:
@@ -26,7 +36,12 @@ class PosInterpEmbedding(nn.Module):
             size = (size,)
 
         self.size = size
-        self.embeddings = nn.Parameter(torch.randn(1, embedding_dim, *size))       
+
+        if isinstance(embeddings, int):
+            self.embeddings = nn.Parameter(torch.randn(1, embeddings, *size))
+        else:
+            self.register_buffer("embeddings", embeddings)
+
         self.interpolate = interpolate
         self.align_corners = align_corners
 
@@ -80,15 +95,14 @@ class RotaryEmbedding(nn.Module):
         self, 
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         """
-        q : 
+        x : 
             A tensor of shape (B, T, D), where B is batch size and T is the sequence length, 
-            and D is the embedding dimension.
+            and D is the embedding dimension. This is usually the key or query tensor, since RoPE is applied to both keys and queries.
 
-        k : 
-            A tensor of shape (B, T, D), where B is batch size and T is the sequence length, 
-            and D is the embedding dimension.
+        mask : Optional[torch.Tensor]
+            A mask of shape (B, T), where B is batch size and T is the sequence length. This is used to mask positions that are not valid.
         """
         t, d = x.shape[-2:]
         if d != self.embed_dim:
@@ -129,7 +143,7 @@ class SinCosPosEmbedding(nn.Module):
         raise NotImplementedError("Use `to` method to move the module to a different device.")
 
     @lru_cache(maxsize=1000)
-    def calculate(self, input_size: tuple[int, ...]) -> torch.Tensor:
+    def calculate(self, input_size: tuple[int, ...], device: torch.device) -> torch.Tensor:
         if self.embed_dim % len(input_size) != 0:
             raise ValueError(
                 "Embedding dimension must be divisible by the number of input dimensions for "
@@ -138,10 +152,10 @@ class SinCosPosEmbedding(nn.Module):
         
         embed_dim = self.embed_dim // len(input_size)
         
-        axes = [torch.arange(sz, device=self.device) for sz in input_size]
+        axes = [torch.arange(sz, device=device) for sz in input_size]
         components = []
         for grid in torch.meshgrid(*axes, indexing="xy"):
-            d =  2 * torch.arange(embed_dim // 2, device=self.device) / embed_dim
+            d =  2 * torch.arange(embed_dim // 2, device=device) / embed_dim
             omega = 1.0 / self.base ** d
 
             x = torch.outer(grid.ravel(), omega)
@@ -154,4 +168,4 @@ class SinCosPosEmbedding(nn.Module):
         be of shape (H, W) for images, (T) for sequences, (T, H, W) for videos, etc.
         """
         # Get device from module's parameters or buffers
-        return self.calculate(tuple(input_size))
+        return self.calculate(tuple(input_size), self.device)

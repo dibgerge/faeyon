@@ -105,16 +105,16 @@ print(pipeline.fstate.collect())
 print(y.argmax(), y_hf.logits.argmax())
 
 
-# if torch.allclose(y, y_hf.logits, atol=1e-4, rtol=1e-8):
-#     print("[SUCCESS] The saved model is the same as the original model.")
-#     state_file = "hf://dibgerges/faeyon/vit/vit-base-patch16-224.pt"
-#     save(
-#         pipeline, 
-#         "faeyon/models/configs/vit/vit-base-patch16-224.yaml", 
-#         save_state=state_file
-#     )
-# else:
-#     print("[ERROR] The saved model is not the same as the original model.")
+if torch.allclose(y, y_hf.logits, atol=1e-4, rtol=1e-8):
+    print("[SUCCESS] The saved model is the same as the original model.")
+    state_file = "hf://dibgerges/faeyon/vit/vit-base-patch16-224.pt"
+    save(
+        pipeline, 
+        "faeyon/models/configs/vit/vit-base-patch16-224.yaml", 
+        save_state=state_file
+    )
+else:
+    print("[ERROR] The saved model is not the same as the original model.")
 
 
 

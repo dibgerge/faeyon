@@ -49,10 +49,11 @@ def conjure(x: Any, data: Any) -> Any:
     if not isinstance(x, X):
         return x
 
+    inputs = data
     for name, args, kwargs in x:
         # Recursively evaluate the arguments.
-        args = tuple(conjure(arg, data) for arg in args)
-        kwargs = {k: conjure(v, data) for k, v in kwargs.items()}
+        args = tuple(conjure(arg, inputs) for arg in args)
+        kwargs = {k: conjure(v, inputs) for k, v in kwargs.items()}
 
         if name == "__getattr__":
             data = getattr(data, args[0])
@@ -149,7 +150,6 @@ class A:
     def using(self, data: Any) -> A:
         if self.is_resolved:
             return self
-        
         resolved_args = tuple(conjure(arg, data) for arg in self.args)
         resolved_kwargs = {k: conjure(v, data) for k, v in self.kwargs.items()}
         return A(*resolved_args, **resolved_kwargs)
@@ -201,7 +201,7 @@ class _Variable:
         return f"{self.value!r}"
 
 
-class Delayable(Exportable, ABC):
+class Delayable(ABC):
     _condition: Optional[bool | X | Delayable]
     _else_: Optional[Delayable]
     
@@ -209,6 +209,7 @@ class Delayable(Exportable, ABC):
         obj = super().__new__(cls)
         obj._condition = None
         obj._else_ = None
+        obj._data = _NoValue()
         return obj
     
     def copy(self):
@@ -221,8 +222,11 @@ class Delayable(Exportable, ABC):
     @abstractmethod
     def _resolve(self, data: Any) -> Any:
         """ Uses data to resolve the delayable. Must be implemented by subclasses. """
-    
+        
     def using(self, data: Any) -> Any:
+        if isinstance(data, Delayable):
+            return data >> self
+
         if self._condition is not None:
             condition = conjure(self._condition, data)
             if condition:
@@ -232,6 +236,7 @@ class Delayable(Exportable, ABC):
                 return conjure(self._else_, data)
             else:
                 return data
+        
         return self._resolve(data)
         
     def if_[T: Delayable](
@@ -247,8 +252,11 @@ class Delayable(Exportable, ABC):
     def __rshift__(self, other: Delayable) -> Serials:
         if not isinstance(other, Delayable):
             return NotImplemented
-        return Serials(self, other)
         
+        if not isinstance(self._data, _NoValue) and not isinstance(other._data, _NoValue):
+            raise ValueError("Cannot chain two Delayable objects with data already set.")
+        return Serials(self, other)
+
     def __rrshift__(self, other: Any) -> Any:
         """
         In this case `other` cannot be of type `Delayable` (__rshift__ is called instead).
@@ -531,16 +539,21 @@ class FMMap(KeyedContainer):
 
 
 class _OpBase(Delayable):
+
     def _unary_op(self, oper):            
         return Op(oper, self)
     
     def _binary_op(self, oper, other):
         if isinstance(other, Parallels):
             return Parallels([self], other, func=oper)
-        if isinstance(other, Op | Serials):
+        elif isinstance(other, nn.Module):
+            return Op(oper, self, other(X))
+        else:
             return Op(oper, self, other)
-        return NotImplemented
 
+    def _rbinary_op(self, oper, other):
+        return Op(oper, other, self)
+        
 
 def op_unary_method[T: _OpBase](oper: Callable[[T], _OpBase]) -> Callable[[T], _OpBase]:
     def func(self: T) -> _OpBase:
@@ -548,16 +561,23 @@ def op_unary_method[T: _OpBase](oper: Callable[[T], _OpBase]) -> Callable[[T], _
     return func
 
 
-def op_binary_method[T: _OpBase](oper: Callable[[T, T], T]) -> Callable[[T, Any], Op]:
+def op_binary_method[T: _OpBase](
+    oper: Callable[[T, T], T], 
+    is_right: bool
+) -> Callable[[T, Any], Op]:
     def func(self: T, other: Any) -> Op:
-        return self._binary_op(oper, other)
+        if is_right:
+            return self._rbinary_op(oper, other)
+        else:
+            return self._binary_op(oper, other)
     return func
 
 
 for bin_op, (method, rmethod) in binary_operators.items():
     if method in ("__rshift__", "__lshift__"):
         continue
-    setattr(_OpBase, method, op_binary_method(bin_op))
+    setattr(_OpBase, method, op_binary_method(bin_op, False))
+    setattr(_OpBase, rmethod, op_binary_method(bin_op, True))
 
 for uni_op, method in unary_operators.items():    
     setattr(_OpBase, method, op_unary_method(uni_op))
@@ -601,7 +621,8 @@ class Op(_OpBase):
         return self.strategy(data)
 
     def __repr__(self):
-        return f"Op({self.strategy!r})"
+        #return f"Op({self.strategy!r})"
+        return f"{self.strategy!r}"
 
 
 class _StrategyBase(ABC):
@@ -652,11 +673,15 @@ class _CallableStrategy(_StrategyBase):
     """
     def __init__(self, op: Callable[..., Any], *args, **kwargs) -> None:
         self.op = op
-        self.args = A(*args, **kwargs)
+        #self.args = A(*args, **kwargs)
+        self.args = args
+        self.kwargs = kwargs
     
     def __call__(self, data: Any) -> Any:
-        resolved = data >> self.args
-        return self.op(*resolved.args, **resolved.kwargs)
+        args = [conjure(arg, data) for arg in self.args]
+        kwargs = {k: conjure(v, data) for k, v in self.kwargs.items()}
+        return self.op(*args, **kwargs)
+        #return data >> self.args >> self.op
 
     def __repr__(self):
         try:
@@ -665,15 +690,15 @@ class _CallableStrategy(_StrategyBase):
             name = f"{self.op!r}"
         
         if name == "Module.__call__" and len(self.args.args) > 0:
-            name, *args = self.args.args
+            name, *args = self.args#.args
         else:
-            args = self.args.args
+            args = self.args#.args
 
         args = ", ".join(map(repr, args))
-        kwargs = ", ".join(f"{k}={v!r}" for k, v in self.args.kwargs.items())
+        #kwargs = ", ".join(f"{k}={v!r}" for k, v in self.args.kwargs.items())
 
-        if kwargs:
-            args = args + ", " + kwargs
+        # if kwargs:
+        #     args = args + ", " + kwargs
 
         return f"{name}({args})"
 
@@ -775,8 +800,16 @@ class Parallels(_OpBase):
         
         self.ops = tuple(new_ops)
         self.func = func
+        self.items = []
+        # for i in range(self.length):
+        #     args = [op[i] for op in self.ops]
+        #     if self.func is not None:
+        #         self.items.append(Op(self.func, *args))
+        #     else:
+        #         self.items.append(Serials(*args))
     
     def __getitem__(self, idx: int) -> Delayable:
+        # out = self.items[idx]
         args = [op[idx] for op in self.ops]
         
         out : Delayable

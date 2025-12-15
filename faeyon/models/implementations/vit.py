@@ -3,7 +3,7 @@ from torch import nn
 from typing import Optional
 from faeyon.enums import ImageSize
 from faeyon.nn import (
-    PosInterpEmbedding, 
+    InterpolatedPosEmbedding, 
     TokenizedMask, 
     FaeBlock,
     head_to_attn_mask,
@@ -14,15 +14,21 @@ from faeyon import W, X, Op
 
 class ViT(nn.Module):
     """
-    The vision transformer model
-    TODO:
+    The vision transformer model.
+
+    Parameters
+    ----------
+
+    image_size : int | tuple[int, int]
+        This is needed 
+
+    TODO
+    ----
     - [ ] Weight initialize
     - [x] parameter saving and adding parameters to constructor
     - [-] checkpointing (I don't think I need this right now, since pausing training features)
     - [x] Loading pre-trained model
     """
-    task: nn.Module | type[X]
-
     def __init__(
         self,
         embed_size: int,
@@ -31,6 +37,7 @@ class ViT(nn.Module):
         patch_size: int | tuple[int, int],
         num_layers: int,
         mlp_size: int,
+        pos_embedding: Optional[nn.Module] = None,
         use_patch_mask: bool = False,
         in_channels: int = 3,
         dropout: float = 0.1,
@@ -62,9 +69,9 @@ class ViT(nn.Module):
         )
         self.cls_token = nn.Parameter(torch.randn(1, 1, embed_size))
         self.mask_token = TokenizedMask(embed_size, enabled=use_patch_mask)
-        self.pos_embeddings = PosInterpEmbedding(
+        self.pos_embeddings = InterpolatedPosEmbedding(
             size=self.feature_count,
-            embedding_dim=embed_size,
+            embeddings=embed_size,
             interpolate="bicubic",
             align_corners=False,
         )
@@ -87,6 +94,15 @@ class ViT(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.lnorm = nn.LayerNorm(embed_size, eps=lnorm_eps)
         self.concat = Concat()
+        self._op = None
+
+    def fast(self, img):
+        
+        if hasattr(self, '_op') and self._op:
+            return img >> self._op
+
+        self._op = self.forward(X)
+        return img >> self._op
 
     def forward(
         self,
