@@ -38,25 +38,31 @@ unary_operators: dict[Callable[[Any], Any], str] = {
 }
 
 
-def conjure(x: Any, data: Any) -> Any:
+def conjure(x: Any, data: Any, fast: bool = False) -> Any:
     """ 
     Evaluate the operations stored in the `X` buffer. If the input is not an instance of `X`, 
     return it as is.
     """
-    if isinstance(x, Delayable):
-        return x.using(data)
-    
-    if not isinstance(x, X):
-        return x
+
+    if not fast:
+        if isinstance(x, Delayable):
+            return x.using(data)
+        
+        if not isinstance(x, X):
+            return x
 
     inputs = data
     for name, args, kwargs in x:
         # Recursively evaluate the arguments.
-        args = tuple(conjure(arg, inputs) for arg in args)
-        kwargs = {k: conjure(v, inputs) for k, v in kwargs.items()}
+        args = tuple(conjure(arg, inputs, fast=True) if isinstance(arg, (X, Delayable)) else arg for arg in args)
+        kwargs = {k: conjure(v, inputs, fast=True) if isinstance(v, (X, Delayable)) else v for k, v in kwargs.items()}
 
         if name == "__getattr__":
             data = getattr(data, args[0])
+        elif name == "__getitem__":
+            data = data[args[0]]
+        elif name == "__call__":
+            data = data(*args, **kwargs)
         else:
             data = getattr(data, name)(*args, **kwargs)
     return data

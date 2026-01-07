@@ -94,15 +94,6 @@ class ViT(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.lnorm = nn.LayerNorm(embed_size, eps=lnorm_eps)
         self.concat = Concat()
-        self._op = None
-
-    def fast(self, img):
-        
-        if hasattr(self, '_op') and self._op:
-            return img >> self._op
-
-        self._op = self.forward(X)
-        return img >> self._op
 
     def forward(
         self,

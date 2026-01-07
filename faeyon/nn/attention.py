@@ -140,7 +140,7 @@ class MultiHeadAttention(nn.Module):
         kdim: Optional[int] = None,
         vdim: Optional[int] = None,
         scale: Optional[float] = None,
-        bias: Optional[bool] = False,
+        bias: bool = False,
         dropout: Optional[float] = 0.0,
         fa: Optional[Callable | str] = None,
         fq: Optional[Callable] = None,
@@ -212,10 +212,22 @@ class MultiHeadAttention(nn.Module):
         b, t = query.shape[:2]
         reshape = X.view(b, t, -1, self.kdim).transpose(1, 2)
 
-        q = query >> self.q_proj >> reshape >> Op(self.fq, X, mask=attn_mask)
-        k = key >> self.k_proj >> reshape >> Op(self.fk, X, mask=attn_mask)
-        v = value >> self.v_proj >> X.view(b, t, -1, self.vdim).transpose(1, 2) >> Op(self.fv)
+        # q = query >> self.q_proj >> reshape >> Op(self.fq, X, mask=attn_mask)
+        # k = key >> self.k_proj >> reshape >> Op(self.fk, X, mask=attn_mask)
+        # v = value >> self.v_proj >> X.view(b, t, -1, self.vdim).transpose(1, 2) >> Op(self.fv)
         
+        v = self.v_proj(value).view(b, t, -1, self.vdim).transpose(1, 2) >> Op(self.fv)
+        q = self.q_proj(query).view(b, t, -1, self.kdim).transpose(1, 2)
+        if self.fq is not None:
+            q = self.fq(q, mask=attn_mask)
+
+        k = self.k_proj(key).view(b, t, -1, self.kdim).transpose(1, 2)
+        if self.fk is not None:
+            k = self.fk(k, mask=attn_mask)
+        # v =  self.v_proj(value).view(b, t, -1, self.vdim).transpose(1, 2)
+        # if self.fv is not None:
+        #     v = self.fv(v)
+
         if self.fa is not None:
             # TODO: Adding dropout?
             attention = flex_attention(   
@@ -238,6 +250,7 @@ class MultiHeadAttention(nn.Module):
                 is_causal=is_causal,
                 enable_gqa=enable_gqa,
             )
-        out = attention >> X.transpose(1, 2).contiguous().reshape(b, t, -1) 
-        return out >> self.o_proj
+        #out = attention >> X.transpose(1, 2).contiguous().reshape(b, t, -1) 
+        out = attention.transpose(1, 2).contiguous().reshape(b, t, -1) 
+        return self.o_proj(out)
 
