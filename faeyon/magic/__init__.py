@@ -1,5 +1,8 @@
 from .spells import (
-    A, 
+    X,
+    A,
+    Input,
+    I,
     FDict, 
     FList,
     FMMap,
@@ -11,5 +14,3 @@ from .spells import (
     W
 )
 from .faek import faek
-from .x import X
-from .mode import fae_mode

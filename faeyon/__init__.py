@@ -1,7 +1,9 @@
 from .magic import (
     faek, 
-    X, 
+    X,
     A,
+    Input,
+    I,
     FDict, 
     FList, 
     FMMap,
@@ -10,8 +12,7 @@ from .magic import (
     Serials,
     Parallels,
     Wire,
-    W,
-    fae_mode
+    W
 )
 
 from . import models

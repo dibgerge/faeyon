@@ -3,88 +3,7 @@ import sys
 from collections.abc import Callable
 from typing import Any
 from ..utils import is_ipython
-
-
-# Define methods supported by the _MetaX metaclass
-_methods = {
-    "__lt__": "{X} < {}",
-    "__le__": "{X} <= {}",
-    "__eq__": "{X} == {}",
-    "__ne__": "{X} != {}",
-    "__gt__": "{X} > {}",
-    "__ge__": "{X} >= {}",
-    "__getattr__": "{X}.{}",
-
-    # Emulating callables
-    "__call__": "{X}({})",
-    
-    # Containers
-    "__getitem__": "{X}[{}]",
-    "__reversed__": "reversed({X})",
-
-    # Numeric types
-    "__add__": "{X} + {}",
-    "__sub__": "{X} - {}",
-    "__mul__": "{X} * {}",
-    "__matmul__": "{X} @ {}",
-    "__truediv__": "{X} / {}",
-    "__floordiv__": "{X} // {}",
-    "__mod__": "{X} % {}",
-    "__divmod__": "divmod({X}, {})",
-    "__pow__": "{X} ** {}",
-    "__lshift__": "{X} << {}",
-    "__rshift__": "{X} >> {}",
-    "__and__": "{X} & {}",
-    "__or__": "{X} | {}",
-    "__xor__": "{X} ^ {}",
-
-    "__radd__": "{} + {X}",
-    "__rsub__": "{} - {X}",
-    "__rmul__": "{} * {X}",
-    "__rmatmul__": "{} @ {X}",
-    "__rtruediv__": "{} / {X}",
-    "__rfloordiv__": "{} // {X}",
-    "__rmod__": "{} % {X}",
-    "__rdivmod__": "divmod({}, {X})",
-    "__rpow__": "{} ** {X}",
-    "__rlshift__": "{} << {X}",
-    "__rrshift__": "{} >> {X}",
-    "__rand__": "{} & {X}",
-    "__ror__": "{} | {X}",
-    "__rxor__": "{} ^ {X}",
-
-    # Unary operators
-    "__neg__": "-{X}",
-    "__pos__": "+{X}",
-    "__abs__": "abs({X})",
-    "__invert__": "~{X}",
-
-   # built-in number types
-    "__round__": "round({X})",
-    "__trunc__": "trunc({X})",
-    "__floor__": "floor({X})",
-    "__ceil__": "ceil({X})",
-}
-
-
-def __rshift__(self, other):
-    from .spells import Op
-    return Op(self) >> other
-
-
-def __rrshift__(self, other):
-    from .spells import Op
-    return other >> Op(self)
-
-
-def __lshift__(self, other):
-    from .spells import Op
-    return Op(self) << other
-
-
-def __rlshift__(self, other):
-    from .spells import Op
-    return other << Op(self)
+from .spells import Delayable
 
 
 def _meta_method[T](name: str) -> Callable[..., T]:
@@ -92,7 +11,7 @@ def _meta_method[T](name: str) -> Callable[..., T]:
         # Call the constructor method to return an instance of the class
         # This removes the requirement to explicity initialize the class with `X()`, since 
         # the latter should be interpreted as a function call
-        obj = super(_MetaX, cls).__call__()  # type: ignore
+        obj = super(_XMeta, cls).__call__()  # type: ignore
         return getattr(obj, name)(*args, **kwargs)
     return method
 
@@ -115,7 +34,6 @@ def _x_method[T](name: str) -> Callable[..., T]:
     #     return False
     
     def method(self, *args, **kwargs) -> Any:
-        # if not _is_fx_tracing():
         self._buffer.append((name, args, kwargs))
         return self
 
@@ -141,38 +59,41 @@ def _x_method[T](name: str) -> Callable[..., T]:
     return method
 
 
-def _meta_hash(cls) -> int:
-    return super(_MetaX, cls).__hash__()  # type: ignore
+# def _meta_hash(cls) -> int:
+#     return super(_MetaX, cls).__hash__()  # type: ignore
 
 
-def _meta_len(cls) -> int:
-    return 0
+# def _meta_len(cls) -> int:
+#     return 0
 
 
-def _meta_iter(cls):
-    return iter([])
+# def _meta_iter(cls):
+#     return iter([])
 
 
-def _meta_repr(cls):
-    return "X"
+# def _meta_repr(cls):
+#     return "X"
 
 
-def _meta_instancecheck(cls, instance):
-    return (
-        super(_MetaX, cls).__instancecheck__(instance) 
-        or (isinstance(instance, type) and issubclass(instance, cls))
-    )
+# def _meta_instancecheck(cls, instance):
+#     return (
+#         super(_MetaX, cls).__instancecheck__(instance) 
+#         or (isinstance(instance, type) and issubclass(instance, cls))
+#     )
 
 
-_MetaX = type("_MetaX", (type,), {k: _meta_method(k) for k in _methods})
-_MetaX.__hash__ = _meta_hash  # type: ignore
-_MetaX.__len__ = _meta_len  # type: ignore
-_MetaX.__iter__ = _meta_iter  # type: ignore
-_MetaX.__repr__ = _meta_repr  # type: ignore
-_MetaX.__instancecheck__ = _meta_instancecheck  # type: ignore
+# _MetaX = type("_MetaX", (type,), {k: _meta_method(k) for k in _methods})
+# _MetaX.__hash__ = _meta_hash  # type: ignore
+# _MetaX.__len__ = _meta_len  # type: ignore
+# _MetaX.__iter__ = _meta_iter  # type: ignore
+# _MetaX.__repr__ = _meta_repr  # type: ignore
+# _MetaX.__instancecheck__ = _meta_instancecheck  # type: ignore
 
 
-class X(metaclass=_MetaX):  # type: ignore
+
+
+
+class X(metaclass=_MetaOps):  # type: ignore
     """ 
     A buffer for lazy access of operations on any object. This dummy variable is used to hold 
     generally read-only operatons.
@@ -223,6 +144,36 @@ class X(metaclass=_MetaX):  # type: ignore
         self._fn = fn
         return fn
 
+    def __rshift__(self, other):
+        from .spells import Op
+        return Op(self) >> other
+
+    def __rrshift__(self, other):
+        from .spells import Op
+        return other >> Op(self)
+
+    def __lshift__(self, other):
+        from .spells import Op
+        return Op(self) << other
+
+    def __rlshift__(self, other):
+        from .spells import Op
+        return other << Op(self)
+
+    def __ror__(self, data):
+        """
+        This is the pipe `|` operator. It is used to evaluate an expression (see conjure). This 
+        only works if data is on the left and X is on the right.
+        """
+        from .spells import Op
+        return Op(self) | 
+    
+    def __or__(self, other):
+        raise NotImplementedError(
+            "The pipe `|` operator is reserved, and only works if expression is on the right side."
+        )
+
 
 for method in _methods:
-    setattr(X, method, _x_method(method))
+    if method not in ["__rshift__", "__rrshift__", "__lshift__", "__rlshift__"]:
+        setattr(X, method, _x_method(method))

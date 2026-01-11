@@ -5,6 +5,8 @@ from torch import nn
 from typing import Any, overload
 from collections.abc import Callable
 
+from .meta import binary_operators, unary_operators
+
 from .spells import (
     Op, 
     FList, 
@@ -12,8 +14,6 @@ from .spells import (
     A, 
     X, 
     FVar, 
-    binary_operators, 
-    unary_operators, 
     Delayable,
     _new_instance
 )

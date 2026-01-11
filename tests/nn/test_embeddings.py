@@ -1,5 +1,4 @@
-import torch
-from faeyon.nn import PosInterpEmbedding
+from faeyon.nn import InterpolatedPosEmbedding
 import pytest
 
 
@@ -15,24 +14,24 @@ class TestPosInterpEmbedding:
         ]
     )
     def test_forward_usage(self, size, input_size, expected_shape):
-        embedding = PosInterpEmbedding(size=size, embedding_dim=4, interpolate="nearest")
+        embedding = InterpolatedPosEmbedding(size=size, embedding_dim=4, interpolate="nearest")
         ans = embedding(input_size)
         assert ans.shape == expected_shape
         
     def test_forward_raises_value_error(self):
         """ Input size must have same number of dimensions as embedding size. """
-        embedding = PosInterpEmbedding(size=8, embedding_dim=4, interpolate="nearest")
+        embedding = InterpolatedPosEmbedding(size=8, embedding_dim=4, interpolate="nearest")
         with pytest.raises(ValueError):
             embedding((9, 10))
 
     def test_interpolate_none_ok(self):
         """ Interpolate can be None if input size matches embedding size. """
-        embedding = PosInterpEmbedding(size=8, embedding_dim=4, interpolate=None)
+        embedding = InterpolatedPosEmbedding(size=8, embedding_dim=4, interpolate=None)
         assert embedding((8,)).shape == (1, 4, 8)
 
     def test_interpolate_none_error(self):
         """ Interpolate can't be None if input size doesn't match embedding size. """
-        embedding = PosInterpEmbedding(size=8, embedding_dim=4, interpolate=None)
+        embedding = InterpolatedPosEmbedding(size=8, embedding_dim=4, interpolate=None)
         with pytest.raises(ValueError):
             embedding((9,))
 
@@ -46,5 +45,5 @@ class TestPosInterpEmbedding:
         ]
     )
     def test_non_positional(self, size, input_size, expected_shape):
-        embedding = PosInterpEmbedding(size=size, embedding_dim=4, non_positional=1, interpolate="nearest")
+        embedding = InterpolatedPosEmbedding(size=size, embedding_dim=4, non_positional=1, interpolate="nearest")
         assert embedding(input_size).shape == expected_shape
