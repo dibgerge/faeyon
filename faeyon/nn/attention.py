@@ -1,9 +1,9 @@
 import enum
 import torch
-import torch.nn.functional as F
+from torch.nn import functional 
 
 from typing import Callable, Optional
-from faeyon import A, Op, X
+from faeyon import A, F, X
 from torch import nn
 from torch.nn.attention.flex_attention import flex_attention
 
@@ -216,7 +216,7 @@ class MultiHeadAttention(nn.Module):
         # k = key >> self.k_proj >> reshape >> Op(self.fk, X, mask=attn_mask)
         # v = value >> self.v_proj >> X.view(b, t, -1, self.vdim).transpose(1, 2) >> Op(self.fv)
         
-        v = self.v_proj(value).view(b, t, -1, self.vdim).transpose(1, 2) >> Op(self.fv)
+        v = self.v_proj(value).view(b, t, -1, self.vdim).transpose(1, 2) >> F(self.fv)
         q = self.q_proj(query).view(b, t, -1, self.kdim).transpose(1, 2)
         if self.fq is not None:
             q = self.fq(q, mask=attn_mask)
@@ -242,7 +242,7 @@ class MultiHeadAttention(nn.Module):
             #     v = v[..., None, :, :].expand(b, self.num_heads, self.group_size, t, self.vdim).reshape(b, self.num_heads * self.group_size, t, self.kdim)
 
             enable_gqa = self.group_size > 1
-            attention = F.scaled_dot_product_attention(
+            attention = functional.scaled_dot_product_attention(
                 q, k, v,
                 attn_mask=attn_mask,
                 dropout_p=self.dropout if self.training else 0.0,

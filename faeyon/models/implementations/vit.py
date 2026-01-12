@@ -9,7 +9,7 @@ from faeyon.nn import (
     head_to_attn_mask,
     Concat
 )
-from faeyon import W, X, Op    
+from faeyon import W, X, F    
 
 
 class ViT(nn.Module):
@@ -126,7 +126,7 @@ class ViT(nn.Module):
             or `(num_hidden_layers, num_heads)`.
         """
         cls_token = self.cls_token.expand(img.shape[0], -1, -1)
-        attn_mask = Op(
+        attn_mask = F(
             head_to_attn_mask, 
             head_mask, 
             X.shape[0], 
@@ -145,7 +145,7 @@ class ViT(nn.Module):
             >> self.dropout
             >> self.fstate.hidden.if_(keep_hidden)
             >> (
-                Op(X) + (
+                F(X) + (
                     self.blocks.lnorm_in
                     << self.blocks.attention(
                         X, X, X, 
@@ -155,7 +155,7 @@ class ViT(nn.Module):
                     << self.fstate.attn_weights.if_(keep_attn_weights) @ X[1]
                     << X[0]
                 )
-                << Op(X) + (
+                << F(X) + (
                     self.blocks.lnorm_out
                     << self.blocks.linear1
                     << self.blocks.gelu

@@ -3,7 +3,7 @@ import torch
 from typing import Optional
 from torch import nn
 from faeyon.nn import RotaryEmbedding, FaeBlock, MultiHeadAttention
-from faeyon import Op, X
+from faeyon import F, X
 
 
 class QKTransform(nn.Module):
@@ -72,11 +72,11 @@ class Qwen(nn.Module):
             x 
             >> self.embedding
             >> (
-                Op(X) + (
+                F(X) + (
                     self.decoder.norm_in
                     << self.decoder.attention(X, X, X, attn_mask=attn_mask, is_causal=is_causal)
                 )
-                << Op(X) + (
+                << F(X) + (
                     self.decoder.norm_out
                     << self.decoder.up_proj * (self.decoder.gate_proj << self.decoder.activation)
                     << self.decoder.down_proj

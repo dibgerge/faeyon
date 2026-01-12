@@ -1,6 +1,6 @@
 import inspect
 import torch
-from faeyon import A, X, FVar, FList, FDict, FMMap, Op, Wire, W, Serials, Parallels
+from faeyon import A, X, FVar, FList, FDict, FMMap, F, Wire, W, Serials, Parallels
 from faeyon.magic.spells import conjure
 import pytest
 from tests.common import ConstantLayer
@@ -11,16 +11,7 @@ class TestX:
         x = X
         assert isinstance(x, X)
         assert len(x) == 0
-
-    def test_single_op(self):
-        x = X[0]
-        assert isinstance(x, X)
-        assert len(x) == 1
-
-    def test_multiple_ops(self):
-        x = X[0] + 1
-        assert isinstance(x, X)
-        assert len(x) == 2
+        assert 1 | X == 1
 
     def test_rshift(self):
         """ The right shift operator results in a Chain Object if both arguments are of type X."""
@@ -37,14 +28,6 @@ class TestX:
         """ Shift operator not defined with non-X arguments (Use | instead). """
         with pytest.raises(TypeError):
             x = 1 >> X[1]
-    
-    def test_ror(self):
-        """ 
-        This is how we feed data to resolve magic X expressions, using pipe operator.
-        """
-        x = [1, 2, 3] | X[1]
-        print(x)
-        assert x == 2
 
     def test_or_error(self):
         """ Pipe magic X expression to anything is not defined. """
@@ -87,6 +70,24 @@ class TestX:
     def test_rsub(self):
         assert 1 | 1 - X == 0
         assert 1 | 1 - 1 - X == -1
+
+    def test_mul(self):
+        assert 1 | X * 2 == 2
+        assert 1 | X * 2 * 2 == 4
+        assert 1 | X * X == 1
+    
+    def test_rmul(self):
+        assert 1 | 2 * X == 2
+        assert 1 | 2 * 2 * X == 4
+
+    def test_matmul(self):
+        data = torch.tensor([1.0, 1.0])
+        mat = torch.tensor([[1.0, 1.0], [1.0, 1.0]])
+        torch.testing.assert_close(mat | X @ data, torch.tensor([2.0, 2.0]))
+        torch.testing.assert_close(data | X @ X, torch.tensor(2.0))
+
+        # test rmatmul
+        torch.testing.assert_close(data | mat @ X, torch.tensor([2.0, 2.0]))
 
 
 class TestX2:

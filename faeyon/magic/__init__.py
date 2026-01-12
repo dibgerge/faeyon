@@ -7,7 +7,7 @@ from .spells import (
     FList,
     FMMap,
     FVar,
-    Op,
+    F,
     Serials,
     Parallels,
     Wire,

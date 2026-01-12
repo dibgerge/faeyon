@@ -5,10 +5,10 @@ from torch import nn
 from typing import Any, overload
 from collections.abc import Callable
 
-from .meta import binary_operators, unary_operators
+from .ops import binary_operators, unary_operators
 
 from .spells import (
-    Op, 
+    F, 
     FList, 
     FDict, 
     A, 
@@ -57,7 +57,7 @@ def _new_module(cls, *args, **kwargs):
         super(cls, instance).__setattr__("fstate", FState())
         return instance
     else:
-        return Op(cls, *args, **kwargs)
+        return F(cls, *args, **kwargs)
 
 
 def __new__(cls, *args, **kwargs):
@@ -148,10 +148,10 @@ def __default_new__(cls, *args, **kwargs):
 def __mul__[T: nn.Module](self: T, other: int) -> list[T]: ...
 
 @overload
-def __mul__[T: nn.Module](self: T, other: nn.Module | Op) -> Op: ...
+def __mul__[T: nn.Module](self: T, other: nn.Module | F) -> F: ...
 
 
-def __mul__[T: nn.Module](self: T, other: int | nn.Module | Op) -> list[T] | Op:
+def __mul__[T: nn.Module](self: T, other: int | nn.Module | F) -> list[T] | F:
     """
     Creates a ModuleList of `other` clones of this module.
     """
@@ -175,10 +175,10 @@ def __rmul__[T: nn.Module](self: T, other: int) -> list[T]: ...
 
 
 @overload
-def __rmul__[T: nn.Module](self: T, other: nn.Module | Op) -> Op: ...
+def __rmul__[T: nn.Module](self: T, other: nn.Module | F) -> F: ...
 
 
-def __rmul__[T: nn.Module](self: T, other: int | nn.Module | Op) -> list[T] | Op:
+def __rmul__[T: nn.Module](self: T, other: int | nn.Module | F) -> list[T] | F:
     """ Multiplication is commutative. """
     return self.__mul__(other)  # type: ignore
 
@@ -238,11 +238,11 @@ def __call__(self, *args, **kwargs):
     if fargs.is_resolved:
         return _resolved_call(self, *args, **kwargs)
     
-    return Op(_resolved_call, self, *args, **kwargs)
+    return F(_resolved_call, self, *args, **kwargs)
 
     
-def delayed_unary_method[T: nn.Module](op_name: str) -> Callable[[T], Op]:
-    def func(self: T) -> Op:
+def delayed_unary_method[T: nn.Module](op_name: str) -> Callable[[T], F]:
+    def func(self: T) -> F:
         return getattr(self(X), op_name)()
     return func
 
@@ -250,13 +250,13 @@ def delayed_unary_method[T: nn.Module](op_name: str) -> Callable[[T], Op]:
 def delayed_binary_method[T: nn.Module](
     op_name: str,
     is_right: bool
-) -> Callable[[T, nn.Module | Delayable], Op]:
+) -> Callable[[T, nn.Module | Delayable], F]:
     """
     This method only handles arithmetic on two modules, e.g. module1 + module2. Thus we expect
     to implement only the left versions of the operators. If that failed, will call the 
     right type's operator.
     """
-    def func(self: T, other: nn.Module | Delayable) -> Op:
+    def func(self: T, other: nn.Module | Delayable) -> F:
         if isinstance(other, nn.Module):
             # module >> module
             if is_right:

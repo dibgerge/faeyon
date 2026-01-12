@@ -8,7 +8,7 @@ from .magic import (
     FList, 
     FMMap,
     FVar,
-    Op,
+    F,
     Serials,
     Parallels,
     Wire,
