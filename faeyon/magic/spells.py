@@ -4,7 +4,6 @@ import sys
 import inspect
 import enum
 import itertools
-import operator
 from collections.abc import Callable, Iterator, Iterable
 from typing import Any, Optional, overload
 from types import NoneType
@@ -12,7 +11,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 
 from torch import nn
-from ._opinfo import get_opinfo
+from ._opinfo import get_opinfo, OperatorType
 
 
 class Delayable(ABC):
@@ -69,8 +68,10 @@ class Delayable(ABC):
 
     def __ror__(self, other: Any) -> Any:
         """ `data | X` results in evaluating the delayed operations. """
+        print("__ror__ here...", other)
         if isinstance(other, Delayable):
             return NotImplemented
+        print("__ror__ here...2", other)
         return self.using(other)
 
     def __mod__[T: Delayable](self: T, other: str) -> T:
@@ -88,10 +89,10 @@ class Delayable(ABC):
             return NotImplemented
         return self.__mod__(other)
         
-    def __rshift__(self, other: Delayable) -> Serials:
+    def __rshift__(self, other: Delayable) -> Chain:
         if not isinstance(other, Delayable):
             return NotImplemented
-        return Serials(self, other)
+        return Chain(self, other)
 
     def __rrshift__(self, other: Any) -> Any:
         """
@@ -99,13 +100,15 @@ class Delayable(ABC):
         """
         return NotImplemented
 
-    def __lshift__(self, other: Delayable) -> Parallels:
+    def __lshift__(self, other: Delayable) -> Chain:
         """
         a << b. Both `a` and `b` are Delayable objects. This is not defined for any other type.
+
+        TODO: Set direction of chain to be "gather".
         """
         if not isinstance(other, Delayable):
             return NotImplemented
-        return Parallels(self, other)
+        return Chain(self, other)
 
 
 class _MetaOps[T: type](abc.ABCMeta):
@@ -325,40 +328,40 @@ class _DelayableArithmeticOps(Delayable, abc.ABC):
         
     # --- Binary arithmetic operators ---
     def __add__(self, other: Any) -> X:
-        return self._faction("__add__", other)
+        return self._op_action("__add__", other)
 
     def __radd__(self, other: Any) -> X:
-        return self._faction("__radd__", other)
+        return self._op_action("__radd__", other)
 
     def __sub__(self, other: Any) -> X:
-        return self._faction("__sub__", other)
+        return self._op_action("__sub__", other)
 
     def __rsub__(self, other: Any) -> X:
-        return self._faction("__rsub__", other)
+        return self._op_action("__rsub__", other)
 
     def __mul__(self, other: Any) -> X:
-        return self._faction("__mul__", other)
+        return self._op_action("__mul__", other)
 
     def __rmul__(self, other: Any) -> X:
-        return self._faction("__rmul__", other)
+        return self._op_action("__rmul__", other)
 
     def __matmul__(self, other: Any) -> X:
-        return self._faction("__matmul__", other)
+        return self._op_action("__matmul__", other)
 
     def __rmatmul__(self, other: Any) -> X:
-        return self._faction("__rmatmul__", other)
+        return self._op_action("__rmatmul__", other)
 
     def __truediv__(self, other: Any) -> X:
-        return self._faction("__truediv__", other)
+        return self._op_action("__truediv__", other)
 
     def __rtruediv__(self, other: Any) -> X:
-        return self._faction("__rtruediv__", other)
+        return self._op_action("__rtruediv__", other)
 
     def __floordiv__(self, other: Any) -> X:
-        return self._faction("__floordiv__", other)
+        return self._op_action("__floordiv__", other)
 
     def __rfloordiv__(self, other: Any) -> X:
-        return self._faction("__rfloordiv__", other)
+        return self._op_action("__rfloordiv__", other)
 
     def __mod__(self, other: Any) -> X:
         """
@@ -368,75 +371,75 @@ class _DelayableArithmeticOps(Delayable, abc.ABC):
         try:
             return super().__mod__(other)
         except TypeError:
-            return self._faction("__mod__", other)
+            return self._op_action("__mod__", other)
     
     def __rmod__(self, other: Any) -> X:
         try:
             return super().__rmod__(other)
         except TypeError:
-            return self._faction("__rmod__", other)
+            return self._op_action("__rmod__", other)
 
     def __divmod__(self, other: Any) -> X:
-        return self._faction("__divmod__", other)
+        return self._op_action("__divmod__", other)
 
     def __rdivmod__(self, other: Any) -> X:
-        return self._faction("__rdivmod__", other)
+        return self._op_action("__rdivmod__", other)
 
     def __pow__(self, other: Any) -> X:
-        return self._faction("__pow__", other)
+        return self._op_action("__pow__", other)
 
     def __rpow__(self, other: Any) -> X:
-        return self._faction("__rpow__", other)
+        return self._op_action("__rpow__", other)
 
     def __and__(self, other: Any) -> X:
-        return self._faction("__and__", other)
+        return self._op_action("__and__", other)
 
     def __rand__(self, other: Any) -> X:
-        return self._faction("__rand__", other)
+        return self._op_action("__rand__", other)
 
     def __xor__(self, other: Any) -> X:
-        return self._faction("__xor__", other)
+        return self._op_action("__xor__", other)
 
     def __rxor__(self, other: Any) -> X:
-        return self._faction("__rxor__", other)
+        return self._op_action("__rxor__", other)
 
     # --- Unary arithmetic operators ---
     def __neg__(self) -> X:
-        return self._faction("__neg__")
+        return self._op_action("__neg__")
 
     def __pos__(self) -> X:
-        return self._faction("__pos__")
+        return self._op_action("__pos__")
 
     def __abs__(self) -> X:
-        return self._faction("__abs__")
+        return self._op_action("__abs__")
 
     def __invert__(self) -> X:
-        return self._faction("__invert__")
+        return self._op_action("__invert__")
 
     def __round__(self) -> X:
-        return self._faction("__round__")
+        return self._op_action("__round__")
     
     def __reversed__(self) -> X:
-        return self._faction("__reversed__")
+        return self._op_action("__reversed__")
 
     # --- Comparison operators ---
     def __lt__(self, other: Any) -> X:
-        return self._faction("__lt__", other)
+        return self._op_action("__lt__", other)
 
     def __le__(self, other: Any) -> X:
-        return self._faction("__le__", other)
+        return self._op_action("__le__", other)
 
     def __eq__(self, other: Any) -> X:
-        return self._faction("__eq__", other)
+        return self._op_action("__eq__", other)
 
     def __ne__(self, other: Any) -> X:
-        return self._faction("__ne__", other)
+        return self._op_action("__ne__", other)
 
     def __gt__(self, other: Any) -> X:
-        return self._faction("__gt__", other)
+        return self._op_action("__gt__", other)
 
     def __ge__(self, other: Any) -> X:
-        return self._faction("__ge__", other)
+        return self._op_action("__ge__", other)
 
 
 class X(_DelayableArithmeticOps, metaclass=_MetaOps):
@@ -459,15 +462,9 @@ class X(_DelayableArithmeticOps, metaclass=_MetaOps):
                 k: inputs | v if isinstance(v, (Delayable, _MetaOps)) else v
                 for k, v in kwargs.items()
             }
-
-            if name == "__getattr__":
-                data = getattr(data, args[0])
-            elif name == "__getitem__":
-                data = data[args[0]]
-            elif name == "__call__":
-                data = data(*args, **kwargs)
-            else:
-                data = getattr(data, name)(*args, **kwargs)
+            opinfo = get_opinfo(attr_name=name)
+            data = opinfo(data, *args, **kwargs)
+            
         return data
 
     def __iter__(self):
@@ -491,7 +488,7 @@ class X(_DelayableArithmeticOps, metaclass=_MetaOps):
             if kwargs_f:
                 args_f = args_f + ", " + kwargs_f
 
-            output = get_opinfo[name].to_string(args_f, X=output)
+            output = get_opinfo(attr_name=name).to_string(args_f, X=output)
         return output
 
     # --- Other operators ---
@@ -499,16 +496,16 @@ class X(_DelayableArithmeticOps, metaclass=_MetaOps):
         if name == "__torch_function__":
             return type(self).__torch_function__
         
-        return self._faction("__getattr__", name)
+        return self._op_action("__getattr__", name)
 
     def __getitem__(self, key: Any) -> X:
-        return self._faction("__getitem__", key)
+        return self._op_action("__getitem__", key)
 
     def __call__(self, *args: Any, **kwargs: Any) -> X:
-        return self._faction("__call__", *args, **kwargs)
+        return self._op_action("__call__", *args, **kwargs)
 
     def __reversed__(self) -> X:
-        return self._faction("__reversed__")
+        return self._op_action("__reversed__")
 
  
 class A(X):
@@ -568,49 +565,7 @@ class A(X):
 #     setattr(_OpBase, method, op_unary_method(uni_op))
 
 
-class F(_DelayableArithmeticOps):
-    strategy: _XStrategy | _CallableStrategy
-
-    def __init__(self, op: Callable[..., Any] | X, *args, **kwargs) -> None:
-        # Note: X is callable, but not vice versa.
-        if isinstance(op, X):
-            if len(args) > 0 or len(kwargs) > 0:
-                raise ValueError(
-                    "`op` cannot be an instance of `X` if `args` or `kwargs` are provided."
-                )
-            self.strategy = _XStrategy(op)
-        elif isinstance(op, Callable):  # type: ignore[arg-type]
-            self.strategy = _CallableStrategy(op, *args, **kwargs)
-        elif isinstance(op, NoneType):
-            self.strategy = _NoopStrategy()
-        else:
-            raise ValueError(f"Arguments should be of type `X` or Callable. Got {type(op)}.")
-
-    @classmethod
-    def from_strategy(cls, strategy: _XStrategy | _CallableStrategy) -> F:
-        out = cls.__new__(cls)
-        out.strategy = strategy
-        return out
-
-    def _faction(self, name: str, other: Any) -> F:
-        opinfo = get_opinfo(name)
-
-
-    def copy(self):
-        out = F.from_strategy(self.strategy)
-        out._condition = self._condition
-        out._else_ = self._else_
-        return out
-
-    def _resolve(self, data: Any) -> Any:
-        return self.strategy(data)
-
-    def __repr__(self):
-        # return f"F({self.strategy!r})"
-        return f"{self.strategy!r}"
-
-
-class _StrategyBase(ABC):
+class _Strategy(ABC):
     @abstractmethod
     def __call__(self, data: Any) -> Any:
         pass
@@ -620,7 +575,7 @@ class _StrategyBase(ABC):
         pass
 
 
-class _NoopStrategy(_StrategyBase):
+class _NoopStrategy(_Strategy):
     def __call__(self, data: Any) -> Any:
         return data
 
@@ -628,7 +583,7 @@ class _NoopStrategy(_StrategyBase):
         return "<noop>"
 
 
-class _XStrategy(_StrategyBase):
+class _XStrategy(_Strategy):
     """
     F Strategy when `op` is an instance of `X`. E.g.:
 
@@ -647,7 +602,7 @@ class _XStrategy(_StrategyBase):
         return f"{self._op!r}"
 
 
-class _CallableStrategy(_StrategyBase):
+class _CallableStrategy(_Strategy):
     """
     F Strategy when `op` is a Callable.out._condition = self._condition
         out._else_ = self._else_
@@ -688,6 +643,61 @@ class _CallableStrategy(_StrategyBase):
         #     args = args + ", " + kwargs
 
         return f"{name}({args})"
+
+
+class F(_DelayableArithmeticOps):
+    _smap = {
+        Callable: _CallableStrategy,
+        X: _XStrategy,
+        NoneType: _NoopStrategy,
+    }
+
+    def __init__(self, op: Callable[..., Any] | X, *args, **kwargs) -> None:
+        # Note: X is callable, but not vice versa.
+        if isinstance(op, X):
+            if len(args) > 0 or len(kwargs) > 0:
+                raise ValueError(
+                    "`op` cannot be an instance of `X` if `args` or `kwargs` are provided."
+                )
+            self.strategy = _XStrategy(op)
+        elif isinstance(op, Callable):  # type: ignore[arg-type]
+            self.strategy = _CallableStrategy(op, *args, **kwargs)
+        elif isinstance(op, NoneType):
+            self.strategy = _NoopStrategy()
+        else:
+            raise ValueError(f"Arguments should be of type `X` or Callable. Got {type(op)}.")
+
+    @classmethod
+    def from_strategy(cls, strategy: _XStrategy | _CallableStrategy) -> F:
+        out = cls.__new__(cls)
+        out.strategy = strategy
+        return out
+
+    def _op_action(self, name: str, *args: Any, **kwargs: Any) -> F:
+        opinfo = get_opinfo(name)
+        if opinfo.type == OperatorType.UNARY:
+            return F(opinfo.operator, self)
+        elif opinfo.type == OperatorType.BINARY:
+            return F(opinfo.operator, self, args[0])
+        elif opinfo.type == OperatorType.RBINARY:
+            return F(opinfo.operator, args[0], self)
+        elif opinfo.type == OperatorType.COMPARISON:
+            return F(opinfo.operator, self, args[0])
+        else:
+            return NotImplemented
+
+    def copy(self):
+        out = F.from_strategy(self.strategy)
+        out._condition = self._condition
+        out._else_ = self._else_
+        return out
+
+    def _resolve(self, data: Any) -> Any:
+        return self.strategy(data)
+
+    def __repr__(self):
+        # return f"F({self.strategy!r})"
+        return f"{self.strategy!r}"
  
 
 class Input:
@@ -698,8 +708,10 @@ class Input:
     
     This makes expressions act like functions, where the expression can resolve position arguments
     by their index, e.g. A[0] will use the first argument in the provided `A` input to the 
-    expression. Similar, A["bias"] will use the value of the `bias` keyword argument in the provided
-    `A` input to the expression.
+    expression. Similar, A["bias"] will use the value of the `bias` key    if isinstance(out, list) and len(out) == 1:
+        return out[0]
+    else:
+        return out
 
     Some rules for using `A` to resolve delayables:
     * `A` arguments should not be delayables themselves, only static data values. 
@@ -1147,11 +1159,11 @@ class FMMap(KeyedContainer):
         return True
 
 
-class Serials(_OpBase):
+class Chain(_DelayableArithmeticOps):
     """
     Serials stores a 
     """
-    def __init__(self, *ops: Delayable | X | nn.Module):
+    def __init__(self, *ops: Delayable | nn.Module):
         new_ops = []
         for op in ops:
             if isinstance(op, nn.Module):
@@ -1168,7 +1180,7 @@ class Serials(_OpBase):
         return self.ops[idx]
 
     def copy(self):
-        out = Serials(*self.ops)
+        out = Chain(*self.ops)
         out._condition = self._condition
         out._else_ = self._else_
         return out
@@ -1182,131 +1194,131 @@ class Serials(_OpBase):
         return len(self.ops)
 
 
-class Parallels(_OpBase):
-    ops: tuple[Iterable[Delayable] | Parallels, ...]
-    _else_: Optional[Parallels]
+# class Parallels(_OpBase):
+#     ops: tuple[Iterable[Delayable] | Parallels, ...]
+#     _else_: Optional[Parallels]
 
-    def __init__(
-        self,
-        *ops: list[Delayable | X | nn.Module] | Delayable | X | nn.Module,
-        func: Optional[Callable[[Any], Any]] = None,
-    ) -> None:
-        lengths = []
-        error_msg = (
-            "All arguments must be of subtype `Delayable | X | nn.Module` or lists of that with "
-            "broadcastable lengths."
-        )
+#     def __init__(
+#         self,
+#         *ops: list[Delayable | X | nn.Module] | Delayable | X | nn.Module,
+#         func: Optional[Callable[[Any], Any]] = None,
+#     ) -> None:
+#         lengths = []
+#         error_msg = (
+#             "All arguments must be of subtype `Delayable | X | nn.Module` or lists of that with "
+#             "broadcastable lengths."
+#         )
 
-        for op in ops:
-            if isinstance(op, list):
-                if not all(isinstance(item, Delayable | X | nn.Module) for item in op):
-                    raise ValueError(error_msg)
-                lengths.append(len(op))
-            elif isinstance(op, Parallels):
-                lengths.append(len(op))
-            elif not isinstance(op, Delayable | X | nn.Module):
-                raise ValueError(error_msg)
-            else:
-                lengths.append(1)
+#         for op in ops:
+#             if isinstance(op, list):
+#                 if not all(isinstance(item, Delayable | X | nn.Module) for item in op):
+#                     raise ValueError(error_msg)
+#                 lengths.append(len(op))
+#             elif isinstance(op, Parallels):
+#                 lengths.append(len(op))
+#             elif not isinstance(op, Delayable | X | nn.Module):
+#                 raise ValueError(error_msg)
+#             else:
+#                 lengths.append(1)
 
-        unique_lengths = set(lengths)
-        self.length = max(unique_lengths)
+#         unique_lengths = set(lengths)
+#         self.length = max(unique_lengths)
 
-        unique_lengths.discard(1)
-        if len(unique_lengths) > 1:
-            raise ValueError(error_msg)
+#         unique_lengths.discard(1)
+#         if len(unique_lengths) > 1:
+#             raise ValueError(error_msg)
 
-        new_ops: list[list[Delayable] | Parallels] = []
-        for op in ops:
-            if isinstance(op, list):
-                new_op = []
-                for item in op:
-                    if isinstance(item, nn.Module):
-                        new_op.append(item(X))
-                    elif isinstance(item, X):
-                        new_op.append(F(item))
-                    else:
-                        new_op.append(item)
+#         new_ops: list[list[Delayable] | Parallels] = []
+#         for op in ops:
+#             if isinstance(op, list):
+#                 new_op = []
+#                 for item in op:
+#                     if isinstance(item, nn.Module):
+#                         new_op.append(item(X))
+#                     elif isinstance(item, X):
+#                         new_op.append(F(item))
+#                     else:
+#                         new_op.append(item)
 
-                if len(new_op) != self.length:
-                    new_op = op * self.length
-                new_ops.append(new_op)
-            elif isinstance(op, Parallels):
-                if len(op) != self.length:
-                    new_ops.append([op] * self.length)
-                else:
-                    new_ops.append(op)
-            elif isinstance(op, Delayable):
-                new_ops.append([op] * self.length)
-            elif isinstance(op, X):
-                new_ops.append([F(op)] * self.length)
-            elif isinstance(op, nn.Module):
-                new_ops.append([op(X)] * self.length)
-            else:
-                raise ValueError(error_msg)
+#                 if len(new_op) != self.length:
+#                     new_op = op * self.length
+#                 new_ops.append(new_op)
+#             elif isinstance(op, Parallels):
+#                 if len(op) != self.length:
+#                     new_ops.append([op] * self.length)
+#                 else:
+#                     new_ops.append(op)
+#             elif isinstance(op, Delayable):
+#                 new_ops.append([op] * self.length)
+#             elif isinstance(op, X):
+#                 new_ops.append([F(op)] * self.length)
+#             elif isinstance(op, nn.Module):
+#                 new_ops.append([op(X)] * self.length)
+#             else:
+#                 raise ValueError(error_msg)
 
-        self.ops = tuple(new_ops)
-        self.func = func
-        self.items = []
-        # for i in range(self.length):
-        #     args = [op[i] for op in self.ops]
-        #     if self.func is not None:
-        #         self.items.append(F(self.func, *args))
-        #     else:
-        #         self.items.append(Serials(*args))
+#         self.ops = tuple(new_ops)
+#         self.func = func
+#         self.items = []
+#         # for i in range(self.length):
+#         #     args = [op[i] for op in self.ops]
+#         #     if self.func is not None:
+#         #         self.items.append(F(self.func, *args))
+#         #     else:
+#         #         self.items.append(Serials(*args))
 
-    def __getitem__(self, idx: int) -> Delayable:
-        # out = self.items[idx]
-        args = [op[idx] for op in self.ops]
+#     def __getitem__(self, idx: int) -> Delayable:
+#         # out = self.items[idx]
+#         args = [op[idx] for op in self.ops]
 
-        out: Delayable
-        if self.func is not None:
-            out = F(self.func, *args)
-        else:
-            out = Serials(*args)
+#         out: Delayable
+#         if self.func is not None:
+#             out = F(self.func, *args)
+#         else:
+#             out = Serials(*args)
 
-        if self._condition is not None:
-            if self._else_ is not None:
-                if len(self._else_) == 1:
-                    else_ = self._else_[0]
-                else:
-                    else_ = self._else_[idx]
-            else:
-                else_ = None
-            out = out.if_(self._condition, else_)
+#         if self._condition is not None:
+#             if self._else_ is not None:
+#                 if len(self._else_) == 1:
+#                     else_ = self._else_[0]
+#                 else:
+#                     else_ = self._else_[idx]
+#             else:
+#                 else_ = None
+#             out = out.if_(self._condition, else_)
 
-        return out
+#         return out
 
-    def if_(self, condition: bool | Delayable, else_: Optional[Parallels] = None) -> Parallels:
-        if else_ is not None:
-            if not isinstance(else_, Parallels):
-                raise ValueError("`else_` must be of type `Parallels`.")
-            if len(else_) != self.length:
-                raise ValueError("`else_` must have length equal to `self.length`.")
+#     def if_(self, condition: bool | Delayable, else_: Optional[Parallels] = None) -> Parallels:
+#         if else_ is not None:
+#             if not isinstance(else_, Parallels):
+#                 raise ValueError("`else_` must be of type `Parallels`.")
+#             if len(else_) != self.length:
+#                 raise ValueError("`else_` must have length equal to `self.length`.")
 
-        return super().if_(condition, else_)
+#         return super().if_(condition, else_)
 
-    def __len__(self) -> int:
-        return self.length
+#     def __len__(self) -> int:
+#         return self.length
 
-    def copy(self):
-        out = Parallels(*self.ops)
-        out._condition = self._condition
-        out._else_ = self._else_
-        return out
+#     def copy(self):
+#         out = Parallels(*self.ops)
+#         out._condition = self._condition
+#         out._else_ = self._else_
+#         return out
 
-    def _resolve(self, data: Any) -> Any:
-        for i in range(self.length):
-            data = data >> self[i]
-        return data
+#     def _resolve(self, data: Any) -> Any:
+#         for i in range(self.length):
+#             data = data >> self[i]
+#         return data
 
-    def _unary_op(self, oper):
-        return Parallels(self, func=oper)
+#     def _unary_op(self, oper):
+#         return Parallels(self, func=oper)
 
-    def _binary_op(self, oper, other):
-        if isinstance(other, _OpBase):
-            return Parallels(self, other, func=oper)
-        return NotImplemented
+#     def _binary_op(self, oper, other):
+#         if isinstance(other, _OpBase):
+#             return Parallels(self, other, func=oper)
+#         return NotImplemented
 
 
 class W(enum.Enum):

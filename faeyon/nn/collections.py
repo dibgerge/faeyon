@@ -3,7 +3,7 @@ from torch import nn
 from typing import Any, Optional, overload, Iterator, Iterable
 from collections import OrderedDict
 
-from faeyon.magic.spells import ContainerBase, Wire, X, A, Wiring, Parallels
+from faeyon.magic.spells import ContainerBase, Wire, X, A, Wiring, Chain
 
 
 class FaeSequential(nn.Module):
@@ -105,7 +105,7 @@ class FaeModuleList(nn.ModuleList):
         super().__init__(modules)
         self._op = None
 
-    def __call__(self, *args: Any, **kwargs: Any) -> Parallels:
+    def __call__(self, *args: Any, **kwargs: Any) -> Chain:
         # TODO: What if args/kwargs are already resolved?
 
         # if self._op is not None:
@@ -121,7 +121,7 @@ class FaeModuleList(nn.ModuleList):
             }
             ops.append(layer(*layer_args, **layer_kwargs))
 
-        self._op = Parallels(ops)
+        self._op = Chain(ops)
         return self._op
 
 

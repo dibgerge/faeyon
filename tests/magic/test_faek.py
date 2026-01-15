@@ -4,7 +4,7 @@ Note: Currently faek is automatically enabled when faeyon is imported.
 import pytest
 import torch
 from torch import nn
-from faeyon import faek, A, FList, FDict, F, X, Serials, Parallels
+from faeyon import faek, A, FList, FDict, F, X, Chain
 from tests.common import ConstantLayer
 
 

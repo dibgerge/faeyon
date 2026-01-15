@@ -1,9 +1,11 @@
+import pytest
 import inspect
 import torch
-from faeyon import A, X, FVar, FList, FDict, FMMap, F, Wire, W, Serials, Parallels
+from faeyon import A, X, FVar, FList, FDict, FMMap, F, Wire, W, Chain
 from faeyon.magic.spells import conjure
-import pytest
+
 from tests.common import ConstantLayer
+from pytest import param
 
 
 class TestX:
@@ -16,7 +18,7 @@ class TestX:
     def test_rshift(self):
         """ The right shift operator results in a Chain Object if both arguments are of type X."""
         x = X[1] >> X + 1
-        assert isinstance(x, Serials)
+        assert isinstance(x, Chain)
         assert len(x) == 2
 
     def test_rshift_error(self):
@@ -37,26 +39,36 @@ class TestX:
         with pytest.raises(TypeError):
             x = X[1] | X[2]
 
-    def test_repr(self):
+    @pytest.mark.parametrize("expr, expected", [
+        param(X, "X", id="X"),
+        param(X + 1, "X + 1", id="X + 1"),
+        param(X[0] + 1, "X[0] + 1", id="X[0] + 1"),
+        param(X(1, foo="bar"), "X(1, foo='bar')", id="X(1, foo='bar')"),
+        param(X.a, "X.a", id="X.a"),
+        param(X(), "X()", id="X()"),
+    ])
+    def test_repr(self, expr, expected):
         """ 
         Test some different ways of representing X and make sure the repr is correct. 
-        Not using parametrized tests because it messes the X buffers...
         """
-        assert repr(X) == "X"
-        assert repr(X[0] + 1) == "X[0] + 1"
-        assert repr(X()) == "X()"
-        assert repr(X(1, foo="bar")) == "X(1, foo='bar')"
+        assert repr(expr) == expected
 
     # --- Test arithmetic operators ---
-    def test_add(self):
-        # This tests add operator on X class
-        assert 1 | X + 1 == 2
+    @pytest.mark.parametrize("expr, expected", [
+        param(X + 1, 2, id="meta"),
+        param(X + 1 + 1, 3, id="obj"),
+        param(X + X, 2, id="meta_meta"),
+        param((X + 1) + (X + 1), 4, id="obj_obj"),
+        param(X + torch.tensor([1, 2, 3]), torch.tensor([2, 3, 4]), id="meta_tensor"),
+        param((X + 1) + torch.tensor([1, 2, 3]), torch.tensor([3, 4, 5]), id="obj_tensor"),
+    ])
+    def test_add(self, expr, expected):
+        res = 1 | expr
 
-        # This tests add operator on an instance of X (first addition initialize an X object
-        # the second addition is called from the object)
-        assert 1 | X + 1 + 1 == 3
-
-        assert 1 | X + X == 2
+        if isinstance(expected, torch.Tensor):
+            torch.testing.assert_close(res, expected)
+        else:
+            assert res == expected
     
     def test_radd(self):
         assert 1 | 1 + X == 2

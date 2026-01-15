@@ -1,25 +1,40 @@
+import sys
 import dataclasses
 import enum
 import operator
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Optional, overload
 
 
-class OperatorType(enum.Enum):
+class OperatorType(enum.Flag):
     BINARY = enum.auto()
     RBINARY = enum.auto()
     COMPARISON = enum.auto()
     UNARY = enum.auto()
     UTILITY = enum.auto()
-    
+    ARITHMETIC = BINARY | RBINARY | UNARY
+
+
+def _call(data: Any, *args: Any, **kwargs: Any) -> Any:
+    return data(*args, **kwargs)
+
+
+def _getattr(data: Any, name: str) -> Any:
+    return getattr(data, name)
+
+
+def _getitem(data: Any, key: Any) -> Any:
+    return data[key]
+
 
 @dataclasses.dataclass
 class OpInfo:
     name: str
     type: OperatorType
     fmt: str
-    operator: Callable[[Any, Any], Any]  = None
+    operator: Callable[[..., Any], Any] = None
+
     
     @property
     def is_right(self) -> bool:
@@ -31,6 +46,18 @@ class OpInfo:
 
     def to_string(self, *args, X: str, **kwargs: Any) -> str:
         return self.fmt.format(*args, X=X, **kwargs)
+
+    def __call__(self, data: Any, *args: Any, **kwargs: Any) -> Any:
+        if self.type == OperatorType.UNARY:
+            return self.operator(data)
+        elif self.type == OperatorType.BINARY:
+            return self.operator(data, args[0])
+        elif self.type == OperatorType.RBINARY:
+            return self.operator(args[0], data)
+        elif self.type == OperatorType.COMPARISON:
+            return self.operator(data, args[0])
+        else:
+            return self.operator(data, *args, **kwargs)
 
 
 ops = [
@@ -76,92 +103,86 @@ ops = [
     OpInfo(name="ne", type=OperatorType.COMPARISON, operator=operator.ne, fmt="{X} != {}"),
     OpInfo(name="gt", type=OperatorType.COMPARISON, operator=operator.gt, fmt="{X} > {}"),
     OpInfo(name="ge", type=OperatorType.COMPARISON, operator=operator.ge, fmt="{X} >= {}"),
-    OpInfo(name="call", type=OperatorType.UTILITY, fmt="{X}({})"),
-    OpInfo(name="getitem", type=OperatorType.UTILITY, fmt="{X}[{}]"),
-    OpInfo(name="getattr", type=OperatorType.UTILITY, fmt="{X}.{}"),
+    OpInfo(name="call", type=OperatorType.UTILITY, operator=_call, fmt="{X}({})"),
+    OpInfo(name="getitem", type=OperatorType.UTILITY, operator=_getitem, fmt="{X}[{}]"),
+    OpInfo(name="getattr", type=OperatorType.UTILITY, operator=_getattr, fmt="{X}.{}"),
 ]
 
-attr_to_info = {op.attr_name: op for op in ops}
+_attr_to_info = {op.attr_name: op for op in ops}
 
 
-def get_opinfo(attr_name: str) -> OpInfo:
-    return attr_to_info[attr_name]
+@overload
+def get_opinfo(
+    attr_name: str,
+    type: None = None,
+    operator: None = None,
+    name: None = None,
+) -> OpInfo: ...
 
 
-# binary_operators = {
-#     operator.rshift: ("__rshift__", "__rrshift__"),
-#     operator.lshift: ("__lshift__", "__rlshift__"),
-#     operator.add: ("__add__", "__radd__"),
-#     operator.sub: ("__sub__", "__rsub__"),
-#     operator.mul: ("__mul__", "__rmul__"),
-#     operator.truediv: ("__truediv__", "__rtruediv__"),
-#     operator.floordiv: ("__floordiv__", "__rfloordiv__"),
-#     operator.mod: ("__mod__", "__rmod__"),
-#     operator.pow: ("__pow__", "__rpow__"),
-#     operator.matmul: ("__matmul__", "__rmatmul__"),
-#     operator.and_: ("__and__", "__rand__"),
-#     operator.or_: ("__or__", "__ror__"),
-#     operator.xor: ("__xor__", "__rxor__"),
-# }
-
-# unary_operators: dict[Callable[[Any], Any], str] = {
-#     operator.abs: "__abs__",
-#     operator.invert: "__invert__",
-#     operator.neg: "__neg__",
-#     operator.pos: "__pos__",
-# }
+@overload
+def get_opinfo(
+    attr_name: None = None,
+    type: None = None,
+    operator: None = None,
+    name: str = None,
+) -> OpInfo: ...
 
 
-# # Define methods supported by the _MetaX metaclass
-# _meta_methods = {
-#     "__lt__": "{X} < {}",
-#     "__le__": "{X} <= {}",
-#     "__eq__": "{X} == {}",
-#     "__ne__": "{X} != {}",
-#     "__gt__": "{X} > {}",
-#     "__ge__": "{X} >= {}",
-#     "__getattr__": "{X}.{}",
+@overload
+def get_opinfo(
+    attr_name: None = None,
+    type: OperatorType = None,
+    operator: None = None,
+    name: None = None,
+) -> list[OpInfo]: ...
 
-#     # Emulating callables
-#     "__call__": "{X}({})",
-    
-#     # Containers
-#     "__getitem__": "{X}[{}]",
-#     "__reversed__": "reversed({X})",
 
-#     # Numeric types
-#     "__add__": "{X} + {}",
-#     "__sub__": "{X} - {}",
-#     "__mul__": "{X} * {}",
-#     "__matmul__": "{X} @ {}",
-#     "__truediv__": "{X} / {}",
-#     "__floordiv__": "{X} // {}",
-#     "__mod__": "{X} % {}",
-#     "__divmod__": "divmod({X}, {})",
-#     "__pow__": "{X} ** {}",
-#     "__lshift__": "{X} << {}",
-#     "__rshift__": "{X} >> {}",
-#     "__and__": "{X} & {}",
-#     "__or__": "{X} | {}",
-#     "__xor__": "{X} ^ {}",
+@overload
+def get_opinfo(
+    attr_name: None = None,
+    type: None = None,
+    operator: Callable[..., Any] = None,
+    name: None = None,
+) -> list[OpInfo]: ...
 
-#     "__radd__": "{} + {X}", 
-#     "__rpow__": "{} ** {X}",
-#     "__rlshift__": "{} << {X}",
-#     "__rrshift__": "{} >> {X}",
-#     "__rand__": "{} & {X}",
-#     "__ror__": "{} | {X}",
-#     "__rxor__": "{} ^ {X}",
 
-#     # Unary operators
-#     "__neg__": "-{X}",
-#     "__pos__": "+{X}",
-#     "__abs__": "abs({X})",
-#     "__invert__": "~{X}",
+def get_opinfo(
+    attr_name: Optional[str] = None, 
+    type: Optional[OperatorType] = None, 
+    operator: Optional[Callable[..., Any]] = None, 
+    name: Optional[str] = None
+) -> OpInfo | list[OpInfo]:
+    """
+    Get the OpInfo for a given attribute name, type, operator, or name. Only one of the arguments should be provided.
+    """
+    if sum(x is not None for x in [attr_name, type, operator, name]) != 1:
+        raise ValueError("Exactly one of the arguments should be provided.")
 
-#    # built-in number types
-#     "__round__": "round({X})",
-#     "__trunc__": "trunc({X})",
-#     "__floor__": "floor({X})",
-#     "__ceil__": "ceil({X})",
-# }
+    if attr_name is not None:
+        try:
+            return _attr_to_info[attr_name]
+        except KeyError:
+            raise ValueError(f"No OpInfo found for attribute name {attr_name}.")
+    elif type is not None:
+        out = [op for op in ops if op.type in type]
+        if len(out) == 0:
+            raise ValueError(f"No OpInfo found for type {type}.")
+        return out
+    elif operator is not None:
+        out = [op for op in ops if op.operator is operator]
+        if len(out) == 0:
+            raise ValueError(f"No OpInfo found for operator {operator}.")
+        return out
+    elif name is not None:
+        out = [op for op in ops if op.name == name]
+        if len(out) == 1:
+            return out[0]
+        elif len(out) == 0:
+            raise ValueError(f"No OpInfo found for name {name}.")
+        else:
+            raise ValueError(
+                f"Multiple OpInfos found for name {name}."
+            )
+    else:
+        raise ValueError("Exactly one of the arguments should be provided.")

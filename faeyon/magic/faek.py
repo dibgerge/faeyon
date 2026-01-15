@@ -4,9 +4,7 @@ import itertools
 from torch import nn
 from typing import Any, overload
 from collections.abc import Callable
-
-from .ops import binary_operators, unary_operators
-
+from ._opinfo import get_opinfo, OperatorType
 from .spells import (
     F, 
     FList, 
@@ -327,19 +325,23 @@ class Faek(metaclass=Singleton):
         nn.Module.from_file = classmethod(from_file)
         nn.Module.load = load
 
-        for i, method in enumerate(itertools.chain.from_iterable(binary_operators.values())):
-            setattr(
-                nn.Module, 
-                method, 
-                getattr(current_module, method, delayed_binary_method(method, i % 2 == 1))
-            )
+        # for opinfo in get_opinfo(type=OperatorType.BINARY | OperatorType.RBINARY):
+        #     setattr(
+        #         nn.Module, 
+        #         opinfo.attr_name, 
+        #         getattr(
+        #             current_module, 
+        #             opinfo.attr_name, 
+        #             delayed_binary_method(opinfo.attr_name, opinfo.is_right)
+        #         )
+        #     )
                 
-        for method in unary_operators.values():
-            setattr(
-                nn.Module, 
-                method, 
-                getattr(current_module, method, delayed_unary_method(method))
-            )
+        # for opinfo in get_opinfo(type=OperatorType.UNARY):
+        #     setattr(
+        #         nn.Module, 
+        #         opinfo.attr_name, 
+        #         getattr(current_module, opinfo.attr_name, delayed_unary_method(opinfo.attr_name))
+        #     )
 
         self._is_on = True
 
@@ -347,8 +349,8 @@ class Faek(metaclass=Singleton):
         if not self._is_on:
             return
         
-        for method in itertools.chain(*binary_operators.values(), unary_operators.values()):
-            delattr(nn.Module, method)
+        for opinfo in get_opinfo(type=OperatorType.ARITHMETIC):
+            delattr(nn.Module, opinfo.attr_name)
 
         nn.Module.__new__ = staticmethod(__default_new__)
         nn.Module.__call__ = self.module__call__

@@ -8,8 +8,7 @@ from .spells import (
     FMMap,
     FVar,
     F,
-    Serials,
-    Parallels,
+    Chain,
     Wire,
     W
 )
