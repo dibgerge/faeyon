@@ -1,4 +1,3 @@
-import sys
 import dataclasses
 import enum
 import operator
@@ -33,9 +32,8 @@ class OpInfo:
     name: str
     type: OperatorType
     fmt: str
-    operator: Callable[[..., Any], Any] = None
+    operator: Callable[[..., Any], Any]
 
-    
     @property
     def is_right(self) -> bool:
         return self.type == OperatorType.RBINARY
@@ -44,7 +42,7 @@ class OpInfo:
     def attr_name(self) -> str:
         return f"__{self.name}__"
 
-    def to_string(self, *args, X: str, **kwargs: Any) -> str:
+    def to_string(self, X: str, *args, **kwargs: Any) -> str:
         return self.fmt.format(*args, X=X, **kwargs)
 
     def __call__(self, data: Any, *args: Any, **kwargs: Any) -> Any:
@@ -106,6 +104,7 @@ ops = [
     OpInfo(name="call", type=OperatorType.UTILITY, operator=_call, fmt="{X}({})"),
     OpInfo(name="getitem", type=OperatorType.UTILITY, operator=_getitem, fmt="{X}[{}]"),
     OpInfo(name="getattr", type=OperatorType.UTILITY, operator=_getattr, fmt="{X}.{}"),
+    OpInfo(name="len", type=OperatorType.UTILITY, operator=len, fmt="len({X})"),
 ]
 
 _attr_to_info = {op.attr_name: op for op in ops}

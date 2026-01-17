@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 
 from torch import nn
-from ._opinfo import get_opinfo, OperatorType
+from ._opinfo import get_opinfo, OperatorType, OpInfo
 
 
 class Delayable(ABC):
@@ -68,10 +68,8 @@ class Delayable(ABC):
 
     def __ror__(self, other: Any) -> Any:
         """ `data | X` results in evaluating the delayed operations. """
-        print("__ror__ here...", other)
         if isinstance(other, Delayable):
             return NotImplemented
-        print("__ror__ here...2", other)
         return self.using(other)
 
     def __mod__[T: Delayable](self: T, other: str) -> T:
@@ -111,7 +109,7 @@ class Delayable(ABC):
         return Chain(self, other)
 
 
-class _MetaOps[T: type](abc.ABCMeta):
+class _MetaOpAction[T: type](abc.ABCMeta):
     """
     Use as metaclass for types which require implementing operators, etc, as symbolic operations
     without having to initialize an instance of the class first. 
@@ -294,9 +292,10 @@ class _MetaOps[T: type](abc.ABCMeta):
         return super().__hash__()
 
     def __len__(cls) -> int:
-        return 0
+        return len(super().__call__())
 
     def __iter__(cls):
+        # TODO: Need to support *X instead of this....
         return iter([])
 
     def __repr__(cls):
@@ -310,21 +309,32 @@ class _MetaOps[T: type](abc.ABCMeta):
 
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):
+        """
+        Note: For operators like `+`, `-`, `*`, etc., the `__torch_function__` is called only if tensor is the left operand, otherwise the operand must be handled by the right hand side Delayable.
+        """
         if kwargs is None:
             kwargs = {}
+        
+        try:
+            # Special/reserved operators must be handled by right hand side operator.
+            if func.__name__ in {"__lshift__", "__rshift__", "__or__"}:
+                return NotImplemented
+        except AttributeError:
+            # raised if functon has no __name__ attribute
+            pass
         return F(func, *args, **kwargs)
 
 
-class _DelayableArithmeticOps(Delayable, abc.ABC):
+class _DelayableOpAction(Delayable):
     """
     Base class for delayables which support (arithmetic) operations.
     TODO: Update return types to generics instead of X.
     """
-    @abstractmethod
-    def _op_action(self, name: str, *args: Any, **kwargs: Any) -> X:
+    def _op_action(self, name: str, *args: Any, **kwargs: Any) -> F:
         """
         Specify what actions to takes for a given op attribute name and its corresponding arguments.
         """
+        return F(get_opinfo(attr_name=name), self, *args, **kwargs)
         
     # --- Binary arithmetic operators ---
     def __add__(self, other: Any) -> X:
@@ -441,57 +451,7 @@ class _DelayableArithmeticOps(Delayable, abc.ABC):
     def __ge__(self, other: Any) -> X:
         return self._op_action("__ge__", other)
 
-
-class X(_DelayableArithmeticOps, metaclass=_MetaOps):
-    def __init__(self) -> None:
-        self._fbuffer: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
-
-    def _op_action(self, name, *args, **kwargs) -> X:
-        self._fbuffer.append((name, args, kwargs))
-        return self
-
-    def _resolve(self, data: Any) -> Any:
-        inputs = data
-        for name, args, kwargs in self._fbuffer:
-            # Recursively evaluate the arguments.
-            args = tuple(
-                inputs | arg if isinstance(arg, (Delayable, _MetaOps)) else arg
-                for arg in args
-            )
-            kwargs = {
-                k: inputs | v if isinstance(v, (Delayable, _MetaOps)) else v
-                for k, v in kwargs.items()
-            }
-            opinfo = get_opinfo(attr_name=name)
-            data = opinfo(data, *args, **kwargs)
-            
-        return data
-
-    def __iter__(self):
-        # TODO: Need to support *X instead of this....
-        return iter(self._fbuffer)
-
-    def __len__(self) -> int:
-        return len(self._fbuffer)
-
-    def __repr__(self) -> str:
-        output = self.__class__.__name__
-        for name, args, kwargs in self._fbuffer:
-            # Don't show the parentheses for __getattr__
-            if name == "__getattr__":
-                args_f = str(args[0])
-            else:
-                args_f = ", ".join(map(repr, args))
-
-            kwargs_f = ", ".join(f"{k}={v!r}" for k, v in kwargs.items())
-
-            if kwargs_f:
-                args_f = args_f + ", " + kwargs_f
-
-            output = get_opinfo(attr_name=name).to_string(args_f, X=output)
-        return output
-
-    # --- Other operators ---
+    #--- Other operators ---
     def __getattr__(self, name: str) -> X:
         if name == "__torch_function__":
             return type(self).__torch_function__
@@ -507,7 +467,51 @@ class X(_DelayableArithmeticOps, metaclass=_MetaOps):
     def __reversed__(self) -> X:
         return self._op_action("__reversed__")
 
- 
+
+class X(_DelayableOpAction, metaclass=_MetaOpAction):
+    # def __init__(self) -> None:
+    #     self._fbuffer: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+
+    def _resolve(self, data: Any) -> Any:
+        """ Only X without operations on it will be required to be resolved here. """
+        # inputs = data
+        # for name, args, kwargs in self._fbuffer:
+        #     # Recursively evaluate the arguments.
+        #     args = tuple(
+        #         inputs | arg if isinstance(arg, (Delayable, _MetaOps)) else arg
+        #         for arg in args
+        #     )
+        #     kwargs = {
+        #         k: inputs | v if isinstance(v, (Delayable, _MetaOps)) else v
+        #         for k, v in kwargs.items()
+        #     }
+        #     opinfo = get_opinfo(attr_name=name)
+        #     data = opinfo(data, *args, **kwargs)
+        return data
+
+    def __iter__(self):
+        # TODO: Need to support *X instead of this....
+        return iter([])
+
+    def __repr__(self) -> str:
+        return "X"
+        # output = self.__class__.__name__
+        # for name, args, kwargs in self._fbuffer:
+        #     # Don't show the parentheses for __getattr__
+        #     if name == "__getattr__":
+        #         args_f = str(args[0])
+        #     else:
+        #         args_f = ", ".join(map(repr, args))
+
+        #     kwargs_f = ", ".join(f"{k}={v!r}" for k, v in kwargs.items())
+
+        #     if kwargs_f:
+        #         args_f = args_f + ", " + kwargs_f
+
+        #     output = get_opinfo(attr_name=name).to_string(args_f, X=output)
+        # return output
+
+
 class A(X):
     """
     A placeholder for providing arguments to resolve delayables. Examples:
@@ -645,60 +649,52 @@ class _CallableStrategy(_Strategy):
         return f"{name}({args})"
 
 
-class F(_DelayableArithmeticOps):
-    _smap = {
-        Callable: _CallableStrategy,
-        X: _XStrategy,
-        NoneType: _NoopStrategy,
-    }
+class F(_DelayableOpAction):
+    def __init__(self, op: Callable[..., Any], *args, **kwargs) -> None:
+        self.op = op
+        self.args = args
+        self.kwargs = kwargs
 
-    def __init__(self, op: Callable[..., Any] | X, *args, **kwargs) -> None:
-        # Note: X is callable, but not vice versa.
-        if isinstance(op, X):
-            if len(args) > 0 or len(kwargs) > 0:
-                raise ValueError(
-                    "`op` cannot be an instance of `X` if `args` or `kwargs` are provided."
-                )
-            self.strategy = _XStrategy(op)
-        elif isinstance(op, Callable):  # type: ignore[arg-type]
-            self.strategy = _CallableStrategy(op, *args, **kwargs)
-        elif isinstance(op, NoneType):
-            self.strategy = _NoopStrategy()
-        else:
-            raise ValueError(f"Arguments should be of type `X` or Callable. Got {type(op)}.")
-
-    @classmethod
-    def from_strategy(cls, strategy: _XStrategy | _CallableStrategy) -> F:
-        out = cls.__new__(cls)
-        out.strategy = strategy
-        return out
-
-    def _op_action(self, name: str, *args: Any, **kwargs: Any) -> F:
-        opinfo = get_opinfo(name)
-        if opinfo.type == OperatorType.UNARY:
-            return F(opinfo.operator, self)
-        elif opinfo.type == OperatorType.BINARY:
-            return F(opinfo.operator, self, args[0])
-        elif opinfo.type == OperatorType.RBINARY:
-            return F(opinfo.operator, args[0], self)
-        elif opinfo.type == OperatorType.COMPARISON:
-            return F(opinfo.operator, self, args[0])
-        else:
-            return NotImplemented
-
-    def copy(self):
-        out = F.from_strategy(self.strategy)
-        out._condition = self._condition
-        out._else_ = self._else_
-        return out
+    # def copy(self):
+    #     out = F.from_strategy(self.strategy)
+    #     out._condition = self._condition
+    #     out._else_ = self._else_
+    #     return out
 
     def _resolve(self, data: Any) -> Any:
-        return self.strategy(data)
+        args = tuple(
+            data | arg if isinstance(arg, (Delayable, _MetaOpAction)) else arg
+            for arg in self.args
+        )
+        kwargs = {
+            k: data | v if isinstance(v, (Delayable, _MetaOpAction)) else v
+            for k, v in self.kwargs.items()
+        }
+        return self.op(*args, **kwargs)
 
     def __repr__(self):
         # return f"F({self.strategy!r})"
-        return f"{self.strategy!r}"
- 
+        if isinstance(self.op, OpInfo):
+            return self.op.to_string(*self.args, **self.kwargs)
+        else:
+            try:
+                name = self.op.__name__
+            except AttributeError:
+                name = f"{self.op!r}"
+
+            if name == "Module.__call__" and len(self.args.args) > 0:
+                name, *args = self.args  # .args
+            else:
+                args = self.args  # .args
+
+            args = ", ".join(map(repr, args))
+            # kwargs = ", ".join(f"{k}={v!r}" for k, v in self.args.kwargs.items())
+
+            # if kwargs:
+            #     args = args + ", " + kwargs
+
+            return f"{name}({args})"
+
 
 class Input:
     """
@@ -1159,7 +1155,7 @@ class FMMap(KeyedContainer):
         return True
 
 
-class Chain(_DelayableArithmeticOps):
+class Chain(_DelayableOpAction):
     """
     Serials stores a 
     """

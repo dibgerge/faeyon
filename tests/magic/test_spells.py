@@ -6,14 +6,15 @@ from faeyon.magic.spells import conjure
 
 from tests.common import ConstantLayer
 from pytest import param
+from torch import tensor
 
 
 class TestX:
     def test_noop(self):
         x = X
         assert isinstance(x, X)
-        assert len(x) == 0
         assert 1 | X == 1
+
 
     def test_rshift(self):
         """ The right shift operator results in a Chain Object if both arguments are of type X."""
@@ -55,43 +56,279 @@ class TestX:
 
     # --- Test arithmetic operators ---
     @pytest.mark.parametrize("expr, expected", [
-        param(X + 1, 2, id="meta"),
-        param(X + 1 + 1, 3, id="obj"),
-        param(X + X, 2, id="meta_meta"),
-        param((X + 1) + (X + 1), 4, id="obj_obj"),
-        param(X + torch.tensor([1, 2, 3]), torch.tensor([2, 3, 4]), id="meta_tensor"),
-        param((X + 1) + torch.tensor([1, 2, 3]), torch.tensor([3, 4, 5]), id="obj_tensor"),
+        # test add
+        param(X + (X + 1), 3, id="meta+instance"),
+        param((X+1) + X, 3, id="instance+meta"),
+        param((X + 1) + (X + 1), 4, id="instance+instance"),
+        param(X + 1, 2, id="meta+int"),
+        param(X + 1 + 1, 3, id="instance+int"),
+        param(X + X, 2, id="meta+meta"),
+        param(X + tensor([1, 2, 3]), tensor([2, 3, 4]), id="meta+tensor"),
+        param((X + 1) + tensor([1, 2, 3]), tensor([3, 4, 5]), id="instance+tensor"),
+
+        # radd
+        param(1 + X, 2, id="int+meta"),
+        param(1 + (1 + X), 3, id="int+instance"),
+        param(tensor([1, 2, 3]) + X, tensor([2, 3, 4]), id="tensor+meta"),
+        param(tensor([1, 2, 3]) + (X + 1), tensor([3, 4, 5]), id="tensor+instance"),
+
+        # sub
+        param(X - (X - 1), 1, id="meta-instance)"),
+        param((X-1) - X, -1, id="instance-meta)"),
+        param((X + 1) - (X + 1), 0, id="instance-instance)"),
+        param(X - 1, 0, id="meta-int)"),
+        param(X - 1 - 1, -1, id="instance-int)"),
+        param(X - X, 0, id="meta-meta)"),
+        param(X - tensor([1, 2, 3]), tensor([0, -1, -2]), id="meta-tensor)"),
+        param((X + 1) - tensor([1, 2, 3]), tensor([1, 0, -1]), id="instance-tensor)"),
+
+        # rsub
+        param(1 - X, 0, id="int-meta"),
+        param(1 - (1 + X), -1, id="int-instance"),
+        param(tensor([1, 2, 3]) - X, tensor([0, 1, 2]), id="tensor-meta)"),
+        param(tensor([1, 2, 3]) - (X + 1), tensor([-1, 0, 1]), id="tensor-instance)"),
+
+        # mult
+        param(X * (X * 1), 1, id="meta*instance)"),
+        param((X*1) * X, 1, id="instance*meta)"),
+        param((X * 1) * (X * 1), 1, id="instance*instance)"),
+        param(X * 1, 1, id="meta*int)"),
+        param(X * 1 * 1, 1, id="instance*int)"),
+        param(X * X, 1, id="meta*meta)"),
+        param(X * tensor([1, 2, 3]), tensor([1, 2, 3]), id="meta*tensor)"),
+        param((X * 1) * tensor([1, 2, 3]), tensor([1, 2, 3]), id="instance*tensor)"),
+
+        # rmult
+        param(1 * X, 1, id="int*meta"),
+        param(1 * (1 * X), 1, id="int*instance"),
+        param(tensor([1, 2, 3]) * X, tensor([1, 2, 3]), id="tensor*meta)"),
+        param(tensor([1, 2, 3]) * (X * 1), tensor([1, 2, 3]), id="tensor*instance)"),
+
+        # matmul
+        # param(X @ (X @ 1), 1, id="meta@instance)"),
+        # param((X@1) @ X, 1, id="instance@meta)"),
+        # param((X @ 1) @ (X @ 1), 1, id="instance@instance)"),
+        # param(X @ 1, 1, id="meta@int)"),
+        # param(X @ 1 @ 1, 1, id="instance@int)"),
+        # param(X @ X, 1, id="meta@meta)"),
+        # param(X @ tensor([1, 2, 3]), tensor([1, 2, 3]), id="meta@tensor)"),
+        # param((X @ 1) @ tensor([1, 2, 3]), tensor([1, 2, 3]), id="instance@tensor)"),
+
+        # # rmatmul
+        # param(1 @ X, 1, id="int@meta"),
+        # param(1 @ (1 @ X), 1, id="int@instance"),
+        # param(tensor([1, 2, 3]) @ X, tensor([1, 2, 3]), id="tensor@meta)"),
+        # param(tensor([1, 2, 3]) @ (X @ 1), tensor([1, 2, 3]), id="tensor@instance)"),
+
+        # truediv
+        param(X / (X / 1), 1.0, id="meta/instance)"),
+        param((X/1) / X, 1.0, id="instance/meta)"),
+        param((X / 1) / (X / 1), 1.0, id="instance/instance)"),
+        param(X / 1, 1.0, id="meta/int)"),
+        param(X / 1 / 1, 1.0, id="instance/int)"),
+        param(X / X, 1.0, id="meta/meta)"),
+        param(X / tensor([1, 2, 3]), tensor([1.0, 0.5, 0.3333333]), id="meta/tensor)"),
+        param((X / 1) / tensor([1, 2, 3]), tensor([1.0, 0.5, 0.3333333]), id="instance/tensor)"),
+
+        # rtruediv
+        param(1 / X, 1.0, id="int/meta"),
+        param(1 / (1 / X), 1.0, id="int/instance"),
+        param(tensor([1, 2, 3]) / X, tensor([1.0, 2.0, 3.0]), id="tensor/meta)"),
+        param(tensor([1, 2, 3]) / (X / 1), tensor([1.0, 2.0, 3.0]), id="tensor/instance)"),
+
+        # floordiv
+        param(X // (X // 1), 1, id="meta//instance)"),
+        param((X//1) // X, 1, id="instance//meta)"),
+        param((X // 1) // (X // 1), 1, id="instance//instance)"),
+        param(X // 1, 1, id="meta//int)"),
+        param(X // 1 // 1, 1, id="instance//int)"),
+        param(X // X, 1, id="meta//meta)"),
+        param(X // tensor([1, 2, 3]), tensor([1, 0, 0]), id="meta//tensor)"),
+        param((X // 1) // tensor([1, 2, 3]), tensor([1, 0, 0]), id="instance//tensor)"),
+
+        # rfloordiv
+        param(1 // X, 1, id="int//meta"),
+        param(1 // (1 // X), 1, id="int//instance"),
+        param(tensor([1, 2, 3]) // X, tensor([1, 2, 3]), id="tensor//meta)"),
+        param(tensor([1, 2, 3]) // (X // 1), tensor([1, 2, 3]), id="tensor//instance)"),
+
+        # # mod
+        # param(X % (X % 1), 1, id="meta%instance)"),
+        # param((X%1) % X, 1, id="instance%meta)"),
+        # param((X % 1) % (X % 1), 1, id="instance%instance)"),
+        # param(X % 1, 1, id="meta%int)"),
+        # param(X % 1 % 1, 1, id="instance%int)"),
+        # param(X % X, 1, id="meta%meta)"),
+        # param(X % tensor([1, 2, 3]), tensor([1, 1, 1]), id="meta%tensor)"),
+        # param((X % 1) % tensor([1, 2, 3]), tensor([1, 1, 1]), id="instance%tensor)"),
+
+        # # rmod
+        # param(1 % X, 1, id="int%meta"),
+        # param(1 % (1 % X), 1, id="int%instance"),
+        # param(tensor([1, 2, 3]) % X, tensor([1, 1, 1]), id="tensor%meta)"),
+        # param(tensor([1, 2, 3]) % (X % 1), tensor([1, 1, 1]), id="tensor%instance)"),
+
+        # pow
+        param(X ** (X ** 1), 1, id="meta**instance)"),
+        param((X**1) ** X, 1, id="instance**meta)"),
+        param((X ** 1) ** (X ** 1), 1, id="instance**instance)"),
+        param(X ** 1, 1, id="meta**int)"),
+        param(X ** 1 ** 1, 1, id="instance**int)"),
+        param(X ** X, 1, id="meta**meta)"),
+        param(X ** tensor([1, 2, 3]), tensor([1, 1, 1]), id="meta**tensor)"),
+        param((X ** 1) ** tensor([1, 2, 3]), tensor([1, 1, 1]), id="instance**tensor)"),
+
+        # rpow
+        param(1 ** X, 1, id="int**meta"),
+        param(1 ** (1 ** X), 1, id="int**instance"),
+        param(tensor([1, 2, 3]) ** X, tensor([1, 2, 3]), id="tensor**meta)"),
+        param(tensor([1, 2, 3]) ** (X ** 1), tensor([1, 2, 3]), id="tensor**instance)"),
+
+        # bitwise and
+        param(X & (X & 1), 1, id="meta&instance)"),
+        param((X&1) & X, 1, id="instance&meta)"),   
+        param((X & 1) & (X & 1), 1, id="instance&instance)"),
+        param(X & 1, 1, id="meta&int)"),
+        param(X & 1 & 1, 1, id="instance&int)"),
+        param(X & X, 1, id="meta&meta)"),
+        param(X & tensor([1, 2, 3]), tensor([1, 0, 1]), id="meta&tensor)"),
+        param((X & 1) & tensor([1, 2, 3]), tensor([1, 0, 1]), id="instance&tensor)"),
+
+        # rbitwise and
+        param(1 & X, 1, id="int&meta"),
+        param(1 & (1 & X), 1, id="int&instance"),
+        param(tensor([1, 2, 3]) & X, tensor([1, 0, 1]), id="tensor&meta)"),
+        param(tensor([1, 2, 3]) & (X & 1), tensor([1, 0, 1]), id="tensor&instance)"),
+
+        # # bitwise or
+        # param(X | (X | 1), 1, id="meta|instance)"),
+        # param((X|1) | X, 1, id="instance|meta)"),
+        # param((X | 1) | (X | 1), 1, id="instance|instance)"),
+        # param(X | 1, 1, id="meta|int)"),
+        # param(X | 1 | 1, 1, id="instance|int)"),
+        # param(X | X, 1, id="meta|meta)"),
+        # param(X | tensor([1, 2, 3]), tensor([1, 1, 1]), id="meta|tensor)"),
+        # param((X | 1) | tensor([1, 2, 3]), tensor([1, 1, 1]), id="instance|tensor)"),
+
+        # # rbitwise or
+        # param(1 | X, 1, id="int|meta"),
+        # param(1 | (1 | X), 1, id="int|instance"),
+        # param(tensor([1, 2, 3]) | X, tensor([1, 1, 1]), id="tensor|meta)"),
+        # param(tensor([1, 2, 3]) | (X | 1), tensor([1, 1, 1]), id="tensor|instance)"),
+
+        # bitwise xor
+        param(X ^ (X ^ 1), 1, id="meta^instance)"),
+        param((X^1) ^ X, 1, id="instance^meta)"),
+        param((X ^ 1) ^ (X ^ 1), 0, id="instance^instance)"),
+        param(X ^ 1, 0, id="meta^int)"),
+        param(X ^ 1 ^ 1, 1, id="instance^int)"),
+        param(X ^ X, 0, id="meta^meta)"),
+        param(X ^ tensor([1, 2, 3]), tensor([0, 3, 2]), id="meta^tensor)"),
+        param((X ^ 1) ^ tensor([1, 2, 3]), tensor([1, 2, 3]), id="instance^tensor)"),
+
+        # rbitwise xor
+        param(1 ^ X, 0, id="int^meta"),
+        param(1 ^ (1 ^ X), 1, id="int^instance"),
+        param(tensor([1, 2, 3]) ^ X, tensor([0, 3, 2]), id="tensor^meta)"),
+        param(tensor([1, 2, 3]) ^ (X ^ 1), tensor([1, 2, 3]), id="tensor^instance)"),
+
+        # gt
+        param(X > (X + 1), False, id="meta>instance)"),
+        param((X + 1) > X, True, id="instance>meta)"),
+        param((X + 1) > (X + 1), False, id="instance>instance)"),
+        param(X > 1, False, id="meta>int)"),
+        param((X + 1) > 1, True, id="instance>int)"),
+        param(X > X, False, id="meta>meta)"),
+        param(X > tensor([1, 2, 3]), tensor([False, False, False]), id="meta>tensor)"),
+        param((X + 1) > tensor([1, 2, 3]), tensor([True, False, False]), id="instance>tensor)"),
+
+        # rgt
+        param(1 > X, False, id="int>meta"),
+        param(1 > (1 + X), False, id="int>instance"),
+        param(tensor([1, 2, 3]) > X, tensor([False, True, True]), id="tensor>meta)"),
+        param(tensor([1, 2, 3]) > (X + 1), tensor([False, False, True]), id="tensor>instance)"),
+
+        # lt
+        param(X < (X + 1), True, id="meta<instance)"),
+        param((X + 1) < X, False, id="instance<meta)"),
+        param((X + 1) < (X + 1), False, id="instance<instance)"),
+        param(X < 1, False, id="meta<int)"),
+        param((X + 1) < 1, False, id="instance<int)"),
+        param(X < X, False, id="meta<meta)"),
+        param(X < tensor([1, 2, 3]), tensor([False, True, True]), id="meta<tensor)"),
+        param((X + 1) < tensor([1, 2, 3]), tensor([False, False, True]), id="instance<tensor)"),
+
+        # rlt
+        param(1 < X, False, id="int<meta"),
+        param(1 < (1 + X), True, id="int<instance"),
+        param(tensor([1, 2, 3]) < X, tensor([False, False, False]), id="tensor<meta)"),
+        param(tensor([1, 2, 3]) < (X + 1), tensor([True, False, False]), id="tensor<instance)"),
+
+        # ge
+        param(X >= (X + 1), False, id="meta>=instance)"),
+        param((X + 1) >= X, True, id="instance>=meta)"),
+        param((X + 1) >= (X + 1), True, id="instance>=instance)"),
+        param(X >= 1, True, id="meta>=int)"),
+        param((X + 1) >= 1, True, id="instance>=int)"),
+        param(X >= X, True, id="meta>=meta)"),
+        param(X >= tensor([1, 2, 3]), tensor([True, False, False]), id="meta>=tensor)"),
+        param((X + 1) >= tensor([1, 2, 3]), tensor([True, True, False]), id="instance>=tensor)"),
+
+        # rge
+        param(1 >= X, True, id="int>=meta"),
+        param(1 >= (1 + X), False, id="int>=instance"),
+        param(tensor([1, 2, 3]) >= X, tensor([True, True, True]), id="tensor>=meta)"),
+        param(tensor([1, 2, 3]) >= (X + 1), tensor([False, True, True]), id="tensor>=instance)"),
+
+        # le
+        param(X <= (X + 1), True, id="meta<=instance)"),
+        param((X + 1) <= X, False, id="instance<=meta)"),
+        param((X + 1) <= (X + 1), True, id="instance<=instance)"),
+        param(X <= 1, True, id="meta<=int)"),
+        param((X + 1) <= 1, False, id="instance<=int)"),
+        param(X <= X, True, id="meta<=meta)"),
+        param(X <= tensor([1, 2, 3]), tensor([True, True, True]), id="meta<=tensor)"),
+        param((X + 1) <= tensor([1, 2, 3]), tensor([False, True, True]), id="instance<=tensor)"),
+
+        # rle
+        param(1 <= X, True, id="int<=meta"),
+        param(1 <= (1 + X), True, id="int<=instance"),
+        param(tensor([1, 2, 3]) <= X, tensor([True, False, False]), id="tensor<=meta)"),
+        param(tensor([1, 2, 3]) <= (X + 1), tensor([True, True, False]), id="tensor<=instance)"),
+
+        # eq
+        param(X == (X + 1), False, id="meta==instance)"),
+        param((X + 1) == X, False, id="instance==meta)"),
+        param((X + 1) == (X + 1), True, id="instance==instance)"),
+        param(X == 1, True, id="meta==int)"),
+        param((X + 1) == 1, False, id="instance==int)"),
+        param(X == X, True, id="meta==meta)"),
+        param(X == tensor([1, 2, 3]), tensor([True, False, False]), id="meta==tensor)"),
+        param((X + 1) == tensor([1, 2, 3]), tensor([False, True, False]), id="instance==tensor)"),
+
+        # ne
+        param(X != (X + 1), True, id="meta!=instance)"),
+        param((X + 1) != X, True, id="instance!=meta)"),
+        param((X + 1) != (X + 1), False, id="instance!=instance)"),
+        param(X != 1, False, id="meta!=int)"),
+        param((X + 1) != 1, True, id="instance!=int)"),
+        param(X != X, False, id="meta!=meta)"),
+        param(X != tensor([1, 2, 3]), tensor([False, True, True]), id="meta!=tensor)"),
+        param((X + 1) != tensor([1, 2, 3]), tensor([True, False, True]), id="instance!=tensor)"),
     ])
-    def test_add(self, expr, expected):
-        res = 1 | expr
+    @pytest.mark.parametrize("inputs", [
+        param(1, id="input_int"), 
+        param(torch.tensor(1), id="input_tensor")]
+    )
+    def test_operators(self, expr, expected, inputs):
+        assert isinstance(expr, F)
+        res = inputs | expr
 
         if isinstance(expected, torch.Tensor):
             torch.testing.assert_close(res, expected)
         else:
             assert res == expected
     
-    def test_radd(self):
-        assert 1 | 1 + X == 2
-        assert 1 | 1 + 1 + X == 3
-
-    def test_sub(self):
-        assert 1 | X - 1 == 0
-        assert 1 | X - 1 - 1 == -1
-        assert 1 | X - X == 0
-
-    def test_rsub(self):
-        assert 1 | 1 - X == 0
-        assert 1 | 1 - 1 - X == -1
-
-    def test_mul(self):
-        assert 1 | X * 2 == 2
-        assert 1 | X * 2 * 2 == 4
-        assert 1 | X * X == 1
-    
-    def test_rmul(self):
-        assert 1 | 2 * X == 2
-        assert 1 | 2 * 2 * X == 4
-
     def test_matmul(self):
         data = torch.tensor([1.0, 1.0])
         mat = torch.tensor([[1.0, 1.0], [1.0, 1.0]])
