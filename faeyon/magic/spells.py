@@ -1,4 +1,5 @@
 from __future__ import annotations
+import torch
 import abc
 import sys
 import inspect
@@ -11,15 +12,26 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 
 from torch import nn
-from ._opinfo import get_opinfo, OperatorType, OpInfo
+from ._opinfo import get_opinfo, OpInfo
 
 
-class Delayable(ABC):
+# TODO: This will be expanded to include other modifier types, like optimizer, etc...
+modifierType = str
+
+
+class DelayableMeta(abc.ABCMeta):
+    def __instancecheck__(cls, instance):
+        return (
+            super().__instancecheck__(instance) 
+            or (isinstance(instance, type) and issubclass(instance, cls))
+        )
+
+
+class Delayable(abc.ABC, metaclass=DelayableMeta):
     """
     Delayable is the base class for all delayable objects. It provides the base functionality for
     conditional evaluation, chaining, and resolving with data.
     """
-
     _condition: Optional[bool | Delayable]
     _else_: Optional[Delayable]
 
@@ -41,7 +53,7 @@ class Delayable(ABC):
     def _resolve(self, data: Any) -> Any:
         """Uses data to resolve the delayable. Must be implemented by subclasses."""
 
-    def using(self, data: Any) -> Any:
+    def _using(self, data: Any) -> Any:
         if self._condition is not None:
             condition = conjure(self._condition, data)
             if condition:
@@ -64,33 +76,42 @@ class Delayable(ABC):
 
     def __or__(self, other: Any) -> Any:
         """ The case of `X | data` is not defined."""
+        if isinstance(other, torch.Tensor):
+            # Prevent __torch_function__ from being called for `X | tensor`.
+            # Because torch_function __ror__ uses bitwise_or instead, which we don't want to 
+            # handle there since it might be called by the function name, and not the operator 
+            # magic.
+            raise TypeError("Cannot pipe a tensor to a Delayable.")
         return NotImplemented
 
     def __ror__(self, other: Any) -> Any:
         """ `data | X` results in evaluating the delayed operations. """
         if isinstance(other, Delayable):
             return NotImplemented
-        return self.using(other)
+        return self._using(other)
 
-    def __mod__[T: Delayable](self: T, other: str) -> T:
+    def __mod__[T: Delayable](self: T, other: modifierType) -> T:
         """
         The modulate operator `%` is used to name the operation. It can also be used to modify Delayables, for example, set Optimizer to parameters in delayable modules, etc...
         (TODO: How to handle general modifiers, e.g. optimizer.)
         """
-        if not isinstance(other, str):
-            return NotImplemented
-        self._name = other
-        return self
-
+        if isinstance(other, modifierType):
+            self._name = other
+            return self
+        return NotImplemented
+        
     def __rmod__[T: Delayable](self: T, other: str) -> T:
-        if not isinstance(other, str):
-            return NotImplemented
-        return self.__mod__(other)
+        """
+        Modifiers should always be to the right of the Delayable.
+        """
+        if isinstance(other, modifierType):
+            raise TypeError(f"Modifier should be to the right of the Delayable, not the left.")
+        return NotImplemented
         
     def __rshift__(self, other: Delayable) -> Chain:
         if not isinstance(other, Delayable):
             return NotImplemented
-        return Chain(self, other)
+        return Chain(self, other, reduce=False)
 
     def __rrshift__(self, other: Any) -> Any:
         """
@@ -106,10 +127,19 @@ class Delayable(ABC):
         """
         if not isinstance(other, Delayable):
             return NotImplemented
-        return Chain(self, other)
+        return Chain(self, other, reduce=True)
+
+    def __rlshift__(self, other: Any) -> Any:
+        """
+        In this case `other` cannot be of type `Delayable` (__lshift__ is called instead).
+        """
+        return NotImplemented
+
+    def __iter__(self) -> Iterator[Any]:
+        raise NotImplementedError("X is not iterable.")
 
 
-class _MetaOpAction[T: type](abc.ABCMeta):
+class _MetaOpAction[T: type](DelayableMeta, abc.ABCMeta):
     """
     Use as metaclass for types which require implementing operators, etc, as symbolic operations
     without having to initialize an instance of the class first. 
@@ -296,16 +326,11 @@ class _MetaOpAction[T: type](abc.ABCMeta):
 
     def __iter__(cls):
         # TODO: Need to support *X instead of this....
-        return iter([])
+        # return iter([])
+        raise NotImplementedError("X is not iterable.")
 
     def __repr__(cls):
         return cls.__name__
-
-    def __instancecheck__(cls, instance):
-        return (
-            super().__instancecheck__(instance) 
-            or (isinstance(instance, type) and issubclass(instance, cls))
-        )
 
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):
@@ -317,7 +342,13 @@ class _MetaOpAction[T: type](abc.ABCMeta):
         
         try:
             # Special/reserved operators must be handled by right hand side operator.
-            if func.__name__ in {"__lshift__", "__rshift__", "__or__"}:
+            if func.__name__ in {
+                "__lshift__", 
+                "__rlshift__", 
+                "__rshift__", 
+                "__rrshift__", 
+                "__or__", 
+            }:
                 return NotImplemented
         except AttributeError:
             # raised if functon has no __name__ attribute
@@ -378,16 +409,16 @@ class _DelayableOpAction(Delayable):
         If `other` qualifies as a Faeyon modifier, use the parent class implementation, otherwise, 
         the modulus % operator is treated as a normal arithmetic operation.
         """
-        try:
-            return super().__mod__(other)
-        except TypeError:
+        out =  super().__mod__(other)
+        if out is NotImplemented:
             return self._op_action("__mod__", other)
+        return out
     
     def __rmod__(self, other: Any) -> X:
-        try:
-            return super().__rmod__(other)
-        except TypeError:
+        out = super().__rmod__(other)
+        if out is NotImplemented:
             return self._op_action("__rmod__", other)
+        return out
 
     def __divmod__(self, other: Any) -> X:
         return self._op_action("__divmod__", other)
@@ -428,9 +459,6 @@ class _DelayableOpAction(Delayable):
 
     def __round__(self) -> X:
         return self._op_action("__round__")
-    
-    def __reversed__(self) -> X:
-        return self._op_action("__reversed__")
 
     # --- Comparison operators ---
     def __lt__(self, other: Any) -> X:
@@ -469,29 +497,13 @@ class _DelayableOpAction(Delayable):
 
 
 class X(_DelayableOpAction, metaclass=_MetaOpAction):
-    # def __init__(self) -> None:
-    #     self._fbuffer: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
-
     def _resolve(self, data: Any) -> Any:
         """ Only X without operations on it will be required to be resolved here. """
-        # inputs = data
-        # for name, args, kwargs in self._fbuffer:
-        #     # Recursively evaluate the arguments.
-        #     args = tuple(
-        #         inputs | arg if isinstance(arg, (Delayable, _MetaOps)) else arg
-        #         for arg in args
-        #     )
-        #     kwargs = {
-        #         k: inputs | v if isinstance(v, (Delayable, _MetaOps)) else v
-        #         for k, v in kwargs.items()
-        #     }
-        #     opinfo = get_opinfo(attr_name=name)
-        #     data = opinfo(data, *args, **kwargs)
         return data
 
-    def __iter__(self):
-        # TODO: Need to support *X instead of this....
-        return iter([])
+    # def __iter__(self):
+    #     # TODO: Need to support *X instead of this....
+    #     return iter([])
 
     def __repr__(self) -> str:
         return "X"
@@ -780,7 +792,7 @@ def conjure(x: Any, data: Any, fast: bool = False) -> Any:
 
     if not fast:
         if isinstance(x, Delayable):
-            return x.using(data)
+            return x._using(data)
 
         if not isinstance(x, X):
             return x
@@ -975,7 +987,7 @@ class ContainerBase(Delayable, ABC):
         return data
 
     def __rrshift__(self, data: Any) -> Any:
-        return self.using(data)
+        return self._using(data)
 
     @property
     @abstractmethod
@@ -1157,23 +1169,56 @@ class FMMap(KeyedContainer):
 
 class Chain(_DelayableOpAction):
     """
-    Serials stores a 
+    A Chain is a sequence of operations: `op0 >> op1 << op2 >> ... >> opn`.
     """
-    def __init__(self, *ops: Delayable | nn.Module):
-        new_ops = []
+    def __init__(
+        self, 
+        *ops: Delayable | nn.Module | list[Delayable | nn.Module] | dict[str, Delayable | nn.Module],
+        reduce: Optional[list[bool], bool] = None
+    ) -> None:
+        self._ops = []
         for op in ops:
             if isinstance(op, nn.Module):
-                new_ops.append(op(X))
-            elif isinstance(op, X):
-                new_ops.append(F(op))
-            elif not isinstance(op, Delayable):
-                raise ValueError("All arguments must be of subtype `Delayable`.")
+                self._ops.append(op(X))
+            elif isinstance(op, Delayable):
+                self._ops.append(op)
+            elif isinstance(op, list):
+                if not all(isinstance(item, Delayable | nn.Module) for item in op):
+                    raise ValueError(
+                        "All items in a list must be of subtype `Delayable` or `nn.Module`."
+                    )
+                self._ops.append(op)
+            elif isinstance(op, dict):
+                if not all(isinstance(item, Delayable | nn.Module) for item in op.values()):
+                    raise ValueError(
+                        "All values in a dictionary must be of subtype `Delayable` or `nn.Module`."
+                    )
+                self._ops.append(op)
             else:
-                new_ops.append(op)
-        self.ops = tuple(new_ops)
+                raise ValueError("All arguments must be of subtype `Delayable` or `nn.Module`.")
+        self._ops = tuple(self._ops)
 
-    def __getitem__(self, idx: int) -> Delayable:
-        return self.ops[idx]
+        if reduce is None:
+            self._reduce = [False] * (len(self._ops) - 1)
+        else:
+            if isinstance(reduce, bool):
+                self._reduce = [reduce] * (len(self._ops) - 1)
+            elif isinstance(reduce, list):
+                if len(reduce) != len(self._ops) - 1:
+                    raise ValueError(
+                        "`gather` must be the same length as the number of operations minus one."
+                    )
+                self._reduce = reduce
+            else:
+                raise ValueError(
+                    "`gather` must be a boolean or list of booleans of the same length as "
+                    "the number of operations minus one."
+                )
+
+    def __getitem__(self, idx: int | str) -> Delayable:
+        # TODO: Handle string indexing, which will try to resolve the operation by name, if any 
+        # operation has a name (include regex support).
+        return self._ops[idx]
 
     def copy(self):
         out = Chain(*self.ops)
@@ -1182,12 +1227,19 @@ class Chain(_DelayableOpAction):
         return out
 
     def _resolve(self, data: Any) -> Any:
-        for op in self.ops:
-            data = op.using(data)
+        if not self._ops:
+            return data
+
+        data = self._ops[0]._using(data)
+        for op, reduce in zip(self._ops[1:], self._reduce):
+            if reduce:
+                data = op._using(data)
+            else:
+                data = op._using(data)
         return data
 
     def __len__(self) -> int:
-        return len(self.ops)
+        return len(self._ops)
 
 
 # class Parallels(_OpBase):
