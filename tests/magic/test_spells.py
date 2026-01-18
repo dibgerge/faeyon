@@ -455,6 +455,13 @@ class TestX:
         # instance method
         assert 1.4 | round(X + 1) == 2.0
 
+    def test_packing(self):
+        def func(a, b, c):
+            return a + b + c
+        res = torch.tensor([1, 2, 3]) | F(func, *(X + 1))
+        assert res == 9
+
+
 
 
 # class TestA:

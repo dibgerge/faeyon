@@ -135,9 +135,6 @@ class Delayable(abc.ABC, metaclass=DelayableMeta):
         """
         return NotImplemented
 
-    def __iter__(self) -> Iterator[Any]:
-        raise NotImplementedError("X is not iterable.")
-
 
 class _MetaOpAction[T: type](DelayableMeta, abc.ABCMeta):
     """
@@ -325,9 +322,7 @@ class _MetaOpAction[T: type](DelayableMeta, abc.ABCMeta):
         return len(super().__call__())
 
     def __iter__(cls):
-        # TODO: Need to support *X instead of this....
-        # return iter([])
-        raise NotImplementedError("X is not iterable.")
+        return iter([_Packed(super().__call__())])
 
     def __repr__(cls):
         return cls.__name__
@@ -495,15 +490,32 @@ class _DelayableOpAction(Delayable):
     def __reversed__(self) -> X:
         return self._op_action("__reversed__")
 
+    def __iter__(self):
+        return iter([_Packed(self)])
+
+
+class _Packed:
+    """
+    Represents an unpacking operation (*X). When resolved, unpacks the data as *args.
+    """
+    def __init__(self, target):
+        self.target = target
+    
+    def unpack(self, data: Any) -> Iterator[Any]:
+        if isinstance(self.target, (Delayable, _MetaOpAction)):
+            resolved = data | self.target
+        else:
+            resolved = self.target
+        return iter(resolved)
+    
+    def __repr__(self) -> str:
+        return f"*{self.target!r}"
+
 
 class X(_DelayableOpAction, metaclass=_MetaOpAction):
     def _resolve(self, data: Any) -> Any:
         """ Only X without operations on it will be required to be resolved here. """
         return data
-
-    # def __iter__(self):
-    #     # TODO: Need to support *X instead of this....
-    #     return iter([])
 
     def __repr__(self) -> str:
         return "X"
@@ -674,15 +686,24 @@ class F(_DelayableOpAction):
     #     return out
 
     def _resolve(self, data: Any) -> Any:
-        args = tuple(
-            data | arg if isinstance(arg, (Delayable, _MetaOpAction)) else arg
-            for arg in self.args
-        )
+        resolved_args = []
+        for arg in self.args:
+            if isinstance(arg, _Packed):
+                resolved_args.extend(arg.unpack(data))
+            elif isinstance(arg, (Delayable, _MetaOpAction)):
+                resolved_args.append(data | arg)
+            else:
+                resolved_args.append(arg)
+
+        # args = tuple(
+        #     data | arg if isinstance(arg, (Delayable, _MetaOpAction)) else arg
+        #     for arg in self.args
+        # )
         kwargs = {
             k: data | v if isinstance(v, (Delayable, _MetaOpAction)) else v
             for k, v in self.kwargs.items()
         }
-        return self.op(*args, **kwargs)
+        return self.op(*resolved_args, **kwargs)
 
     def __repr__(self):
         # return f"F({self.strategy!r})"
