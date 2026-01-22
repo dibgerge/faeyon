@@ -48,33 +48,6 @@ class OpInfo:
     operator: Callable[[..., Any], Any]
     precedence: int = 0
 
-    def __post_init__(self):
-        """
-        the fmt field accepts two arguments: X, arg, where X is the main expression and 
-        arg is the argument to the operator. 
-        """
-        formatter = string.Formatter()
-        self._fmt_fields = {}
-        for literal_text, name, format_spec, conversion in formatter.parse(self.fmt):
-            if name is not None:
-                s = "{"
-                if conversion:
-                    s += f"!{conversion}"
-
-                if format_spec:
-                    s += f":{format_spec}"
-
-                s += "}"
-                self._fmt_fields[name] = s
-
-        if "X" not in self._fmt_fields:
-            raise ValueError(f"X must be in format string: {self.fmt}")
-        
-        if not set(self._fmt_fields) <= {"X", "arg"}:
-            print(self._fmt_fields, self.fmt)
-            raise ValueError(f"Invalid format string: {self.fmt}. Expected {{{'X', 'arg'}}}")
-
-
     @property
     def is_right(self) -> bool:
         return self.type == OperatorType.RBINARY
@@ -99,9 +72,6 @@ class OpInfo:
             raise ValueError(f"args/kwargs provided but 'arg' not in format string: {self.fmt}")
 
         out_args = []
-        out_kwargs = []
-        arg_fmt = self._fmt_fields["arg"]
-
         for arg in args:
             out_args.append(self._add_parens(arg))
 
