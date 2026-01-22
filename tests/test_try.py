@@ -1,4 +1,4 @@
-from faeyon import F, X
+from faeyon import F, X, A
 
 
 # @pytest.mark.parametrize("expr", [X % "foo", "foo" % X])
@@ -7,7 +7,7 @@ def test_mod():
     # assert isinstance(expr, X)
     # assert expr._name == "foo"
     print("starting")
-    expr = "foo %s" % X
-    print(expr)
+    expr = X % "BLA"
+    print(expr, expr._name, expr._something)
 
     

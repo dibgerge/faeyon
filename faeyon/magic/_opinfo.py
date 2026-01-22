@@ -1,6 +1,7 @@
 import dataclasses
 import enum
 import operator
+import string
 
 from collections.abc import Callable
 from typing import Any, Optional, overload
@@ -27,12 +28,52 @@ def _getitem(data: Any, key: Any) -> Any:
     return data[key]
 
 
+def get_precedence(item) -> Optional[int]:
+    """
+    Gets the precedence of the item. Item can be an OpInfo or F object. 
+    """
+    from .spells import F
+    if isinstance(item, F):
+        return item._fae_op.precedence
+    elif isinstance(item, OpInfo):
+        return item.precedence
+    return None
+
+
 @dataclasses.dataclass
 class OpInfo:
     name: str
     type: OperatorType
     fmt: str
     operator: Callable[[..., Any], Any]
+    precedence: int = 0
+
+    def __post_init__(self):
+        """
+        the fmt field accepts two arguments: X, arg, where X is the main expression and 
+        arg is the argument to the operator. 
+        """
+        formatter = string.Formatter()
+        self._fmt_fields = {}
+        for literal_text, name, format_spec, conversion in formatter.parse(self.fmt):
+            if name is not None:
+                s = "{"
+                if conversion:
+                    s += f"!{conversion}"
+
+                if format_spec:
+                    s += f":{format_spec}"
+
+                s += "}"
+                self._fmt_fields[name] = s
+
+        if "X" not in self._fmt_fields:
+            raise ValueError(f"X must be in format string: {self.fmt}")
+        
+        if not set(self._fmt_fields) <= {"X", "arg"}:
+            print(self._fmt_fields, self.fmt)
+            raise ValueError(f"Invalid format string: {self.fmt}. Expected {{{'X', 'arg'}}}")
+
 
     @property
     def is_right(self) -> bool:
@@ -42,8 +83,44 @@ class OpInfo:
     def attr_name(self) -> str:
         return f"__{self.name}__"
 
-    def to_string(self, X: str, *args, **kwargs: Any) -> str:
-        return self.fmt.format(*args, X=X, **kwargs)
+    def _add_parens(self, item) -> str:
+        precedence = get_precedence(item)
+        if precedence and precedence > self.precedence:
+            return f"({item})"
+        return item
+
+    def to_string(self, X: Any, *args: Any, **kwargs: Any) -> str:
+        """
+        Each item in args and kwargs will be formatted individually based on the 
+        format_spec/conversion in the "arg" field of the format string.
+        Then all arguments will be joined together with a comma.
+        """
+        if (args or kwargs) and "arg" not in self._fmt_fields:
+            raise ValueError(f"args/kwargs provided but 'arg' not in format string: {self.fmt}")
+
+        out_args = []
+        out_kwargs = []
+        arg_fmt = self._fmt_fields["arg"]
+
+        for arg in args:
+            out_args.append(self._add_parens(arg))
+
+        # If one argument is given, just use it directly
+        if len(out_args) == 1 and not kwargs:
+            arg = out_args[0]
+
+            # Special case to support X('foo') instead of X(foo)
+            if self.name == "call" and isinstance(arg, str):
+                arg = repr(arg)
+            return self.fmt.format(X=self._add_parens(X), arg=arg)
+        
+        out_args = list(map(repr, out_args))
+
+        for k, v in kwargs.items():
+            out_args.append(f"{k}={self._add_parens(v)!r}")
+
+        return self.fmt.format(X=self._add_parens(X), arg=", ".join(out_args))
+
 
     def __call__(self, data: Any, *args: Any, **kwargs: Any) -> Any:
         if self.type == OperatorType.UNARY:
@@ -59,50 +136,317 @@ class OpInfo:
 
 
 ops = [
-    OpInfo(name="rshift", type=OperatorType.BINARY, operator=operator.rshift, fmt="{X} >> {}"),
-    OpInfo(name="rrshift", type=OperatorType.RBINARY, operator=operator.rshift, fmt="{} >> {X}"),
-    OpInfo(name="lshift", type=OperatorType.BINARY, operator=operator.lshift, fmt="{X} << {}"),
-    OpInfo(name="rlshift", type=OperatorType.RBINARY, operator=operator.lshift, fmt="{} << {X}"),
-    OpInfo(name="add", type=OperatorType.BINARY, operator=operator.add, fmt="{X} + {}"),
-    OpInfo(name="radd", type=OperatorType.RBINARY, operator=operator.add, fmt="{} + {X}"),
-    OpInfo(name="sub", type=OperatorType.BINARY, operator=operator.sub, fmt="{X} - {}"),
-    OpInfo(name="rsub", type=OperatorType.RBINARY, operator=operator.sub, fmt="{} - {X}"),
-    OpInfo(name="mul", type=OperatorType.BINARY, operator=operator.mul, fmt="{X} * {}"),
-    OpInfo(name="rmul", type=OperatorType.RBINARY, operator=operator.mul, fmt="{} * {X}"),
-    OpInfo(name="truediv", type=OperatorType.BINARY, operator=operator.truediv, fmt="{X} / {}"),
-    OpInfo(name="rtruediv", type=OperatorType.RBINARY, operator=operator.truediv, fmt="{} / {X}"),
-    OpInfo(name="floordiv", type=OperatorType.BINARY, operator=operator.floordiv, fmt="{X} // {}"),
-    OpInfo(name="rfloordiv", type=OperatorType.RBINARY, operator=operator.floordiv, fmt="{} // {X}"),
-    OpInfo(name="mod", type=OperatorType.BINARY, operator=operator.mod, fmt="{X} % {}"),
-    OpInfo(name="rmod", type=OperatorType.RBINARY, operator=operator.mod, fmt="{} % {X}"),
-    OpInfo(name="divmod", type=OperatorType.BINARY, operator=divmod, fmt="divmod({X}, {})"),
-    OpInfo(name="rdivmod", type=OperatorType.RBINARY, operator=divmod, fmt="divmod({}, {X})"),
-    OpInfo(name="pow", type=OperatorType.BINARY, operator=operator.pow, fmt="{X} ** {}"),
-    OpInfo(name="rpow", type=OperatorType.RBINARY, operator=operator.pow, fmt="{} ** {X}"),
-    OpInfo(name="matmul", type=OperatorType.BINARY, operator=operator.matmul, fmt="{X} @ {}"),
-    OpInfo(name="rmatmul", type=OperatorType.RBINARY, operator=operator.matmul, fmt="{} @ {X}"),
-    OpInfo(name="and", type=OperatorType.BINARY, operator=operator.and_, fmt="{X} & {}"),
-    OpInfo(name="rand", type=OperatorType.RBINARY, operator=operator.and_, fmt="{} & {X}"),
-    OpInfo(name="or", type=OperatorType.BINARY, operator=operator.or_, fmt="{X} | {}"),
-    OpInfo(name="ror", type=OperatorType.RBINARY, operator=operator.or_, fmt="{} | {X}"),
-    OpInfo(name="xor", type=OperatorType.BINARY, operator=operator.xor, fmt="{X} ^ {}"),
-    OpInfo(name="rxor", type=OperatorType.RBINARY, operator=operator.xor, fmt="{} ^ {X}"),
-    OpInfo(name="abs", type=OperatorType.UNARY, operator=operator.abs, fmt="abs({X})"),
-    OpInfo(name="invert", type=OperatorType.UNARY, operator=operator.invert, fmt="~{X}"),
-    OpInfo(name="neg", type=OperatorType.UNARY, operator=operator.neg, fmt="-{X}"),
-    OpInfo(name="pos", type=OperatorType.UNARY, operator=operator.pos, fmt="+{X}"),
-    OpInfo(name="round", type=OperatorType.UNARY, operator=round, fmt="round({X})"),
-    OpInfo(name="reversed", type=OperatorType.UNARY, operator=reversed, fmt="reversed({X})"),
-    OpInfo(name="lt", type=OperatorType.COMPARISON, operator=operator.lt, fmt="{X} < {}"),
-    OpInfo(name="le", type=OperatorType.COMPARISON, operator=operator.le, fmt="{X} <= {}"),
-    OpInfo(name="eq", type=OperatorType.COMPARISON, operator=operator.eq, fmt="{X} == {}"),
-    OpInfo(name="ne", type=OperatorType.COMPARISON, operator=operator.ne, fmt="{X} != {}"),
-    OpInfo(name="gt", type=OperatorType.COMPARISON, operator=operator.gt, fmt="{X} > {}"),
-    OpInfo(name="ge", type=OperatorType.COMPARISON, operator=operator.ge, fmt="{X} >= {}"),
-    OpInfo(name="call", type=OperatorType.UTILITY, operator=_call, fmt="{X}({})"),
-    OpInfo(name="getitem", type=OperatorType.UTILITY, operator=_getitem, fmt="{X}[{}]"),
-    OpInfo(name="getattr", type=OperatorType.UTILITY, operator=_getattr, fmt="{X}.{}"),
-    OpInfo(name="len", type=OperatorType.UTILITY, operator=len, fmt="len({X})"),
+    OpInfo(
+        name="pow", 
+        type=OperatorType.BINARY, 
+        operator=operator.pow, 
+        fmt="{X} ** {arg}",
+        precedence=10
+    ),
+    OpInfo(
+        name="rpow", 
+        type=OperatorType.RBINARY, 
+        operator=operator.pow, 
+        fmt="{arg} ** {X}",
+        precedence=10
+    ),
+    OpInfo(
+        name="invert", 
+        type=OperatorType.UNARY, 
+        operator=operator.invert, 
+        fmt="~{X}",
+        precedence=20
+    ),
+    OpInfo(
+        name="neg", 
+        type=OperatorType.UNARY, 
+        operator=operator.neg, 
+        fmt="-{X}",
+        precedence=20
+    ),
+    OpInfo(
+        name="pos", 
+        type=OperatorType.UNARY, 
+        operator=operator.pos, 
+        fmt="+{X}",
+        precedence=20
+    ),
+    OpInfo(
+        name="mul", 
+        type=OperatorType.BINARY, 
+        operator=operator.mul, 
+        fmt="{X} * {arg}",
+        precedence=30
+    ),
+    OpInfo(
+        name="rmul", 
+        type=OperatorType.RBINARY, 
+        operator=operator.mul, 
+        fmt="{arg} * {X}",
+        precedence=30
+    ),
+    OpInfo(
+        name="truediv", 
+        type=OperatorType.BINARY, 
+        operator=operator.truediv, 
+        fmt="{X} / {arg}",
+        precedence=30
+    ),
+    OpInfo(
+        name="rtruediv", 
+        type=OperatorType.RBINARY, 
+        operator=operator.truediv, 
+        fmt="{arg} / {X}",
+        precedence=30
+    ),
+    OpInfo(
+        name="floordiv", 
+        type=OperatorType.BINARY, 
+        operator=operator.floordiv, 
+        fmt="{X} // {arg}",
+        precedence=30
+    ),
+    OpInfo(
+        name="rfloordiv", 
+        type=OperatorType.RBINARY, 
+        operator=operator.floordiv, 
+        fmt="{arg} // {X}",
+        precedence=30
+    ),
+    OpInfo(
+        name="mod", 
+        type=OperatorType.BINARY, 
+        operator=operator.mod, 
+        fmt="{X} % {arg}",
+        precedence=30
+    ),
+    OpInfo(
+        name="rmod", 
+        type=OperatorType.RBINARY, 
+        operator=operator.mod, 
+        fmt="{arg} % {X}",
+        precedence=30
+    ),
+    OpInfo(
+        name="matmul", 
+        type=OperatorType.BINARY, 
+        operator=operator.matmul, 
+        fmt="{X} @ {arg}",
+        precedence=30
+    ),
+    OpInfo(
+        name="rmatmul", 
+        type=OperatorType.RBINARY, 
+        operator=operator.matmul, 
+        fmt="{arg} @ {X}",
+        precedence=30
+    ),
+    OpInfo(
+        name="add", 
+        type=OperatorType.BINARY, 
+        operator=operator.add, 
+        fmt="{X} + {arg}",
+        precedence=40
+    ),
+    OpInfo(
+        name="radd", 
+        type=OperatorType.RBINARY, 
+        operator=operator.add, 
+        fmt="{arg} + {X}",
+        precedence=40
+    ),
+    OpInfo(
+        name="sub", 
+        type=OperatorType.BINARY, 
+        operator=operator.sub, 
+        fmt="{X} - {arg}",
+        precedence=40
+    ),
+    OpInfo(
+        name="rsub", 
+        type=OperatorType.RBINARY, 
+        operator=operator.sub, 
+        fmt="{arg} - {X}",
+        precedence=40
+    ),
+
+    OpInfo(
+        name="rshift", 
+        type=OperatorType.BINARY, 
+        operator=operator.rshift, 
+        fmt="{X} >> {arg}",
+        precedence=50
+    ),
+    OpInfo(
+        name="rrshift", 
+        type=OperatorType.RBINARY, 
+        operator=operator.rshift, 
+        fmt="{arg} >> {X}",
+        precedence=50
+    ),
+    OpInfo(
+        name="lshift", 
+        type=OperatorType.BINARY, 
+        operator=operator.lshift, 
+        fmt="{X} << {arg}",
+        precedence=50
+    ),
+    OpInfo(
+        name="rlshift", 
+        type=OperatorType.RBINARY, 
+        operator=operator.lshift, 
+        fmt="{arg} << {X}",
+        precedence=50
+    ),
+    OpInfo(
+        name="and", 
+        type=OperatorType.BINARY, 
+        operator=operator.and_, 
+        fmt="{X} & {arg}",
+        precedence=60
+    ),
+    OpInfo(
+        name="rand", 
+        type=OperatorType.RBINARY, 
+        operator=operator.and_, 
+        fmt="{arg} & {X}",
+        precedence=60
+    ),
+
+    OpInfo(
+        name="xor", 
+        type=OperatorType.BINARY, 
+        operator=operator.xor, 
+        fmt="{X} ^ {arg}",
+        precedence=70
+    ),
+    OpInfo(
+        name="rxor", 
+        type=OperatorType.RBINARY, 
+        operator=operator.xor, 
+        fmt="{arg} ^ {X}",
+        precedence=70
+    ),
+
+    OpInfo(
+        name="or", 
+        type=OperatorType.BINARY, 
+        operator=operator.or_, 
+        fmt="{X} | {arg}",
+        precedence=80
+    ),
+    OpInfo(
+        name="ror", 
+        type=OperatorType.RBINARY, 
+        operator=operator.or_, 
+        fmt="{arg} | {X}",
+        precedence=80
+    ),
+    OpInfo(
+        name="lt", 
+        type=OperatorType.COMPARISON, 
+        operator=operator.lt, 
+        fmt="{X} < {arg}",
+        precedence=90
+    ),
+    OpInfo(
+        name="le", 
+        type=OperatorType.COMPARISON, 
+        operator=operator.le, 
+        fmt="{X} <= {arg}",
+        precedence=90
+    ),
+    OpInfo(
+        name="eq", 
+        type=OperatorType.COMPARISON, 
+        operator=operator.eq, 
+        fmt="{X} == {arg}",
+        precedence=90
+    ),
+    OpInfo(
+        name="ne", 
+        type=OperatorType.COMPARISON, 
+        operator=operator.ne, 
+        fmt="{X} != {arg}",
+        precedence=90
+    ),
+    OpInfo(
+        name="gt", 
+        type=OperatorType.COMPARISON, 
+        operator=operator.gt, 
+        fmt="{X} > {arg}",
+        precedence=90
+    ),
+    OpInfo(
+        name="ge", 
+        type=OperatorType.COMPARISON, 
+        operator=operator.ge, 
+        fmt="{X} >= {arg!r}",
+        precedence=90
+    ),
+    OpInfo(
+        name="divmod", 
+        type=OperatorType.BINARY, 
+        operator=divmod,
+        fmt="divmod({X}, {arg})",
+        precedence=0
+    ),
+    OpInfo(
+        name="rdivmod", 
+        type=OperatorType.RBINARY, 
+        operator=divmod,
+        fmt="divmod({arg}, {X})",
+        precedence=0
+    ),
+    OpInfo(
+        name="abs", 
+        type=OperatorType.UTILITY, 
+        operator=operator.abs, 
+        fmt="abs({X})",
+        precedence=0
+    ),
+    OpInfo(
+        name="round", 
+        type=OperatorType.UTILITY, 
+        operator=round,
+        fmt="round({X})",
+        precedence=0
+    ),
+    OpInfo(
+        name="reversed", 
+        type=OperatorType.UTILITY, 
+        operator=reversed,
+        fmt="reversed({X})",
+        precedence=0
+    ),
+    OpInfo(
+        name="call", 
+        type=OperatorType.UTILITY, 
+        operator=_call,
+        fmt="{X}({arg})",
+        precedence=0
+    ),
+    OpInfo(
+        name="getitem", 
+        type=OperatorType.UTILITY, 
+        operator=_getitem,
+        fmt="{X}[{arg}]",
+        precedence=0
+    ),
+    OpInfo(
+        name="getattr", 
+        type=OperatorType.UTILITY, 
+        operator=_getattr,
+        fmt="{X}.{arg}",
+        precedence=0
+    ),
+    OpInfo(
+        name="len", 
+        type=OperatorType.UTILITY, 
+        operator=len,
+        fmt="len({X})",
+        precedence=0
+    ),
 ]
 
 _attr_to_info = {op.attr_name: op for op in ops}

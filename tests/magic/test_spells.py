@@ -1,12 +1,13 @@
 import pytest
 import inspect
 import torch
-from faeyon import A, X, FVar, FList, FDict, FMMap, F, Wire, W, Chain
+from faeyon import A, X, FVar, FList, FDict, FMMap, F, Wire, W, Chain, Modifiers
 from faeyon.magic.spells import conjure, Delayable
 
 from tests.common import ConstantLayer
 from pytest import param
 from torch import tensor
+from torch.nn.functional import relu
 
 
 class TestX:
@@ -104,8 +105,8 @@ class TestX:
         TODO: Should modifiers be inplace or a should a copy be returned?
         """
         expr = X % "foo"
-        assert isinstance(expr, X)
-        assert expr._name == "foo"
+        assert isinstance(expr, Modifiers)
+        assert expr.fae_has_name
 
     def test_rmod(self):
         """ 
@@ -116,18 +117,28 @@ class TestX:
         pass
         
     @pytest.mark.parametrize("expr, expected", [
-        param(X, "X", id="X"),
-        param(X + 1, "X + 1", id="X + 1"),
-        param(X[0] + 1, "X[0] + 1", id="X[0] + 1"),
-        param(X(1, foo="bar"), "X(1, foo='bar')", id="X(1, foo='bar')"),
-        param(X.a, "X.a", id="X.a"),
-        param(X(), "X()", id="X()"),
+        param(X, "X", id="meta"),
+        param(X + 1, "X + 1", id="instance"),
+        param(X[0], "X[0]", id="getitem"),
+        param(X.a, "X.a", id="getattr"),
+        param(X(), "X()", id="call"),
+        param(X(1), "X(1)", id="call_args"),
+        param(X("foo"), "X('foo')", id="call_string_arg"),
+        param(X(1, "bar"), "X(1, 'bar')", id="call_multiple_args"),
+        param(X(foo="bar"), "X(foo='bar')", id="call_kwargs"),
+        param(X(foo="bar", baz="qux"), "X(foo='bar', baz='qux')", id="call_multiple_kwargs"),
+        param(X(1, foo="bar"), "X(1, foo='bar')", id="call_args_kwargs"),
+        param(X + X * 2, "X + X * 2", id="X + X * 2"),
+        param(X + 2 * X, "X + 2 * X", id="X + 2 * X"),
+        param((X + 1) * (2 + X), "(X + 1) * (2 + X)", id="arithmetic_parens_1"),
+        param((X + 1) * X, "(X + 1) * X", id="arithmetic_parens_2"),
+        param(X * 2 / (X + 1), "X * 2 / (X + 1)", id="arithmetic_parens_3"),
     ])
     def test_repr(self, expr, expected):
         """ 
         Test some different ways of representing X and make sure the repr is correct. 
         """
-        assert repr(expr) == expected
+        assert str(expr) == expected
 
     # --- Test arithmetic operators ---
     @pytest.mark.parametrize("expr, expected", [
@@ -449,17 +460,40 @@ class TestX:
     def test_matmul(self, expr, input, expected):
         torch.testing.assert_close(input | expr, expected)
 
-    def test_round(self):
-        # class method
-        assert 1.4 | round(X) == 1.0
-        # instance method
-        assert 1.4 | round(X + 1) == 2.0
+    @pytest.mark.parametrize("expr, expected", [
+        param(X, 1.0, id="meta"), 
+        param(X + 1.0, 2.0, id="instance")
+    ])
+    def test_round(self, expr, expected):
+        assert 1.4 | round(expr) == expected
 
     def test_packing(self):
+        """
+        # TODO: Need more test cases here (e.g. meta and instance packing...)
+        """
         def func(a, b, c):
             return a + b + c
         res = torch.tensor([1, 2, 3]) | F(func, *(X + 1))
         assert res == 9
+
+    def test_packing_map(self):
+        """
+        # TODO: Need more test cases here 
+        """
+        def func(a, b, c):
+            return a + b + c
+        expr = F(func, **X)
+        res = {"a": 1, "b": 2, "c": 3} | expr
+        assert res == 6
+
+    @pytest.mark.parametrize("expr, expected", [
+        param(X, tensor([1.0, 0.0, 3.0]), id="meta"), 
+        param(X + 1.0, tensor([2.0, 0.0, 4.0]), id="instance")
+    ])
+    def test_torch_function(self, expr, expected):
+        data = tensor([1.0, -2.0, 3.0])
+        res = data | relu(expr)
+        torch.testing.assert_close(res, expected)
 
 
 

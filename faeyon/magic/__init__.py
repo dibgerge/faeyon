@@ -10,6 +10,7 @@ from .spells import (
     F,
     Chain,
     Wire,
-    W
+    W,
+    Modifiers
 )
 from .faek import faek

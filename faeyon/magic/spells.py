@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 
 from torch import nn
+from torch import optim
 from ._opinfo import get_opinfo, OpInfo
 
 
@@ -19,60 +20,44 @@ from ._opinfo import get_opinfo, OpInfo
 modifierType = str
 
 
-class DelayableMeta(abc.ABCMeta):
-    def __instancecheck__(cls, instance):
-        return (
-            super().__instancecheck__(instance) 
-            or (isinstance(instance, type) and issubclass(instance, cls))
-        )
+class _MappingKey(str):
+    """ 
+    This is a sentinel type to be used with Delayable objects to indicate a map packing.
+    """
+    pass
 
 
-class Delayable(abc.ABC, metaclass=DelayableMeta):
+class _Unpack:
+    """
+    Represents an unpacking operation (*X). When resolved, unpacks the data as *args.
+    """
+    def __init__(self, target, is_map: bool = False) -> None:
+        self.target = target
+        self.is_map = is_map
+    
+    def __ror__(self, data: Any) -> Iterator[Any]:
+        if isinstance(self.target, (Delayable,)):
+            resolved = data | self.target
+        else:
+            resolved = self.target
+        return resolved
+    
+    def __repr__(self) -> str:
+        if self.is_map:
+            prefix = "**"
+        else:
+            prefix = "*"
+        return f"{prefix}{self.target!r}"
+
+
+class Delayable:
     """
     Delayable is the base class for all delayable objects. It provides the base functionality for
     conditional evaluation, chaining, and resolving with data.
     """
-    _condition: Optional[bool | Delayable]
-    _else_: Optional[Delayable]
-
-    def __new__(cls, *args, **kwargs):
-        obj = super().__new__(cls)
-        obj._condition = None
-        obj._else_ = None
-        obj._name = None
-        return obj
-
-    def copy(self):
-        """Perform a shallow copy of the object."""
-        out = self.__new__(self.__class__)
-        for k, v in self.__dict__.items():
-            setattr(out, k, v)
-        return out
-
     @abstractmethod
     def _resolve(self, data: Any) -> Any:
         """Uses data to resolve the delayable. Must be implemented by subclasses."""
-
-    def _using(self, data: Any) -> Any:
-        if self._condition is not None:
-            condition = conjure(self._condition, data)
-            if condition:
-                return self._resolve(data)
-
-            if self._else_ is not None:
-                return conjure(self._else_, data)
-            else:
-                return data
-
-        return self._resolve(data)
-
-    def if_[T: Delayable](
-        self: T, condition: bool | Delayable, else_: Optional[Delayable] = None
-    ) -> T:
-        out = self.copy()
-        out._condition = condition
-        out._else_ = else_
-        return out
 
     def __or__(self, other: Any) -> Any:
         """ The case of `X | data` is not defined."""
@@ -88,16 +73,15 @@ class Delayable(abc.ABC, metaclass=DelayableMeta):
         """ `data | X` results in evaluating the delayed operations. """
         if isinstance(other, Delayable):
             return NotImplemented
-        return self._using(other)
+        return self._resolve(other)
 
     def __mod__[T: Delayable](self: T, other: modifierType) -> T:
         """
         The modulate operator `%` is used to name the operation. It can also be used to modify Delayables, for example, set Optimizer to parameters in delayable modules, etc...
         (TODO: How to handle general modifiers, e.g. optimizer.)
         """
-        if isinstance(other, modifierType):
-            self._name = other
-            return self
+        if isinstance(other, str):
+            return Modifiers(self, name=other)
         return NotImplemented
         
     def __rmod__[T: Delayable](self: T, other: str) -> T:
@@ -136,226 +120,14 @@ class Delayable(abc.ABC, metaclass=DelayableMeta):
         return NotImplemented
 
 
-class _MetaOpAction[T: type](DelayableMeta, abc.ABCMeta):
-    """
-    Use as metaclass for types which require implementing operators, etc, as symbolic operations
-    without having to initialize an instance of the class first. 
-
-    Example: 
-        X + 1 
-    
-    where `X` is a some type will `_MetaOps` metaclass, thus it supports the add operator on the 
-    class itself.
-
-    Another important distinction is when using usual object initialization like `X(..., args)`, 
-    the class `__init__` will not be called, but rather the `__call__` method of the class instance.
-    """
-    # --- Binary arithmetic operators ---
-    def _make_operands(cls, other: Any) -> tuple[T, Any]:
-        obj = super().__call__()
-        return obj, other
-
-    def __add__(cls, other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return obj + other
-
-    def __radd__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return other + obj
-
-    def __sub__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return obj - other
-
-    def __rsub__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return other - obj
-
-    def __mul__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return obj * other
-
-    def __rmul__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return other * obj
-
-    def __matmul__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return obj @ other
-
-    def __rmatmul__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return other @ obj
-
-    def __truediv__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return obj / other
-
-    def __rtruediv__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return other / obj
-    
-    def __floordiv__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return obj // other
-
-    def __rfloordiv__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return other // obj
-    
-    def __mod__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return obj % other
-
-    def __rmod__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return other % obj
-    
-    def __divmod__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return divmod(obj, other)
-
-    def __rdivmod__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return divmod(other, obj)
-    
-    def __pow__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return obj ** other
-
-    def __rpow__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return other ** obj
-    
-    def __lshift__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return obj << other
-    
-    def __rlshift__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return other << obj
-    
-    def __rshift__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return obj >> other
-
-    def __rrshift__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return other >> obj
-
-    def __and__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return obj & other
-
-    def __rand__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return other & obj
-
-    def __or__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return obj | other
-    
-    def __ror__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return other | obj
-
-    def __xor__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return obj ^ other
-
-    def __rxor__[T](cls: type[T], other: Any) -> T:
-        obj, other = cls._make_operands(other)
-        return other ^ obj
-
-    # --- Unary arithmetic operators ---
-    def __neg__[T](cls: type[T]) -> T:
-        return -super().__call__()
-
-    def __pos__[T](cls: type[T]) -> T:
-        return +super().__call__()
-
-    def __abs__[T](cls: type[T]) -> T:
-        return abs(super().__call__())
-
-    def __invert__[T](cls: type[T]) -> T:
-        return ~super().__call__()
-
-    def __round__[T](cls: type[T]) -> T:
-        return round(super().__call__())
-
-    # --- Comparison operators ---
-    def __lt__[T](cls: type[T], other: Any) -> T:
-        return super().__call__() < other
-
-    def __le__[T](cls: type[T], other: Any) -> T:
-        return super().__call__() <= other
-
-    def __eq__[T](cls: type[T], other: Any) -> T:
-        return super().__call__() == other
-    
-    def __ne__[T](cls: type[T], other: Any) -> T:
-        return super().__call__() != other
-
-    def __gt__[T](cls: type[T], other: Any) -> T:
-        return super().__call__() > other
-
-    def __ge__[T](cls: type[T], other: Any) -> T:
-        return super().__call__() >= other
-    
-    # --- Other operators ---
-    def __getattr__[T](cls: type[T], name: str) -> T:
-        return getattr(super().__call__(), name)
-    
-    def __getitem__[T](cls: type[T], key: Any) -> T:
-        return super().__call__()[key]
-    
-    def __call__[T](cls: type[T], *args: Any, **kwargs: Any) -> T:
-        return super().__call__()(*args, **kwargs)
-
-    def __reversed__[T](cls: type[T]) -> T:
-        return reversed(super().__call__())
-
-    def __hash__(self) -> int:
-        return super().__hash__()
-
-    def __len__(cls) -> int:
-        return len(super().__call__())
-
-    def __iter__(cls):
-        return iter([_Packed(super().__call__())])
-
-    def __repr__(cls):
-        return cls.__name__
-
-    @classmethod
-    def __torch_function__(cls, func, types, args=(), kwargs=None):
-        """
-        Note: For operators like `+`, `-`, `*`, etc., the `__torch_function__` is called only if tensor is the left operand, otherwise the operand must be handled by the right hand side Delayable.
-        """
-        if kwargs is None:
-            kwargs = {}
-        
-        try:
-            # Special/reserved operators must be handled by right hand side operator.
-            if func.__name__ in {
-                "__lshift__", 
-                "__rlshift__", 
-                "__rshift__", 
-                "__rrshift__", 
-                "__or__", 
-            }:
-                return NotImplemented
-        except AttributeError:
-            # raised if functon has no __name__ attribute
-            pass
-        return F(func, *args, **kwargs)
-
-
-class _DelayableOpAction(Delayable):
+class _OpActionMixin:
     """
     Base class for delayables which support (arithmetic) operations.
     TODO: Update return types to generics instead of X.
     """
+    def keys(self) -> Iterator[_MappingKey]:
+        return [_MappingKey(self),]
+    
     def _op_action(self, name: str, *args: Any, **kwargs: Any) -> F:
         """
         Specify what actions to takes for a given op attribute name and its corresponding arguments.
@@ -482,6 +254,8 @@ class _DelayableOpAction(Delayable):
         return self._op_action("__getattr__", name)
 
     def __getitem__(self, key: Any) -> X:
+        if isinstance(key, _MappingKey):
+            return _Unpack(self, is_map=True)
         return self._op_action("__getitem__", key)
 
     def __call__(self, *args: Any, **kwargs: Any) -> X:
@@ -491,49 +265,56 @@ class _DelayableOpAction(Delayable):
         return self._op_action("__reversed__")
 
     def __iter__(self):
-        return iter([_Packed(self)])
+        return iter([_Unpack(self)])
+
+    @classmethod
+    def __torch_function__(cls, func, types, args=(), kwargs=None):
+        """
+        Note: For operators like `+`, `-`, `*`, etc., the `__torch_function__` is called only if tensor is the left operand, otherwise the operand must be handled by the right hand side Delayable.
+        """
+        if kwargs is None:
+            kwargs = {}
+        
+        try:
+            # Special/reserved operators must be handled by right hand side operator.
+            if func.__name__ in {
+                "__lshift__", 
+                "__rlshift__", 
+                "__rshift__", 
+                "__rrshift__", 
+                "__or__", 
+            }:
+                return NotImplemented
+        except AttributeError:
+            # raised if functon has no __name__ attribute
+            pass
+        return F(func, *args, **kwargs)
 
 
-class _Packed:
-    """
-    Represents an unpacking operation (*X). When resolved, unpacks the data as *args.
-    """
-    def __init__(self, target):
-        self.target = target
-    
-    def unpack(self, data: Any) -> Iterator[Any]:
-        if isinstance(self.target, (Delayable, _MetaOpAction)):
-            resolved = data | self.target
-        else:
-            resolved = self.target
-        return iter(resolved)
-    
-    def __repr__(self) -> str:
-        return f"*{self.target!r}"
-
-
-class X(_DelayableOpAction, metaclass=_MetaOpAction):
+class _XMeta(_OpActionMixin, Delayable, abc.ABCMeta):
     def _resolve(self, data: Any) -> Any:
         """ Only X without operations on it will be required to be resolved here. """
         return data
 
+    def __instancecheck__(cls, instance):
+        return (
+            super().__instancecheck__(instance) 
+            or (isinstance(instance, type) and issubclass(instance, cls))
+        )
+
+    def __hash__(cls) -> int:
+        """
+        Need to define hash since __eq__ is overridden which sets hash to None, and this breaks __instancecheck__.
+        """
+        return hash(id(cls))
+
+    def __repr__(cls) -> str:
+        return cls.__name__
+    
+
+class X(metaclass=_XMeta):
     def __repr__(self) -> str:
         return "X"
-        # output = self.__class__.__name__
-        # for name, args, kwargs in self._fbuffer:
-        #     # Don't show the parentheses for __getattr__
-        #     if name == "__getattr__":
-        #         args_f = str(args[0])
-        #     else:
-        #         args_f = ", ".join(map(repr, args))
-
-        #     kwargs_f = ", ".join(f"{k}={v!r}" for k, v in kwargs.items())
-
-        #     if kwargs_f:
-        #         args_f = args_f + ", " + kwargs_f
-
-        #     output = get_opinfo(attr_name=name).to_string(args_f, X=output)
-        # return output
 
 
 class A(X):
@@ -673,59 +454,79 @@ class _CallableStrategy(_Strategy):
         return f"{name}({args})"
 
 
-class F(_DelayableOpAction):
+class F(_OpActionMixin, Delayable):
     def __init__(self, op: Callable[..., Any], *args, **kwargs) -> None:
-        self.op = op
-        self.args = args
-        self.kwargs = kwargs
-
-    # def copy(self):
-    #     out = F.from_strategy(self.strategy)
-    #     out._condition = self._condition
-    #     out._else_ = self._else_
-    #     return out
+        self._fae_op = op
+        self._fae_args = args
+        self._fae_kwargs = kwargs
 
     def _resolve(self, data: Any) -> Any:
         resolved_args = []
-        for arg in self.args:
-            if isinstance(arg, _Packed):
-                resolved_args.extend(arg.unpack(data))
-            elif isinstance(arg, (Delayable, _MetaOpAction)):
+        for arg in self._fae_args:
+            if isinstance(arg, _Unpack):
+                resolved_args.extend(data | arg)
+            elif isinstance(arg, (Delayable, X)):
                 resolved_args.append(data | arg)
             else:
                 resolved_args.append(arg)
 
-        # args = tuple(
-        #     data | arg if isinstance(arg, (Delayable, _MetaOpAction)) else arg
-        #     for arg in self.args
-        # )
-        kwargs = {
-            k: data | v if isinstance(v, (Delayable, _MetaOpAction)) else v
-            for k, v in self.kwargs.items()
-        }
-        return self.op(*resolved_args, **kwargs)
+        resolved_kwargs = {}
+        for k, v in self._fae_kwargs.items():
+            if isinstance(v, _Unpack):
+                res = data | v
+            elif isinstance(v, (Delayable, X)):
+                res = {k: data | v}
+            else:
+                res = {k: v}
+            
+            for k in res:
+                if k in resolved_kwargs:
+                    raise TypeError(f"{self._fae_op} got multiple values for argument '{k}'.")
+            resolved_kwargs.update(res)
 
-    def __repr__(self):
-        # return f"F({self.strategy!r})"
-        if isinstance(self.op, OpInfo):
-            return self.op.to_string(*self.args, **self.kwargs)
+        return self._fae_op(*resolved_args, **resolved_kwargs)
+
+    def __str__(self):
+        if isinstance(self._fae_op, OpInfo):
+            return self._fae_op.to_string(*self._fae_args, **self._fae_kwargs)
+            
+            # # handle operator functions (e.g. +, -, *, /, etc...)
+            # precedence = self._fae_op.precedence
+   
+            # repr_args = []
+            # for arg in self._fae_args:
+            #     if isinstance(arg, F):
+            #         repr_arg = repr(arg)
+            #     else:
+            #         repr_arg= str(arg)
+
+            #     if precedence > 0 and isinstance(arg, F) and arg._fae_op.precedence > precedence:
+            #         repr_args.append(f"({repr_arg})")
+            #     else:
+            #         repr_args.append(repr_arg)
+            
+            # for k, v in self._fae_kwargs.items():
+            #     # Assuming precedence is 0 for kwargs, since symbolic operators don't take keywords
+            #     repr_args.append(f"{k}={v!r}")
+
+            # # if len(repr_args) == 1:
+
+            # return self._fae_op.to_string(repr_args[0], ", ".join(repr_args[1:]))
         else:
             try:
-                name = self.op.__name__
+                name = self._fae_op.__name__
             except AttributeError:
-                name = f"{self.op!r}"
+                name = f"{self._fae_op!r}"
 
-            if name == "Module.__call__" and len(self.args.args) > 0:
-                name, *args = self.args  # .args
-            else:
-                args = self.args  # .args
+            # TODO: Might need special handling of module.__call__
+            # if name == "Module.__call__" and len(self.args.args) > 0:
+            #     name, *args = self.args  # .args
+            # else:
+            #     args = self.args  # .args
 
-            args = ", ".join(map(repr, args))
-            # kwargs = ", ".join(f"{k}={v!r}" for k, v in self.args.kwargs.items())
-
-            # if kwargs:
-            #     args = args + ", " + kwargs
-
+            args = list(map(repr, self._fae_args))
+            args.extend(f"{k}={v!r}" for k, v in self._fae_kwargs.items())
+            args = ", ".join(args)
             return f"{name}({args})"
 
 
@@ -857,6 +658,63 @@ def _new_instance(cls, *args, **kwargs):
     super(cls, instance).__setattr__("_arguments", bound)
     return instance
 
+
+class IF(Delayable, _OpActionMixin):
+    def __init__(
+        self, 
+        condition: bool | Delayable, 
+        then_: Delayable,
+        else_: Optional[Delayable] = None
+    ) -> None:
+        self._condition = condition
+        self._then_ = then_
+        self._else_ = else_
+
+    def _resolve(self, data: Any) -> Any:
+        if isinstance(self._condition, bool):
+            condition = self._condition
+        else:
+            condition = data | self.condition
+
+        if condition:
+            return data | self._then_
+        else:
+            if self._else_ is not None:
+                return data | self._else_
+            else:
+                return data
+
+
+class Modifiers(Delayable, _OpActionMixin):
+    def __init__(
+        self, 
+        expr: Delayable, 
+        name: Optional[str] = None,
+        optimizer: Optional[optim.Optimizer] = None,
+        
+    ) -> None:
+        if all(mod is None for mod in (name, optimizer)):
+            raise ValueError(
+                "At least one of `name` or `optimizer` must be provided."
+            )
+        self._name = name
+        self._optimizer = optimizer
+
+        if isinstance(expr, Modifiers):
+            if name is not None and expr.fae_has_name:
+                raise ValueError(f"Name already set on given modifier expression {expr}.")
+            if optimizer is not None and expr.fae_has_optimizer:
+                raise ValueError(f"Optimizer already set on given modifier expression {expr}.")
+        self.expr = expr
+
+    @property
+    def fae_has_name(self) -> bool:
+        return self._name is not None
+
+    @property
+    def fae_has_optimizer(self) -> bool:
+        return self._optimizer is not None
+            
 
 class Exportable:
     """
@@ -1188,7 +1046,7 @@ class FMMap(KeyedContainer):
         return True
 
 
-class Chain(_DelayableOpAction):
+class Chain(_OpActionMixin):
     """
     A Chain is a sequence of operations: `op0 >> op1 << op2 >> ... >> opn`.
     """
