@@ -5,7 +5,7 @@ import sys
 import inspect
 import enum
 import itertools
-from collections.abc import Callable, Iterator, Iterable
+from collections.abc import Callable, Iterator, Iterable, Sequence
 from typing import Any, Optional, overload
 from types import NoneType
 from abc import ABC, abstractmethod
@@ -27,36 +27,14 @@ class _MappingKey(str):
     pass
 
 
-class _Unpack:
-    """
-    Represents an unpacking operation (*X). When resolved, unpacks the data as *args.
-    """
-    def __init__(self, target, is_map: bool = False) -> None:
-        self.target = target
-        self.is_map = is_map
-    
-    def __ror__(self, data: Any) -> Iterator[Any]:
-        if isinstance(self.target, (Delayable,)):
-            resolved = data | self.target
-        else:
-            resolved = self.target
-        return resolved
-    
-    def __repr__(self) -> str:
-        if self.is_map:
-            prefix = "**"
-        else:
-            prefix = "*"
-        return f"{prefix}{self.target!r}"
-
-
 class Delayable:
     """
     Delayable is the base class for all delayable objects. It provides the base functionality for
     conditional evaluation, chaining, and resolving with data.
+    # TODO: Delayable should be an abstract base class.
     """
     @abstractmethod
-    def _resolve(self, data: Any) -> Any:
+    def _resolve(self, data: Any, symbols: Optional[Sequence[Symbol]] = None) -> Any:
         """Uses data to resolve the delayable. Must be implemented by subclasses."""
 
     def __or__(self, other: Any) -> Any:
@@ -292,8 +270,13 @@ class _OpActionMixin:
 
 
 class _XMeta(_OpActionMixin, Delayable, abc.ABCMeta):
-    def _resolve(self, data: Any) -> Any:
+    def _resolve(self, data: Any, symbols: Optional[Sequence[Symbol]] = None) -> Any:
         """ Only X without operations on it will be required to be resolved here. """
+
+        if symbols is not None:
+            if not isinstance(self, tuple(symbols)):
+                return self
+
         return data
 
     def __instancecheck__(cls, instance):
@@ -312,12 +295,15 @@ class _XMeta(_OpActionMixin, Delayable, abc.ABCMeta):
         return cls.__name__
     
 
-class X(metaclass=_XMeta):
-    def __repr__(self) -> str:
-        return "X"
+class Symbol(metaclass=_XMeta):
+    pass
 
 
-class A(X):
+class X(Symbol):
+    pass
+
+
+class A(Symbol):
     """
     A placeholder for providing arguments to resolve delayables. Examples:
 
@@ -328,6 +314,26 @@ class A(X):
     """
     pass
 
+
+class _Unpack(Delayable):
+    """
+    Represents an unpacking operation (*X). When resolved, unpacks the data as *args.
+    """
+    def __init__(self, target, is_map: bool = False) -> None:
+        if not isinstance(target, Delayable):
+            raise ValueError(f"Target of Unpack must be a Delayable, got {type(target)}.")
+        self.target = target
+        self.is_map = is_map
+    
+    def _resolve(self, data: Any, symbols: Optional[Sequence[Symbol]] = None) -> Iterator[Any]:
+        return self.target._resolve(data, symbols)
+    
+    def __repr__(self) -> str:
+        if self.is_map:
+            prefix = "**"
+        else:
+            prefix = "*"
+        return f"{prefix}{self.target!r}"
 
 # class _OpBase(Delayable):
 #     def _unary_op(self, oper):
@@ -460,58 +466,47 @@ class F(_OpActionMixin, Delayable):
         self._fae_args = args
         self._fae_kwargs = kwargs
 
-    def _resolve(self, data: Any) -> Any:
+    def _resolve(self, data: Any, symbols: Optional[Sequence[Symbol]] = None) -> Any:
         resolved_args = []
         for arg in self._fae_args:
-            if isinstance(arg, _Unpack):
-                resolved_args.extend(data | arg)
-            elif isinstance(arg, (Delayable, X)):
-                resolved_args.append(data | arg)
+            if isinstance(arg, Delayable):
+                print(data, symbols, arg)
+                resolved = arg._resolve(data, symbols)
             else:
-                resolved_args.append(arg)
+                resolved = arg
+            
+            if isinstance(arg, _Unpack):
+                resolved_args.extend(resolved)
+            else:
+                resolved_args.append(resolved)
 
         resolved_kwargs = {}
         for k, v in self._fae_kwargs.items():
-            if isinstance(v, _Unpack):
-                res = data | v
-            elif isinstance(v, (Delayable, X)):
-                res = {k: data | v}
+            if isinstance(v, Delayable):
+                resolved = v._resolve(data, symbols)
             else:
-                res = {k: v}
+                resolved = v
+        
+            if not isinstance(v, _Unpack):
+                resolved = {k: resolved}
             
-            for k in res:
+            # Need to do this because of the unpacking operation might have same key multiple times.
+            for k in resolved:
                 if k in resolved_kwargs:
                     raise TypeError(f"{self._fae_op} got multiple values for argument '{k}'.")
-            resolved_kwargs.update(res)
+            resolved_kwargs.update(resolved)
+
+        if any(
+            isinstance(a, Delayable) 
+            for a in itertools.chain(resolved_args, resolved_kwargs.values())
+        ):
+            return F(self._fae_op, *resolved_args, **resolved_kwargs)
 
         return self._fae_op(*resolved_args, **resolved_kwargs)
 
     def __str__(self):
         if isinstance(self._fae_op, OpInfo):
             return self._fae_op.to_string(*self._fae_args, **self._fae_kwargs)
-            
-            # # handle operator functions (e.g. +, -, *, /, etc...)
-            # precedence = self._fae_op.precedence
-   
-            # repr_args = []
-            # for arg in self._fae_args:
-            #     if isinstance(arg, F):
-            #         repr_arg = repr(arg)
-            #     else:
-            #         repr_arg= str(arg)
-
-            #     if precedence > 0 and isinstance(arg, F) and arg._fae_op.precedence > precedence:
-            #         repr_args.append(f"({repr_arg})")
-            #     else:
-            #         repr_args.append(repr_arg)
-            
-            # for k, v in self._fae_kwargs.items():
-            #     # Assuming precedence is 0 for kwargs, since symbolic operators don't take keywords
-            #     repr_args.append(f"{k}={v!r}")
-
-            # # if len(repr_args) == 1:
-
-            # return self._fae_op.to_string(repr_args[0], ", ".join(repr_args[1:]))
         else:
             try:
                 name = self._fae_op.__name__
@@ -685,7 +680,7 @@ class IF(Delayable, _OpActionMixin):
                 return data
 
 
-class Modifiers(Delayable, _OpActionMixin):
+class Modifiers(_OpActionMixin, Delayable):
     def __init__(
         self, 
         expr: Delayable, 
@@ -942,108 +937,116 @@ class FVar(ContainerBase):
         return False
 
 
-class FList(ContainerBase):
-    def __init__(self, *args) -> None:
-        super().__init__(list(args))
-
-    def _set(self, data: Any) -> None:
-        self.value.append(data)
-
-    def __len__(self):
-        return len(self.value)
-
-    def _shedder(self) -> Any:
-        return list(self.value)
-
-    @property
-    def is_empty(self) -> bool:
-        return len(self) == 0
-
-    @property
-    def is_appendable(self) -> bool:
-        return True
+class FList(_OpActionMixin, Delayable, list):
+    pass
 
 
-class KeyedContainer(ContainerBase):
-    def __init__(self, **kwargs):
-        super().__init__(kwargs)
-        self._key = None
-
-    def __getitem__(self, key: str):
-        if self._key is not None:
-            raise KeyError(
-                f"Key has already been assigned to {self.__class__.__name__} and no data used yet."
-            )
-        out = self.copy()
-        out._key = key
-        out._parents.append(self)
-        return out
-
-    @abstractmethod
-    def _set_item(self, data: Any) -> None:
-        pass
-
-    def _set(self, data: Any) -> None:
-        if self._key is None:
-            raise KeyError(f"No key has been provided {self.__class__.__name__}, cannot set value.")
-
-        self._set_item(data)
-
-    def __len__(self):
-        return len(self.value)
-
-    @property
-    def is_empty(self) -> bool:
-        return len(self) == 0
+class FDict(_OpActionMixin, Delayable, dict):
+    pass
 
 
-class FDict(KeyedContainer):
-    def __init__(self, morphable: bool = True, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.morphable = morphable
+# class FList(ContainerBase):
+#     def __init__(self, *args) -> None:
+#         super().__init__(list(args))
 
-    def _set_item(self, data: Any) -> None:
-        if self._key in self.value and self.morphable:
-            mmap = defaultdict(list)
-            for k, v in self.value.items():
-                mmap[k].append(v)
-            self.value = mmap
-            self.morph(FMMap)
-            # self.__class__ = FMMap  # type: ignore[assignment]
-            # self._parent.__class__ = FMMap
-            self._set_item(data)
-        else:
-            self.value[self._key] = data
+#     def _set(self, data: Any) -> None:
+#         self.value.append(data)
 
-    def _shedder(self) -> Any:
-        return dict(self.value)
+#     def __len__(self):
+#         return len(self.value)
 
-    @property
-    def is_appendable(self) -> bool:
-        return self._key is None
+#     def _shedder(self) -> Any:
+#         return list(self.value)
+
+#     @property
+#     def is_empty(self) -> bool:
+#         return len(self) == 0
+
+#     @property
+#     def is_appendable(self) -> bool:
+#         return True
 
 
-class FMMap(KeyedContainer):
-    def __init__(self, **kwargs) -> None:
-        for value in kwargs.values():
-            if not isinstance(value, list):
-                raise ValueError("All values in FMMap must be lists.")
+# class KeyedContainer(ContainerBase):
+#     def __init__(self, **kwargs):
+#         super().__init__(kwargs)
+#         self._key = None
 
-        super().__init__(**kwargs)
-        self.value = defaultdict(list, self.value)
+#     def __getitem__(self, key: str):
+#         if self._key is not None:
+#             raise KeyError(
+#                 f"Key has already been assigned to {self.__class__.__name__} and no data used yet."
+#             )
+#         out = self.copy()
+#         out._key = key
+#         out._parents.append(self)
+#         return out
 
-    def _set_item(self, data: Any) -> None:
-        self.value[self._key].append(data)
+#     @abstractmethod
+#     def _set_item(self, data: Any) -> None:
+#         pass
 
-    def _shedder(self) -> Any:
-        out = {}
-        for k, v in self.value.items():
-            out[k] = list(v)
-        return out
+#     def _set(self, data: Any) -> None:
+#         if self._key is None:
+#             raise KeyError(f"No key has been provided {self.__class__.__name__}, cannot set value.")
 
-    @property
-    def is_appendable(self) -> bool:
-        return True
+#         self._set_item(data)
+
+#     def __len__(self):
+#         return len(self.value)
+
+#     @property
+#     def is_empty(self) -> bool:
+#         return len(self) == 0
+
+
+# class FDict(KeyedContainer):
+#     def __init__(self, morphable: bool = True, **kwargs) -> None:
+#         super().__init__(**kwargs)
+#         self.morphable = morphable
+
+#     def _set_item(self, data: Any) -> None:
+#         if self._key in self.value and self.morphable:
+#             mmap = defaultdict(list)
+#             for k, v in self.value.items():
+#                 mmap[k].append(v)
+#             self.value = mmap
+#             self.morph(FMMap)
+#             # self.__class__ = FMMap  # type: ignore[assignment]
+#             # self._parent.__class__ = FMMap
+#             self._set_item(data)
+#         else:
+#             self.value[self._key] = data
+
+#     def _shedder(self) -> Any:
+#         return dict(self.value)
+
+#     @property
+#     def is_appendable(self) -> bool:
+#         return self._key is None
+
+
+# class FMMap(KeyedContainer):
+#     def __init__(self, **kwargs) -> None:
+#         for value in kwargs.values():
+#             if not isinstance(value, list):
+#                 raise ValueError("All values in FMMap must be lists.")
+
+#         super().__init__(**kwargs)
+#         self.value = defaultdict(list, self.value)
+
+#     def _set_item(self, data: Any) -> None:
+#         self.value[self._key].append(data)
+
+#     def _shedder(self) -> Any:
+#         out = {}
+#         for k, v in self.value.items():
+#             out[k] = list(v)
+#         return out
+
+#     @property
+#     def is_appendable(self) -> bool:
+#         return True
 
 
 class Chain(_OpActionMixin):
@@ -1099,22 +1102,20 @@ class Chain(_OpActionMixin):
         # operation has a name (include regex support).
         return self._ops[idx]
 
-    def copy(self):
-        out = Chain(*self.ops)
-        out._condition = self._condition
-        out._else_ = self._else_
-        return out
-
-    def _resolve(self, data: Any) -> Any:
+    def _resolve(self, inputs: Any) -> Any:
+        """
+        TODO: Need to differentiate between X and A here.
+        """
         if not self._ops:
-            return data
+            return inputs
 
-        data = self._ops[0]._using(data)
+        data = self._ops[0]._using(inputs)
+
         for op, reduce in zip(self._ops[1:], self._reduce):
             if reduce:
-                data = op._using(data)
+                data = op._using(inputs)
             else:
-                data = op._using(data)
+                data = op._using(inputs)
         return data
 
     def __len__(self) -> int:

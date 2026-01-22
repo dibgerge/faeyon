@@ -1,7 +1,6 @@
 import dataclasses
 import enum
 import operator
-import string
 
 from collections.abc import Callable
 from typing import Any, Optional, overload
@@ -68,9 +67,6 @@ class OpInfo:
         format_spec/conversion in the "arg" field of the format string.
         Then all arguments will be joined together with a comma.
         """
-        if (args or kwargs) and "arg" not in self._fmt_fields:
-            raise ValueError(f"args/kwargs provided but 'arg' not in format string: {self.fmt}")
-
         out_args = []
         for arg in args:
             out_args.append(self._add_parens(arg))
@@ -90,7 +86,6 @@ class OpInfo:
             out_args.append(f"{k}={self._add_parens(v)!r}")
 
         return self.fmt.format(X=self._add_parens(X), arg=", ".join(out_args))
-
 
     def __call__(self, data: Any, *args: Any, **kwargs: Any) -> Any:
         if self.type == OperatorType.UNARY:

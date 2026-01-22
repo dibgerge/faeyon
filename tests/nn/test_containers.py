@@ -2,7 +2,7 @@ import pytest
 import torch
 from torch import nn
 from faeyon.nn import FaeSequential, FaeModuleList, FaeBlock
-from faeyon import A, X, W, FVar, FList, FDict, FMMap
+from faeyon import A, X, W, FVar, FList, FDict
 
 
 @pytest.fixture
@@ -69,8 +69,8 @@ class TestFaeSequential:
             (FList(), [torch.tensor([1.1, 0.0]), torch.tensor([1.4, 0.0])]),
             (FDict(), {"0": torch.tensor([1.1, 0.0]), "1": torch.tensor([1.4, 0.0])}),
             (FDict()["foo"], {"foo": torch.tensor([1.4, 0.0])}),
-            (FMMap()["foo"], {"foo": [torch.tensor([1.1, 0.0]), torch.tensor([1.4, 0.0])]}),
-            (FMMap(), {"0": [torch.tensor([1.1, 0.0])], "1": [torch.tensor([1.4, 0.0])]}),
+            # (FMMap()["foo"], {"foo": [torch.tensor([1.1, 0.0]), torch.tensor([1.4, 0.0])]}),
+            # (FMMap(), {"0": [torch.tensor([1.1, 0.0])], "1": [torch.tensor([1.4, 0.0])]}),
         ]
     )
     def test_forward_with_reports(sef, advanced_model, var, expected):

@@ -5,7 +5,7 @@ from .spells import (
     I,
     FDict, 
     FList,
-    FMMap,
+    # FMMap,
     FVar,
     F,
     Chain,

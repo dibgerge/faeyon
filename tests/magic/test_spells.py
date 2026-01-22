@@ -1,7 +1,7 @@
 import pytest
 import inspect
 import torch
-from faeyon import A, X, FVar, FList, FDict, FMMap, F, Wire, W, Chain, Modifiers
+from faeyon import A, X, FVar, FList, FDict, F, Wire, W, Chain, Modifiers
 from faeyon.magic.spells import conjure, Delayable
 
 from tests.common import ConstantLayer
@@ -496,6 +496,11 @@ class TestX:
         torch.testing.assert_close(res, expected)
 
 
+def test_selective_resolve():
+    expr = A + X
+    res = expr._resolve(1, symbols=[X])
+    assert isinstance(res, F)
+    assert str(res) == "A + 1"
 
 
 # class TestA:
