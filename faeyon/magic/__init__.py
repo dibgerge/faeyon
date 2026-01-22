@@ -1,15 +1,16 @@
 from .spells import (
-    A, 
+    X,
+    A,
+    Input,
+    I,
     FDict, 
     FList,
     FMMap,
     FVar,
-    Op,
-    Serials,
-    Parallels,
+    F,
+    Chain,
     Wire,
-    W
+    W,
+    Modifiers
 )
 from .faek import faek
-from .x import X
-from .mode import fae_mode

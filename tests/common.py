@@ -2,7 +2,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 from typing import Optional
-from faeyon import X, Op
+from faeyon import X, F
 
 
 class ConstantLayer(nn.Module):
@@ -40,7 +40,7 @@ class BasicModel(nn.Module):
         if embedding is not None:
             self.embedding = embedding
         else:
-            self.embedding = Op(X)
+            self.embedding = F(X)
 
         self.layer1 = nn.Linear(num_inputs, num_hidden)
         self.layer2 = nn.Linear(num_hidden, num_outputs)

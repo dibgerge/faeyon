@@ -1,17 +1,18 @@
 from .magic import (
     faek, 
-    X, 
+    X,
     A,
+    Input,
+    I,
     FDict, 
     FList, 
     FMMap,
     FVar,
-    Op,
-    Serials,
-    Parallels,
+    F,
+    Chain,
     Wire,
     W,
-    fae_mode
+    Modifiers
 )
 
 from . import models

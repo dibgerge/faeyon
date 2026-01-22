@@ -4,7 +4,6 @@ import torch
 from torch import nn
 from faeyon.training import Recipe, FaeOptimizer
 from torch.utils.data import DataLoader
-from faeyon.datasets import FaeDataset
 
 
 class Model(nn.Module):

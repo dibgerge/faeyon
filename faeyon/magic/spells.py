@@ -1,9 +1,10 @@
 from __future__ import annotations
+import torch
+import abc
 import sys
 import inspect
 import enum
 import itertools
-import operator
 from collections.abc import Callable, Iterator, Iterable
 from typing import Any, Optional, overload
 from types import NoneType
@@ -11,51 +12,624 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 
 from torch import nn
-from .x import X
+from torch import optim
+from ._opinfo import get_opinfo, OpInfo
 
 
-binary_operators = {
-    operator.rshift: ("__rshift__", "__rrshift__"),
-    operator.lshift: ("__lshift__", "__rlshift__"),
-    operator.add: ("__add__", "__radd__"),
-    operator.sub: ("__sub__", "__rsub__"),
-    operator.mul: ("__mul__", "__rmul__"),
-    operator.truediv: ("__truediv__", "__rtruediv__"),
-    operator.floordiv: ("__floordiv__", "__rfloordiv__"),
-    operator.mod: ("__mod__", "__rmod__"),
-    operator.pow: ("__pow__", "__rpow__"),
-    operator.matmul: ("__matmul__", "__rmatmul__"),
-    operator.and_: ("__and__", "__rand__"),
-    operator.or_: ("__or__", "__ror__"),
-    operator.xor: ("__xor__", "__rxor__"),
-}
+# TODO: This will be expanded to include other modifier types, like optimizer, etc...
+modifierType = str
 
-unary_operators: dict[Callable[[Any], Any], str] = {
-    operator.abs: "__abs__",
-    operator.invert: "__invert__",
-    operator.neg: "__neg__",
-    operator.pos: "__pos__",
-}
+
+class _MappingKey(str):
+    """ 
+    This is a sentinel type to be used with Delayable objects to indicate a map packing.
+    """
+    pass
+
+
+class _Unpack:
+    """
+    Represents an unpacking operation (*X). When resolved, unpacks the data as *args.
+    """
+    def __init__(self, target, is_map: bool = False) -> None:
+        self.target = target
+        self.is_map = is_map
+    
+    def __ror__(self, data: Any) -> Iterator[Any]:
+        if isinstance(self.target, (Delayable,)):
+            resolved = data | self.target
+        else:
+            resolved = self.target
+        return resolved
+    
+    def __repr__(self) -> str:
+        if self.is_map:
+            prefix = "**"
+        else:
+            prefix = "*"
+        return f"{prefix}{self.target!r}"
+
+
+class Delayable:
+    """
+    Delayable is the base class for all delayable objects. It provides the base functionality for
+    conditional evaluation, chaining, and resolving with data.
+    """
+    @abstractmethod
+    def _resolve(self, data: Any) -> Any:
+        """Uses data to resolve the delayable. Must be implemented by subclasses."""
+
+    def __or__(self, other: Any) -> Any:
+        """ The case of `X | data` is not defined."""
+        if isinstance(other, torch.Tensor):
+            # Prevent __torch_function__ from being called for `X | tensor`.
+            # Because torch_function __ror__ uses bitwise_or instead, which we don't want to 
+            # handle there since it might be called by the function name, and not the operator 
+            # magic.
+            raise TypeError("Cannot pipe a tensor to a Delayable.")
+        return NotImplemented
+
+    def __ror__(self, other: Any) -> Any:
+        """ `data | X` results in evaluating the delayed operations. """
+        if isinstance(other, Delayable):
+            return NotImplemented
+        return self._resolve(other)
+
+    def __mod__[T: Delayable](self: T, other: modifierType) -> T:
+        """
+        The modulate operator `%` is used to name the operation. It can also be used to modify Delayables, for example, set Optimizer to parameters in delayable modules, etc...
+        (TODO: How to handle general modifiers, e.g. optimizer.)
+        """
+        if isinstance(other, str):
+            return Modifiers(self, name=other)
+        return NotImplemented
+        
+    def __rmod__[T: Delayable](self: T, other: str) -> T:
+        """
+        Modifiers should always be to the right of the Delayable.
+        """
+        if isinstance(other, modifierType):
+            raise TypeError(f"Modifier should be to the right of the Delayable, not the left.")
+        return NotImplemented
+        
+    def __rshift__(self, other: Delayable) -> Chain:
+        if not isinstance(other, Delayable):
+            return NotImplemented
+        return Chain(self, other, reduce=False)
+
+    def __rrshift__(self, other: Any) -> Any:
+        """
+        In this case `other` cannot be of type `Delayable` (__rshift__ is called instead).
+        """
+        return NotImplemented
+
+    def __lshift__(self, other: Delayable) -> Chain:
+        """
+        a << b. Both `a` and `b` are Delayable objects. This is not defined for any other type.
+
+        TODO: Set direction of chain to be "gather".
+        """
+        if not isinstance(other, Delayable):
+            return NotImplemented
+        return Chain(self, other, reduce=True)
+
+    def __rlshift__(self, other: Any) -> Any:
+        """
+        In this case `other` cannot be of type `Delayable` (__lshift__ is called instead).
+        """
+        return NotImplemented
+
+
+class _OpActionMixin:
+    """
+    Base class for delayables which support (arithmetic) operations.
+    TODO: Update return types to generics instead of X.
+    """
+    def keys(self) -> Iterator[_MappingKey]:
+        return [_MappingKey(self),]
+    
+    def _op_action(self, name: str, *args: Any, **kwargs: Any) -> F:
+        """
+        Specify what actions to takes for a given op attribute name and its corresponding arguments.
+        """
+        return F(get_opinfo(attr_name=name), self, *args, **kwargs)
+        
+    # --- Binary arithmetic operators ---
+    def __add__(self, other: Any) -> X:
+        return self._op_action("__add__", other)
+
+    def __radd__(self, other: Any) -> X:
+        return self._op_action("__radd__", other)
+
+    def __sub__(self, other: Any) -> X:
+        return self._op_action("__sub__", other)
+
+    def __rsub__(self, other: Any) -> X:
+        return self._op_action("__rsub__", other)
+
+    def __mul__(self, other: Any) -> X:
+        return self._op_action("__mul__", other)
+
+    def __rmul__(self, other: Any) -> X:
+        return self._op_action("__rmul__", other)
+
+    def __matmul__(self, other: Any) -> X:
+        return self._op_action("__matmul__", other)
+
+    def __rmatmul__(self, other: Any) -> X:
+        return self._op_action("__rmatmul__", other)
+
+    def __truediv__(self, other: Any) -> X:
+        return self._op_action("__truediv__", other)
+
+    def __rtruediv__(self, other: Any) -> X:
+        return self._op_action("__rtruediv__", other)
+
+    def __floordiv__(self, other: Any) -> X:
+        return self._op_action("__floordiv__", other)
+
+    def __rfloordiv__(self, other: Any) -> X:
+        return self._op_action("__rfloordiv__", other)
+
+    def __mod__(self, other: Any) -> X:
+        """
+        If `other` qualifies as a Faeyon modifier, use the parent class implementation, otherwise, 
+        the modulus % operator is treated as a normal arithmetic operation.
+        """
+        out =  super().__mod__(other)
+        if out is NotImplemented:
+            return self._op_action("__mod__", other)
+        return out
+    
+    def __rmod__(self, other: Any) -> X:
+        out = super().__rmod__(other)
+        if out is NotImplemented:
+            return self._op_action("__rmod__", other)
+        return out
+
+    def __divmod__(self, other: Any) -> X:
+        return self._op_action("__divmod__", other)
+
+    def __rdivmod__(self, other: Any) -> X:
+        return self._op_action("__rdivmod__", other)
+
+    def __pow__(self, other: Any) -> X:
+        return self._op_action("__pow__", other)
+
+    def __rpow__(self, other: Any) -> X:
+        return self._op_action("__rpow__", other)
+
+    def __and__(self, other: Any) -> X:
+        return self._op_action("__and__", other)
+
+    def __rand__(self, other: Any) -> X:
+        return self._op_action("__rand__", other)
+
+    def __xor__(self, other: Any) -> X:
+        return self._op_action("__xor__", other)
+
+    def __rxor__(self, other: Any) -> X:
+        return self._op_action("__rxor__", other)
+
+    # --- Unary arithmetic operators ---
+    def __neg__(self) -> X:
+        return self._op_action("__neg__")
+
+    def __pos__(self) -> X:
+        return self._op_action("__pos__")
+
+    def __abs__(self) -> X:
+        return self._op_action("__abs__")
+
+    def __invert__(self) -> X:
+        return self._op_action("__invert__")
+
+    def __round__(self) -> X:
+        return self._op_action("__round__")
+
+    # --- Comparison operators ---
+    def __lt__(self, other: Any) -> X:
+        return self._op_action("__lt__", other)
+
+    def __le__(self, other: Any) -> X:
+        return self._op_action("__le__", other)
+
+    def __eq__(self, other: Any) -> X:
+        return self._op_action("__eq__", other)
+
+    def __ne__(self, other: Any) -> X:
+        return self._op_action("__ne__", other)
+
+    def __gt__(self, other: Any) -> X:
+        return self._op_action("__gt__", other)
+
+    def __ge__(self, other: Any) -> X:
+        return self._op_action("__ge__", other)
+
+    #--- Other operators ---
+    def __getattr__(self, name: str) -> X:
+        if name == "__torch_function__":
+            return type(self).__torch_function__
+        
+        return self._op_action("__getattr__", name)
+
+    def __getitem__(self, key: Any) -> X:
+        if isinstance(key, _MappingKey):
+            return _Unpack(self, is_map=True)
+        return self._op_action("__getitem__", key)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> X:
+        return self._op_action("__call__", *args, **kwargs)
+
+    def __reversed__(self) -> X:
+        return self._op_action("__reversed__")
+
+    def __iter__(self):
+        return iter([_Unpack(self)])
+
+    @classmethod
+    def __torch_function__(cls, func, types, args=(), kwargs=None):
+        """
+        Note: For operators like `+`, `-`, `*`, etc., the `__torch_function__` is called only if tensor is the left operand, otherwise the operand must be handled by the right hand side Delayable.
+        """
+        if kwargs is None:
+            kwargs = {}
+        
+        try:
+            # Special/reserved operators must be handled by right hand side operator.
+            if func.__name__ in {
+                "__lshift__", 
+                "__rlshift__", 
+                "__rshift__", 
+                "__rrshift__", 
+                "__or__", 
+            }:
+                return NotImplemented
+        except AttributeError:
+            # raised if functon has no __name__ attribute
+            pass
+        return F(func, *args, **kwargs)
+
+
+class _XMeta(_OpActionMixin, Delayable, abc.ABCMeta):
+    def _resolve(self, data: Any) -> Any:
+        """ Only X without operations on it will be required to be resolved here. """
+        return data
+
+    def __instancecheck__(cls, instance):
+        return (
+            super().__instancecheck__(instance) 
+            or (isinstance(instance, type) and issubclass(instance, cls))
+        )
+
+    def __hash__(cls) -> int:
+        """
+        Need to define hash since __eq__ is overridden which sets hash to None, and this breaks __instancecheck__.
+        """
+        return hash(id(cls))
+
+    def __repr__(cls) -> str:
+        return cls.__name__
+    
+
+class X(metaclass=_XMeta):
+    def __repr__(self) -> str:
+        return "X"
+
+
+class A(X):
+    """
+    A placeholder for providing arguments to resolve delayables. Examples:
+
+        Input(data, bias=bar) | X[0] >> 2 * X + A["bias"]
+
+    A and X are usually interchangeable, but in some case they are distinct, for example 
+    when used in chain nodes.
+    """
+    pass
+
+
+# class _OpBase(Delayable):
+#     def _unary_op(self, oper):
+#         return F(oper, self)
+
+#     def _binary_op(self, oper, other):
+#         if isinstance(other, Parallels):
+#             return Parallels([self], other, func=oper)
+#         elif isinstance(other, nn.Module):
+#             return F(oper, self, other(X))
+#         else:
+#             return F(oper, self, other)
+
+#     def _rbinary_op(self, oper, other):
+#         return F(oper, other, self)
+
+
+# def op_unary_method[T: _OpBase](oper: Callable[[T], _OpBase]) -> Callable[[T], _OpBase]:
+#     def func(self: T) -> _OpBase:
+#         return self._unary_op(oper)
+
+#     return func
+
+
+# def op_binary_method[T: _OpBase](
+#     oper: Callable[[T, T], T], is_right: bool
+# ) -> Callable[[T, Any], F]:
+#     def func(self: T, other: Any) -> F:
+#         if is_right:
+#             return self._rbinary_op(oper, other)
+#         else:
+#             return self._binary_op(oper, other)
+
+#     return func
+
+
+# for bin_op, (method, rmethod) in binary_operators.items():
+#     if method in ("__rshift__", "__lshift__"):
+#         continue
+#     setattr(_OpBase, method, op_binary_method(bin_op, False))
+#     setattr(_OpBase, rmethod, op_binary_method(bin_op, True))
+
+# for uni_op, method in unary_operators.items():
+#     setattr(_OpBase, method, op_unary_method(uni_op))
+
+
+class _Strategy(ABC):
+    @abstractmethod
+    def __call__(self, data: Any) -> Any:
+        pass
+
+    @abstractmethod
+    def __repr__(self) -> str:
+        pass
+
+
+class _NoopStrategy(_Strategy):
+    def __call__(self, data: Any) -> Any:
+        return data
+
+    def __repr__(self):
+        return "<noop>"
+
+
+class _XStrategy(_Strategy):
+    """
+    F Strategy when `op` is an instance of `X`. E.g.:
+
+    ```python
+    data >> F(X[0])
+    ```
+    """
+
+    def __init__(self, op: X) -> None:
+        self._op = op
+
+    def __call__(self, data: Any) -> Any:
+        return conjure(self._op, data)
+
+    def __repr__(self):
+        return f"{self._op!r}"
+
+
+class _CallableStrategy(_Strategy):
+    """
+    F Strategy when `op` is a Callable.out._condition = self._condition
+        out._else_ = self._else_
+        return out E.g.:
+
+    ```python
+    data >> F(torch.cat, [X[0], X[1]], dim=1)
+    ```
+    """
+
+    def __init__(self, op: Callable[..., Any], *args, **kwargs) -> None:
+        self.op = op
+        # self.args = A(*args, **kwargs)
+        self.args = args
+        self.kwargs = kwargs
+
+    def __call__(self, data: Any) -> Any:
+        args = [conjure(arg, data) for arg in self.args]
+        kwargs = {k: conjure(v, data) for k, v in self.kwargs.items()}
+        return self.op(*args, **kwargs)
+        # return data >> self.args >> self.op
+
+    def __repr__(self):
+        try:
+            name = self.op.__name__
+        except AttributeError:
+            name = f"{self.op!r}"
+
+        if name == "Module.__call__" and len(self.args.args) > 0:
+            name, *args = self.args  # .args
+        else:
+            args = self.args  # .args
+
+        args = ", ".join(map(repr, args))
+        # kwargs = ", ".join(f"{k}={v!r}" for k, v in self.args.kwargs.items())
+
+        # if kwargs:
+        #     args = args + ", " + kwargs
+
+        return f"{name}({args})"
+
+
+class F(_OpActionMixin, Delayable):
+    def __init__(self, op: Callable[..., Any], *args, **kwargs) -> None:
+        self._fae_op = op
+        self._fae_args = args
+        self._fae_kwargs = kwargs
+
+    def _resolve(self, data: Any) -> Any:
+        resolved_args = []
+        for arg in self._fae_args:
+            if isinstance(arg, _Unpack):
+                resolved_args.extend(data | arg)
+            elif isinstance(arg, (Delayable, X)):
+                resolved_args.append(data | arg)
+            else:
+                resolved_args.append(arg)
+
+        resolved_kwargs = {}
+        for k, v in self._fae_kwargs.items():
+            if isinstance(v, _Unpack):
+                res = data | v
+            elif isinstance(v, (Delayable, X)):
+                res = {k: data | v}
+            else:
+                res = {k: v}
+            
+            for k in res:
+                if k in resolved_kwargs:
+                    raise TypeError(f"{self._fae_op} got multiple values for argument '{k}'.")
+            resolved_kwargs.update(res)
+
+        return self._fae_op(*resolved_args, **resolved_kwargs)
+
+    def __str__(self):
+        if isinstance(self._fae_op, OpInfo):
+            return self._fae_op.to_string(*self._fae_args, **self._fae_kwargs)
+            
+            # # handle operator functions (e.g. +, -, *, /, etc...)
+            # precedence = self._fae_op.precedence
+   
+            # repr_args = []
+            # for arg in self._fae_args:
+            #     if isinstance(arg, F):
+            #         repr_arg = repr(arg)
+            #     else:
+            #         repr_arg= str(arg)
+
+            #     if precedence > 0 and isinstance(arg, F) and arg._fae_op.precedence > precedence:
+            #         repr_args.append(f"({repr_arg})")
+            #     else:
+            #         repr_args.append(repr_arg)
+            
+            # for k, v in self._fae_kwargs.items():
+            #     # Assuming precedence is 0 for kwargs, since symbolic operators don't take keywords
+            #     repr_args.append(f"{k}={v!r}")
+
+            # # if len(repr_args) == 1:
+
+            # return self._fae_op.to_string(repr_args[0], ", ".join(repr_args[1:]))
+        else:
+            try:
+                name = self._fae_op.__name__
+            except AttributeError:
+                name = f"{self._fae_op!r}"
+
+            # TODO: Might need special handling of module.__call__
+            # if name == "Module.__call__" and len(self.args.args) > 0:
+            #     name, *args = self.args  # .args
+            # else:
+            #     args = self.args  # .args
+
+            args = list(map(repr, self._fae_args))
+            args.extend(f"{k}={v!r}" for k, v in self._fae_kwargs.items())
+            args = ", ".join(args)
+            return f"{name}({args})"
+
+
+class Input:
+    """
+    A placeholder for providing arguments to resolve delayables. Examples:
+
+        A(data, bias=bar) | X[0] >> 2 * X + A["bias"]
+    
+    This makes expressions act like functions, where the expression can resolve position arguments
+    by their index, e.g. A[0] will use the first argument in the provided `A` input to the 
+    expression. Similar, A["bias"] will use the value of the `bias` key    if isinstance(out, list) and len(out) == 1:
+        return out[0]
+    else:
+        return out
+
+    Some rules for using `A` to resolve delayables:
+    * `A` arguments should not be delayables themselves, only static data values. 
+    
+    * Calling e.g. like `A(data, bias=bar)` will create an instance intended to be used by
+      expression resolution by the pipe operator `|`. On the other hand, indexing `A` (e.g. `A[0]`)
+      is used inside expresssions so they can received outside inputs anywhere in the expression.
+    
+    * `A` cannot be used by itself inside an expression. For example, the following is invalid:
+      `2 * X >> A["bias"]`.
+
+    * The first item in an expression chain can use `A` or `X` interchangeably.
+
+    The difference between `A` and `X`: 
+    * Each node in a chain has two sources of inputs: 
+    1. From the previous node in the chain.
+    2. From the `A` instance.
+
+    Since first node does not have data from previous node, we make `X` equivalent to `A`.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self._args = args
+        self._kwargs = kwargs
+        self._items = (
+            tuple(zip(itertools.repeat(None), args))
+            + tuple(kwargs.items())
+        )
+        
+    def __len__(self) -> int:
+        return len(self._items)
+    
+    @property
+    def is_empty(self) -> bool:
+        return len(self) == 0
+
+    @property
+    def nargs(self) -> int:
+        return len(self._args)
+    
+    @property
+    def nkwargs(self) -> int:
+        return len(self._kwargs)
+    
+    def __getitem__(self, key: int | str) -> Any:
+        if isinstance(key, int):
+            return self._items[key][1]
+        elif isinstance(key, str):
+            return self._kwargs[key]
+        else:
+            raise TypeError(f"Key must be an integer or string. Got {type(key)}.")
+
+    def __repr__(self) -> str:
+        arguments = [
+            f"{val!r}" if key is None else f"{key}={val!r}" 
+            for key, val in self._items
+        ]
+        return f"A({', '.join(arguments)})"
+
+
+# Alias for Input
+I = Input
 
 
 def conjure(x: Any, data: Any, fast: bool = False) -> Any:
-    """ 
-    Evaluate the operations stored in the `X` buffer. If the input is not an instance of `X`, 
+    """
+    Evaluate the operations stored in the `X` buffer. If the input is not an instance of `X`,
     return it as is.
     """
 
     if not fast:
         if isinstance(x, Delayable):
-            return x.using(data)
-        
+            return x._using(data)
+
         if not isinstance(x, X):
             return x
 
     inputs = data
     for name, args, kwargs in x:
         # Recursively evaluate the arguments.
-        args = tuple(conjure(arg, inputs, fast=True) if isinstance(arg, (X, Delayable)) else arg for arg in args)
-        kwargs = {k: conjure(v, inputs, fast=True) if isinstance(v, (X, Delayable)) else v for k, v in kwargs.items()}
+        args = tuple(
+            conjure(arg, inputs, fast=True) if isinstance(arg, Delayable) else arg
+            for arg in args
+        )
+        kwargs = {
+            k: conjure(v, inputs, fast=True) if isinstance(v, Delayable) else v
+            for k, v in kwargs.items()
+        }
 
         if name == "__getattr__":
             data = getattr(data, args[0])
@@ -80,19 +654,77 @@ def _new_instance(cls, *args, **kwargs):
         del bound.arguments["self"]
     except TypeError:
         bound = None
-    
+
     super(cls, instance).__setattr__("_arguments", bound)
     return instance
 
 
+class IF(Delayable, _OpActionMixin):
+    def __init__(
+        self, 
+        condition: bool | Delayable, 
+        then_: Delayable,
+        else_: Optional[Delayable] = None
+    ) -> None:
+        self._condition = condition
+        self._then_ = then_
+        self._else_ = else_
+
+    def _resolve(self, data: Any) -> Any:
+        if isinstance(self._condition, bool):
+            condition = self._condition
+        else:
+            condition = data | self.condition
+
+        if condition:
+            return data | self._then_
+        else:
+            if self._else_ is not None:
+                return data | self._else_
+            else:
+                return data
+
+
+class Modifiers(Delayable, _OpActionMixin):
+    def __init__(
+        self, 
+        expr: Delayable, 
+        name: Optional[str] = None,
+        optimizer: Optional[optim.Optimizer] = None,
+        
+    ) -> None:
+        if all(mod is None for mod in (name, optimizer)):
+            raise ValueError(
+                "At least one of `name` or `optimizer` must be provided."
+            )
+        self._name = name
+        self._optimizer = optimizer
+
+        if isinstance(expr, Modifiers):
+            if name is not None and expr.fae_has_name:
+                raise ValueError(f"Name already set on given modifier expression {expr}.")
+            if optimizer is not None and expr.fae_has_optimizer:
+                raise ValueError(f"Optimizer already set on given modifier expression {expr}.")
+        self.expr = expr
+
+    @property
+    def fae_has_name(self) -> bool:
+        return self._name is not None
+
+    @property
+    def fae_has_optimizer(self) -> bool:
+        return self._optimizer is not None
+            
+
 class Exportable:
     """
     TODO: Update code to incorporate this to model and other objects IO.
-    Right now, load and save methods are implemented in the `faeyon.io` module, and only work 
+    Right now, load and save methods are implemented in the `faeyon.io` module, and only work
     for `nn.Module` objects, I need to generalize this to other Faeyon objects.
     """
+
     _arguments: Optional[inspect.BoundArguments] = None
-    
+
     def __new__(cls, *args, **kwargs) -> Any:
         return _new_instance(cls, *args, **kwargs)
 
@@ -115,74 +747,21 @@ class Exportable:
                 kwargs[k] = v.save(save_state=False, trust_code=trust_code)["_config_"]
             else:
                 kwargs[k] = v
-        
-        config = {
-            "_target_": target,
-            "_args_": args,
-            "_kwargs_": kwargs,
-            "_meta_": {}
-        }
+
+        config = {"_target_": target, "_args_": args, "_kwargs_": kwargs, "_meta_": {}}
         return config
-
-
-class A:
-    """
-    A placeholder for mapping next operation's arguments to the left side of the >> operator.
-
-    The arguments are stored in `args` and `kwargs` attributes will be used to specify the 
-    operations of the next layer. Their values can be used to access the previous layer using the 
-    `X` placeholder, or just provide static arguments if that's all you need.
-    """
-    def __init__(self, *args, **kwargs) -> None:
-        self._is_resolved = not any(
-            isinstance(item, (X, Delayable)) for item in itertools.chain(args, kwargs.values())
-        )
-
-        self.args = args
-        self.kwargs = kwargs
-
-    def call(self, func: Callable[..., Any]) -> Any:
-        if not self.is_resolved:
-            return Op(func, *self.args, **self.kwargs)
-        return func(*self.args, **self.kwargs)
-
-    def __rshift__(self, func: Callable[..., Any]) -> Any:
-        return self.call(func)
-
-    @property
-    def is_resolved(self) -> bool:
-        return self._is_resolved
-         
-    def using(self, data: Any) -> A:
-        if self.is_resolved:
-            return self
-        resolved_args = tuple(conjure(arg, data) for arg in self.args)
-        resolved_kwargs = {k: conjure(v, data) for k, v in self.kwargs.items()}
-        return A(*resolved_args, **resolved_kwargs)
-
-    def __rrshift__(self, data: Any) -> A:
-        return self.using(data)
-
-    def __repr__(self) -> str:
-        args, kwargs = "", ""
-        if self.args:
-            args = ", ".join(map(repr, self.args))
-            args += ", "
-
-        if self.kwargs:
-            kwargs = ", ".join(f"{k}={v!r}" for k, v in self.kwargs.items())
-        return f"A({args}{kwargs})"
 
 
 class _NoValue:
     """A unique sentinel to represent empty."""
+
     @property
     def value(self):
         return self
 
     def __repr__(self):
         return "<NO_VALUE>"
-    
+
     def __str__(self):
         return "<NO_VALUE>"
 
@@ -191,7 +770,7 @@ class _Variable:
     """
     A wrappert to hold a container value so that it can be passed by reference across different
     Container selections.
-    """    
+    """
     def __init__(self, *args) -> None:
         if len(args) == 1:
             self.value = args[0]
@@ -207,84 +786,11 @@ class _Variable:
         return f"{self.value!r}"
 
 
-class Delayable(ABC):
-    _condition: Optional[bool | X | Delayable]
-    _else_: Optional[Delayable]
-    
-    def __new__(cls, *args, **kwargs):
-        obj = super().__new__(cls)
-        obj._condition = None
-        obj._else_ = None
-        obj._data = _NoValue()
-        return obj
-    
-    def copy(self):
-        """ Perform a shallow copy of the object. """
-        out = self.__new__(self.__class__)
-        for k, v in self.__dict__.items():
-            setattr(out, k, v)
-        return out
-
-    @abstractmethod
-    def _resolve(self, data: Any) -> Any:
-        """ Uses data to resolve the delayable. Must be implemented by subclasses. """
-        
-    def using(self, data: Any) -> Any:
-        if isinstance(data, Delayable):
-            return data >> self
-
-        if self._condition is not None:
-            condition = conjure(self._condition, data)
-            if condition:
-                return self._resolve(data)
-            
-            if self._else_ is not None:
-                return conjure(self._else_, data)
-            else:
-                return data
-        
-        return self._resolve(data)
-        
-    def if_[T: Delayable](
-        self: T, 
-        condition: bool | X | Delayable, 
-        else_: Optional[Delayable] = None
-    ) -> T:
-        out = self.copy()
-        out._condition = condition
-        out._else_ = else_
-        return out
-
-    def __rshift__(self, other: Delayable) -> Serials:
-        if not isinstance(other, Delayable):
-            return NotImplemented
-        
-        if not isinstance(self._data, _NoValue) and not isinstance(other._data, _NoValue):
-            raise ValueError("Cannot chain two Delayable objects with data already set.")
-        return Serials(self, other)
-
-    def __rrshift__(self, other: Any) -> Any:
-        """
-        In this case `other` cannot be of type `Delayable` (__rshift__ is called instead).
-        `other` should be the final data to be used to evaluate the delayed operations.
-        """
-        return self.using(other)
-        
-    def __lshift__(self, other: Delayable) -> Parallels:
-        """
-        a << b. Both `a` and `b` are Delayable objects. This is not defined for any other type.
-        """
-        if not isinstance(other, Delayable):
-            return NotImplemented
-        return Parallels(self, other)
-
-
 class ContainerBase(Delayable, ABC):
-    
     def __init__(self, *args) -> None:
-        self._expression: Optional[X | Op] = None
+        self._expression: Optional[X | F] = None
         self._value = _Variable(*args)
-        # parent is used when morphing to higher type container, we need to make sure parent is 
+        # parent is used when morphing to higher type container, we need to make sure parent is
         # morphed too. Current setup has only two level tree (fvar -> fdict/flist, )
         self._parents: list[ContainerBase] = []
 
@@ -292,33 +798,33 @@ class ContainerBase(Delayable, ABC):
         self.__class__ = tobj
         for parent in self._parents:
             parent.morph(tobj)
-        
+
     @property
     def value(self) -> Any:
         return self._value.value
-    
+
     @value.setter
     def value(self, val: Any) -> None:
         self._value.value = val
-    
-    def select[T: ContainerBase](self: T, expression: X | Op) -> T:
+
+    def select[T: ContainerBase](self: T, expression: X | F) -> T:
         if self._expression is not None:
             raise ValueError(
                 f"Cannot reassign expression to {self.__class__.__name__}, "
                 "since expression has not been used."
             )
 
-        if not isinstance(expression, (X, Op)):
+        if not isinstance(expression, (X, F)):
             raise ValueError(
                 f"Cannot assign expression to {self.__class__.__name__}, "
-                "since expression is not an instance of `X` or `Op`."
+                "since expression is not an instance of `X` or `F`."
             )
 
         out = self.copy()
         out._expression = expression
         return out
 
-    def __matmul__[T: ContainerBase](self: T, expression: X | Op) -> T:
+    def __matmul__[T: ContainerBase](self: T, expression: X | F) -> T:
         return self.select(expression)
 
     @overload
@@ -328,8 +834,7 @@ class ContainerBase(Delayable, ABC):
     def copy(self, target: ContainerBase) -> ContainerBase: ...
 
     def copy[T: ContainerBase](
-        self: T, 
-        target: Optional[ContainerBase] = None
+        self: T, target: Optional[ContainerBase] = None
     ) -> T | ContainerBase:
         if target is None:
             target = type(self)()
@@ -339,31 +844,29 @@ class ContainerBase(Delayable, ABC):
                 target._parents = list(self._parents)
             else:
                 setattr(target, k, getattr(self, k, None))
-        
+
         return target
 
     def if_(
-        self, 
-        condition: bool | X | Delayable, 
-        else_: Optional[Delayable] = None
+        self, condition: bool | Delayable, else_: Optional[Delayable] = None
     ) -> ContainerBase:
         out = super().if_(condition, else_)
         out._parents.append(self)
         return out
-        
+
     @abstractmethod
     def _set(self, data: Any) -> None:
         pass
-        
+
     def _resolve(self, data: Any) -> Any:
         new_data = data
         if self._expression is not None:
             new_data = conjure(self._expression, data)
         self._set(new_data)
         return data
-    
+
     def __rrshift__(self, data: Any) -> Any:
-        return self.using(data)
+        return self._using(data)
 
     @property
     @abstractmethod
@@ -384,7 +887,7 @@ class ContainerBase(Delayable, ABC):
         return not isinstance(self.value, _NoValue) and not self.is_selected
 
     def _shedder(self) -> Any:
-        """ Overridable method to do shallow copy of value based on subclass type."""
+        """Overridable method to do shallow copy of value based on subclass type."""
         return self.value
 
     def shed(self) -> Any:
@@ -400,14 +903,15 @@ class ContainerBase(Delayable, ABC):
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.value!r})"
-    
+
 
 class FVar(ContainerBase):
     """
-    `FVar` holds a single value. If it is morphable, then it can be converted to a `FList` 
+    `FVar` holds a single value. If it is morphable, then it can be converted to a `FList`
     or `FDict` if requesting a key when it is empty, or adding a new value if another already
     exists.
     """
+
     def __init__(self, morphable: bool = True) -> None:
         super().__init__()
         self.morphable = morphable
@@ -420,7 +924,7 @@ class FVar(ContainerBase):
         self.morph(FDict)
         # self.__class__ = FDict  # type: ignore[assignment]
         return self[key]
-        
+
     def _set(self, data: Any) -> None:
         if self.morphable and not self.is_empty:
             self.value = [self.value]
@@ -432,7 +936,7 @@ class FVar(ContainerBase):
     @property
     def is_empty(self) -> bool:
         return not self._value.has_value()
-    
+
     @property
     def is_appendable(self) -> bool:
         return False
@@ -441,7 +945,7 @@ class FVar(ContainerBase):
 class FList(ContainerBase):
     def __init__(self, *args) -> None:
         super().__init__(list(args))
-    
+
     def _set(self, data: Any) -> None:
         self.value.append(data)
 
@@ -454,7 +958,7 @@ class FList(ContainerBase):
     @property
     def is_empty(self) -> bool:
         return len(self) == 0
-    
+
     @property
     def is_appendable(self) -> bool:
         return True
@@ -478,12 +982,10 @@ class KeyedContainer(ContainerBase):
     @abstractmethod
     def _set_item(self, data: Any) -> None:
         pass
-    
+
     def _set(self, data: Any) -> None:
         if self._key is None:
-            raise KeyError(
-                f"No key has been provided {self.__class__.__name__}, cannot set value."
-            )
+            raise KeyError(f"No key has been provided {self.__class__.__name__}, cannot set value.")
 
         self._set_item(data)
 
@@ -544,332 +1046,206 @@ class FMMap(KeyedContainer):
         return True
 
 
-class _OpBase(Delayable):
-
-    def _unary_op(self, oper):            
-        return Op(oper, self)
-    
-    def _binary_op(self, oper, other):
-        if isinstance(other, Parallels):
-            return Parallels([self], other, func=oper)
-        elif isinstance(other, nn.Module):
-            return Op(oper, self, other(X))
-        else:
-            return Op(oper, self, other)
-
-    def _rbinary_op(self, oper, other):
-        return Op(oper, other, self)
-        
-
-def op_unary_method[T: _OpBase](oper: Callable[[T], _OpBase]) -> Callable[[T], _OpBase]:
-    def func(self: T) -> _OpBase:
-        return self._unary_op(oper)
-    return func
-
-
-def op_binary_method[T: _OpBase](
-    oper: Callable[[T, T], T], 
-    is_right: bool
-) -> Callable[[T, Any], Op]:
-    def func(self: T, other: Any) -> Op:
-        if is_right:
-            return self._rbinary_op(oper, other)
-        else:
-            return self._binary_op(oper, other)
-    return func
-
-
-for bin_op, (method, rmethod) in binary_operators.items():
-    if method in ("__rshift__", "__lshift__"):
-        continue
-    setattr(_OpBase, method, op_binary_method(bin_op, False))
-    setattr(_OpBase, rmethod, op_binary_method(bin_op, True))
-
-for uni_op, method in unary_operators.items():    
-    setattr(_OpBase, method, op_unary_method(uni_op))
-
-
-class Op(_OpBase):
-    strategy: _XStrategy | _CallableStrategy
-
+class Chain(_OpActionMixin):
+    """
+    A Chain is a sequence of operations: `op0 >> op1 << op2 >> ... >> opn`.
+    """
     def __init__(
         self, 
-        op: Callable[..., Any] | X, 
-        *args,  
-        **kwargs
+        *ops: Delayable | nn.Module | list[Delayable | nn.Module] | dict[str, Delayable | nn.Module],
+        reduce: Optional[list[bool], bool] = None
     ) -> None:
-        # Note: X is callable, but not vice versa.
-        if isinstance(op, X):
-            if len(args) > 0 or len(kwargs) > 0:
-                raise ValueError(
-                    "`op` cannot be an instance of `X` if `args` or `kwargs` are provided.")
-            self.strategy = _XStrategy(op)
-        elif isinstance(op, Callable):  # type: ignore[arg-type]
-            self.strategy = _CallableStrategy(op, *args, **kwargs)
-        elif isinstance(op, NoneType):
-            self.strategy = _NoopStrategy()
-        else:
-            raise ValueError(f"Arguments should be of type `X` or Callable. Got {type(op)}.")
-
-    @classmethod
-    def from_strategy(cls, strategy: _XStrategy | _CallableStrategy) -> Op:
-        out = cls.__new__(cls)
-        out.strategy = strategy
-        return out
-    
-    def copy(self):
-        out = Op.from_strategy(self.strategy)
-        out._condition = self._condition
-        out._else_ = self._else_
-        return out
-        
-    def _resolve(self, data: Any) -> Any:
-        return self.strategy(data)
-
-    def __repr__(self):
-        #return f"Op({self.strategy!r})"
-        return f"{self.strategy!r}"
-
-
-class _StrategyBase(ABC):
-    @abstractmethod
-    def __call__(self, data: Any) -> Any:
-        pass
-    
-    @abstractmethod
-    def __repr__(self) -> str:
-        pass
-
-
-class _NoopStrategy(_StrategyBase):
-    def __call__(self, data: Any) -> Any:
-        return data
-    
-    def __repr__(self):
-        return "<noop>"
-
-
-class _XStrategy(_StrategyBase):
-    """ 
-    Op Strategy when `op` is an instance of `X`. E.g.:
-    
-    ```python
-    data >> Op(X[0])
-    ```
-    """
-    def __init__(self, op: X) -> None:
-        self._op = op
-
-    def __call__(self, data: Any) -> Any:
-        return conjure(self._op, data)
-
-    def __repr__(self):
-        return f"{self._op!r}"
-
-
-class _CallableStrategy(_StrategyBase):
-    """ 
-    Op Strategy when `op` is a Callable.out._condition = self._condition
-        out._else_ = self._else_
-        return out E.g.:
-    
-    ```python
-    data >> Op(torch.cat, [X[0], X[1]], dim=1)
-    ```
-    """
-    def __init__(self, op: Callable[..., Any], *args, **kwargs) -> None:
-        self.op = op
-        #self.args = A(*args, **kwargs)
-        self.args = args
-        self.kwargs = kwargs
-    
-    def __call__(self, data: Any) -> Any:
-        args = [conjure(arg, data) for arg in self.args]
-        kwargs = {k: conjure(v, data) for k, v in self.kwargs.items()}
-        return self.op(*args, **kwargs)
-        #return data >> self.args >> self.op
-
-    def __repr__(self):
-        try:
-            name = self.op.__name__
-        except AttributeError:
-            name = f"{self.op!r}"
-        
-        if name == "Module.__call__" and len(self.args.args) > 0:
-            name, *args = self.args#.args
-        else:
-            args = self.args#.args
-
-        args = ", ".join(map(repr, args))
-        #kwargs = ", ".join(f"{k}={v!r}" for k, v in self.args.kwargs.items())
-
-        # if kwargs:
-        #     args = args + ", " + kwargs
-
-        return f"{name}({args})"
-
-
-class Serials(_OpBase):
-    def __init__(self, *ops: Delayable | X | nn.Module):
-        new_ops = []
+        self._ops = []
         for op in ops:
             if isinstance(op, nn.Module):
-                new_ops.append(op(X))
-            elif isinstance(op, X):
-                new_ops.append(Op(op))
-            elif not isinstance(op, Delayable):
-                raise ValueError("All arguments must be of subtype `Delayable`.")
-            else:
-                new_ops.append(op)
-        self.ops = tuple(new_ops)
-
-    def __getitem__(self, idx: int) -> Delayable:
-        return self.ops[idx]
-
-    def copy(self):
-        out = Serials(*self.ops)
-        out._condition = self._condition
-        out._else_ = self._else_
-        return out
-    
-    def _resolve(self, data: Any) -> Any:
-        for op in self.ops:
-            data = op.using(data)
-        return data
-
-    def __len__(self) -> int:
-        return len(self.ops)
-
-
-class Parallels(_OpBase):
-    ops: tuple[Iterable[Delayable] | Parallels, ...]
-    _else_ : Optional[Parallels]
-
-    def __init__(
-        self, 
-        *ops: list[Delayable | X | nn.Module] | Delayable | X | nn.Module, 
-        func: Optional[Callable[[Any], Any]] = None
-    ) -> None:
-        lengths = []
-        error_msg = (
-            "All arguments must be of subtype `Delayable | X | nn.Module` or lists of that with "
-            "broadcastable lengths."
-        )
-
-        for op in ops:
-            if isinstance(op, list):
-                if not all(isinstance(item, Delayable | X | nn.Module) for item in op):
-                    raise ValueError(error_msg)
-                lengths.append(len(op))
-            elif isinstance(op, Parallels):
-                lengths.append(len(op))
-            elif not isinstance(op, Delayable | X | nn.Module):
-                raise ValueError(error_msg)
-            else:
-                lengths.append(1)
-
-        unique_lengths = set(lengths)
-        self.length = max(unique_lengths)
-
-        unique_lengths.discard(1)
-        if len(unique_lengths) > 1:
-            raise ValueError(error_msg)
-
-        new_ops: list[list[Delayable] | Parallels] = []
-        for op in ops:
-            if isinstance(op, list):
-                new_op = []
-                for item in op:
-                    if isinstance(item, nn.Module):
-                        new_op.append(item(X))
-                    elif isinstance(item, X):
-                        new_op.append(Op(item))
-                    else:
-                        new_op.append(item)
-
-                if len(new_op) != self.length:
-                    new_op = op * self.length
-                new_ops.append(new_op)
-            elif isinstance(op, Parallels):
-                if len(op) != self.length:
-                    new_ops.append([op] * self.length)
-                else:
-                    new_ops.append(op)
+                self._ops.append(op(X))
             elif isinstance(op, Delayable):
-                new_ops.append([op] * self.length)
-            elif isinstance(op, X):
-                new_ops.append([Op(op)] * self.length)
-            elif isinstance(op, nn.Module):
-                new_ops.append([op(X)] * self.length)
+                self._ops.append(op)
+            elif isinstance(op, list):
+                if not all(isinstance(item, Delayable | nn.Module) for item in op):
+                    raise ValueError(
+                        "All items in a list must be of subtype `Delayable` or `nn.Module`."
+                    )
+                self._ops.append(op)
+            elif isinstance(op, dict):
+                if not all(isinstance(item, Delayable | nn.Module) for item in op.values()):
+                    raise ValueError(
+                        "All values in a dictionary must be of subtype `Delayable` or `nn.Module`."
+                    )
+                self._ops.append(op)
             else:
-                raise ValueError(error_msg)
-        
-        self.ops = tuple(new_ops)
-        self.func = func
-        self.items = []
-        # for i in range(self.length):
-        #     args = [op[i] for op in self.ops]
-        #     if self.func is not None:
-        #         self.items.append(Op(self.func, *args))
-        #     else:
-        #         self.items.append(Serials(*args))
-    
-    def __getitem__(self, idx: int) -> Delayable:
-        # out = self.items[idx]
-        args = [op[idx] for op in self.ops]
-        
-        out : Delayable
-        if self.func is not None:
-            out = Op(self.func, *args)
+                raise ValueError("All arguments must be of subtype `Delayable` or `nn.Module`.")
+        self._ops = tuple(self._ops)
+
+        if reduce is None:
+            self._reduce = [False] * (len(self._ops) - 1)
         else:
-            out = Serials(*args)
-
-        if self._condition is not None:
-            if self._else_ is not None:
-                if len(self._else_) == 1:
-                    else_ = self._else_[0]
-                else:
-                    else_ = self._else_[idx]
+            if isinstance(reduce, bool):
+                self._reduce = [reduce] * (len(self._ops) - 1)
+            elif isinstance(reduce, list):
+                if len(reduce) != len(self._ops) - 1:
+                    raise ValueError(
+                        "`gather` must be the same length as the number of operations minus one."
+                    )
+                self._reduce = reduce
             else:
-                else_ = None
-            out = out.if_(self._condition, else_)
-        
-        return out
+                raise ValueError(
+                    "`gather` must be a boolean or list of booleans of the same length as "
+                    "the number of operations minus one."
+                )
 
-    def if_(
-        self, 
-        condition: bool | X | Delayable, 
-        else_: Optional[Parallels] = None
-    ) -> Parallels:
-        if else_ is not None:
-            if not isinstance(else_, Parallels):
-                raise ValueError("`else_` must be of type `Parallels`.")
-            if len(else_) != self.length:
-                raise ValueError("`else_` must have length equal to `self.length`.")
-            
-        return super().if_(condition, else_)
-            
-    def __len__(self) -> int:
-        return self.length
-    
+    def __getitem__(self, idx: int | str) -> Delayable:
+        # TODO: Handle string indexing, which will try to resolve the operation by name, if any 
+        # operation has a name (include regex support).
+        return self._ops[idx]
+
     def copy(self):
-        out = Parallels(*self.ops)
+        out = Chain(*self.ops)
         out._condition = self._condition
         out._else_ = self._else_
         return out
 
     def _resolve(self, data: Any) -> Any:
-        for i in range(self.length):
-            data  = data >> self[i]
+        if not self._ops:
+            return data
+
+        data = self._ops[0]._using(data)
+        for op, reduce in zip(self._ops[1:], self._reduce):
+            if reduce:
+                data = op._using(data)
+            else:
+                data = op._using(data)
         return data
-    
-    def _unary_op(self, oper):
-        return Parallels(self, func=oper)
-    
-    def _binary_op(self, oper, other):
-        if isinstance(other, _OpBase):
-            return Parallels(self, other, func=oper)
-        return NotImplemented
+
+    def __len__(self) -> int:
+        return len(self._ops)
+
+
+# class Parallels(_OpBase):
+#     ops: tuple[Iterable[Delayable] | Parallels, ...]
+#     _else_: Optional[Parallels]
+
+#     def __init__(
+#         self,
+#         *ops: list[Delayable | X | nn.Module] | Delayable | X | nn.Module,
+#         func: Optional[Callable[[Any], Any]] = None,
+#     ) -> None:
+#         lengths = []
+#         error_msg = (
+#             "All arguments must be of subtype `Delayable | X | nn.Module` or lists of that with "
+#             "broadcastable lengths."
+#         )
+
+#         for op in ops:
+#             if isinstance(op, list):
+#                 if not all(isinstance(item, Delayable | X | nn.Module) for item in op):
+#                     raise ValueError(error_msg)
+#                 lengths.append(len(op))
+#             elif isinstance(op, Parallels):
+#                 lengths.append(len(op))
+#             elif not isinstance(op, Delayable | X | nn.Module):
+#                 raise ValueError(error_msg)
+#             else:
+#                 lengths.append(1)
+
+#         unique_lengths = set(lengths)
+#         self.length = max(unique_lengths)
+
+#         unique_lengths.discard(1)
+#         if len(unique_lengths) > 1:
+#             raise ValueError(error_msg)
+
+#         new_ops: list[list[Delayable] | Parallels] = []
+#         for op in ops:
+#             if isinstance(op, list):
+#                 new_op = []
+#                 for item in op:
+#                     if isinstance(item, nn.Module):
+#                         new_op.append(item(X))
+#                     elif isinstance(item, X):
+#                         new_op.append(F(item))
+#                     else:
+#                         new_op.append(item)
+
+#                 if len(new_op) != self.length:
+#                     new_op = op * self.length
+#                 new_ops.append(new_op)
+#             elif isinstance(op, Parallels):
+#                 if len(op) != self.length:
+#                     new_ops.append([op] * self.length)
+#                 else:
+#                     new_ops.append(op)
+#             elif isinstance(op, Delayable):
+#                 new_ops.append([op] * self.length)
+#             elif isinstance(op, X):
+#                 new_ops.append([F(op)] * self.length)
+#             elif isinstance(op, nn.Module):
+#                 new_ops.append([op(X)] * self.length)
+#             else:
+#                 raise ValueError(error_msg)
+
+#         self.ops = tuple(new_ops)
+#         self.func = func
+#         self.items = []
+#         # for i in range(self.length):
+#         #     args = [op[i] for op in self.ops]
+#         #     if self.func is not None:
+#         #         self.items.append(F(self.func, *args))
+#         #     else:
+#         #         self.items.append(Serials(*args))
+
+#     def __getitem__(self, idx: int) -> Delayable:
+#         # out = self.items[idx]
+#         args = [op[idx] for op in self.ops]
+
+#         out: Delayable
+#         if self.func is not None:
+#             out = F(self.func, *args)
+#         else:
+#             out = Serials(*args)
+
+#         if self._condition is not None:
+#             if self._else_ is not None:
+#                 if len(self._else_) == 1:
+#                     else_ = self._else_[0]
+#                 else:
+#                     else_ = self._else_[idx]
+#             else:
+#                 else_ = None
+#             out = out.if_(self._condition, else_)
+
+#         return out
+
+#     def if_(self, condition: bool | Delayable, else_: Optional[Parallels] = None) -> Parallels:
+#         if else_ is not None:
+#             if not isinstance(else_, Parallels):
+#                 raise ValueError("`else_` must be of type `Parallels`.")
+#             if len(else_) != self.length:
+#                 raise ValueError("`else_` must have length equal to `self.length`.")
+
+#         return super().if_(condition, else_)
+
+#     def __len__(self) -> int:
+#         return self.length
+
+#     def copy(self):
+#         out = Parallels(*self.ops)
+#         out._condition = self._condition
+#         out._else_ = self._else_
+#         return out
+
+#     def _resolve(self, data: Any) -> Any:
+#         for i in range(self.length):
+#             data = data >> self[i]
+#         return data
+
+#     def _unary_op(self, oper):
+#         return Parallels(self, func=oper)
+
+#     def _binary_op(self, oper, other):
+#         if isinstance(other, _OpBase):
+#             return Parallels(self, other, func=oper)
+#         return NotImplemented
 
 
 class W(enum.Enum):
@@ -893,7 +1269,7 @@ class _Fanout(Wiring):
         self.obj = obj
 
     def __getitem__(self, key: int) -> Any:
-        """ Basic usage of Fanout only needs to support integer keys, and no slices."""
+        """Basic usage of Fanout only needs to support integer keys, and no slices."""
         if isinstance(self.obj, Delayable):
             return self.obj >> X[key]
 
@@ -916,39 +1292,39 @@ class _Mux(Wiring):
     def __getitem__(self, key: int) -> Any:
         if key == 0:
             return self.s0
-        
+
         return self.s1
 
 
 class Wire:
     _fanout: dict[str, Iterator]
     _current_wire: Optional[inspect.BoundArguments]
-    
+
     def __init__(self, *args, **kwargs) -> None:
         self.args = args
         self.kwargs = kwargs
         self.reset()
-        
+
     def reset(self) -> None:
         self._fanout = {}
         self._current_wire = None
-    
+
     def init(self, sig: inspect.Signature, *args, **kwargs) -> A:
         self.reset()
         bound = sig.bind(*args, **kwargs)
         bound.apply_defaults()
         given_wire = sig.bind_partial(*self.args, **self.kwargs)
-    
+
         # Replace fanout arguments with their first value in bound
         # update given_wire with bound arguments for passthru arguments only, or if argument does
-        # not exist in given_wire, add it.        
+        # not exist in given_wire, add it.
         for k, v in bound.arguments.items():
             if k not in given_wire.arguments:
                 given_wire.arguments[k] = v
             elif not isinstance(given_wire.arguments[k], W):
                 continue
-                
-            match(given_wire.arguments[k]):
+
+            match given_wire.arguments[k]:
                 case W.Fanout:
                     self._fanout[k] = iter(v)
                     bound.arguments[k] = next(self._fanout[k])
@@ -961,7 +1337,7 @@ class Wire:
     def step(self, data: Any) -> A:
         if self._current_wire is None:
             raise ValueError("No wire has been initialized.")
-        
+
         for k, v in self._fanout.items():
             try:
                 v = next(v)
@@ -969,7 +1345,7 @@ class Wire:
                 raise ValueError(f"Fanout argument {k} has no more values.")
             else:
                 self._current_wire.arguments[k] = v
-                
+
         return data >> A(*self._current_wire.args, **self._current_wire.kwargs)
 
     def __rrshift__(self, data: Any) -> A:

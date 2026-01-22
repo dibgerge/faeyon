@@ -10,8 +10,8 @@ class Task(nn.Module):
 
 
 class ClassifyTask(Task):
-    dropout: nn.Dropout | type[X]
-    pooling: X | type[X]
+    dropout: nn.Dropout
+    pooling: X
 
     def __init__(
         self, 
@@ -46,7 +46,7 @@ class PatchedImageDecoder(nn.Module):
     """
     ignore_first is used to remove the "cls" token in ViT like models.
     """
-    preproc: X | type[X]
+    preproc: X
 
     def __init__(
         self,

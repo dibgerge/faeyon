@@ -2,7 +2,7 @@ from __future__ import annotations
 from torch import nn
 
 from typing import Optional, Any
-from faeyon import Op, A
+from faeyon import F, A
 from faeyon.io import load
 from .tasks import Task
 
@@ -32,19 +32,19 @@ class Pipeline(nn.Module):
         if transforms is not None:
             self.transforms = transforms
         else:
-            self.transforms = Op(None)
+            self.transforms = F(None)
         
         self.model = model
 
         if pooling is not None:
             self.pooling = pooling
         else:
-            self.pooling = Op(None)
+            self.pooling = F(None)
 
         if task is not None:
             self.task = task
         else:
-            self.task = Op(None)
+            self.task = F(None)
 
     @classmethod
     def from_file(
