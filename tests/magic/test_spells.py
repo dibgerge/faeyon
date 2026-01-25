@@ -503,6 +503,41 @@ def test_selective_resolve():
     assert str(res) == "A + 1"
 
 
+class TestFList:
+    flist =  FList([X, X - 1])
+
+    @pytest.mark.parametrize("expr, expected, result", [
+        param(flist + 1, "[X + 1, X - 1 + 1]", [2, 1], id="flist_int"),
+        param(1 + flist, "[1 + X, 1 + X - 1]", [2, 1], id="int_flist"),
+        param(flist + flist, "[X + X, X - 1 + X - 1]", [2, 0], id="flist_flist")
+    ])
+    def test_flist(self, expr, expected, result):
+        assert str(expr) == expected
+        assert 1 | expr == result
+
+
+class TestFDict:
+    fdict = FDict({"a": X, "b": X - 1})
+
+    @pytest.mark.parametrize("expr, expected, result", [
+        param(fdict + 1, "{'a': X + 1, 'b': X - 1 + 1}", {"a": 2, "b": 1}, id="fdict_int"),
+        param(1 + fdict, "{'a': 1 + X, 'b': 1 + X - 1}", {"a": 2, "b": 1}, id="int_fdict"),
+        param(fdict + fdict, "{'a': X + X, 'b': X - 1 + X - 1}", {"a": 2, "b": 0}, id="fdict_fdict")
+    ])
+    def test_fdict(self, expr, expected, result):
+        assert str(expr) == expected
+        assert 1 | expr == result
+
+
+def test_sym():
+    from faeyon.magic.spells import Sym, Symbol, _SymbolMeta
+    Y = Sym.Y
+    assert isinstance(Y, Symbol)
+    assert "Y" in _SymbolMeta._registry
+    assert 10 | Y == 10
+    assert 10 | Y + 1 == 11
+
+
 # class TestA:
 
 #     def func_simple(self, x):

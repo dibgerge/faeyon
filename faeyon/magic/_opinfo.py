@@ -4,6 +4,7 @@ import operator
 
 from collections.abc import Callable
 from typing import Any, Optional, overload
+from functools import lru_cache
 
 
 class OperatorType(enum.Flag):
@@ -50,6 +51,10 @@ class OpInfo:
     @property
     def is_right(self) -> bool:
         return self.type == OperatorType.RBINARY
+
+    @property
+    def is_binary(self) -> bool:
+        return self.type in {OperatorType.BINARY, OperatorType.RBINARY}
 
     @property
     def attr_name(self) -> str:
@@ -453,6 +458,7 @@ def get_opinfo(
 ) -> list[OpInfo]: ...
 
 
+@lru_cache(maxsize=100)
 def get_opinfo(
     attr_name: Optional[str] = None, 
     type: Optional[OperatorType] = None, 

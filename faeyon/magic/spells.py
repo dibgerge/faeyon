@@ -1,4 +1,5 @@
 from __future__ import annotations
+from sympy.core import N
 import torch
 import abc
 import sys
@@ -71,6 +72,10 @@ class Delayable:
         return NotImplemented
         
     def __rshift__(self, other: Delayable) -> Chain:
+        if isinstance(other, int):
+            # TODO: Do cloning of Module types...
+            pass
+        
         if not isinstance(other, Delayable):
             return NotImplemented
         return Chain(self, other, reduce=False)
@@ -81,21 +86,18 @@ class Delayable:
         """
         return NotImplemented
 
-    def __lshift__(self, other: Delayable) -> Chain:
-        """
-        a << b. Both `a` and `b` are Delayable objects. This is not defined for any other type.
+    # def __lshift__(self, other: Delayable) -> Chain:
+    #     """
+    #     """
+    #     if not isinstance(other, Delayable):
+    #         return NotImplemented
+    #     return Chain(self, other)
 
-        TODO: Set direction of chain to be "gather".
-        """
-        if not isinstance(other, Delayable):
-            return NotImplemented
-        return Chain(self, other, reduce=True)
-
-    def __rlshift__(self, other: Any) -> Any:
-        """
-        In this case `other` cannot be of type `Delayable` (__lshift__ is called instead).
-        """
-        return NotImplemented
+    # def __rlshift__(self, other: Any) -> Any:
+    #     """
+    #     In this case `other` cannot be of type `Delayable` (__lshift__ is called instead).
+    #     """
+    #     return NotImplemented
 
 
 class _OpActionMixin:
@@ -110,7 +112,13 @@ class _OpActionMixin:
         """
         Specify what actions to takes for a given op attribute name and its corresponding arguments.
         """
-        return F(get_opinfo(attr_name=name), self, *args, **kwargs)
+        opinfo = get_opinfo(attr_name=name)
+        if any(
+            isinstance(arg, (FList, FDict)) 
+            for arg in itertools.chain(args, kwargs.values())
+        ):
+            return NotImplemented
+        return F(opinfo, self, *args, **kwargs)
         
     # --- Binary arithmetic operators ---
     def __add__(self, other: Any) -> X:
@@ -269,7 +277,17 @@ class _OpActionMixin:
         return F(func, *args, **kwargs)
 
 
-class _XMeta(_OpActionMixin, Delayable, abc.ABCMeta):
+class _SymbolMeta(_OpActionMixin, Delayable, abc.ABCMeta):
+    _registry: dict[str, type[Symbol]] = {}
+    
+    def __new__(mcs, name, bases, namespace, **kwargs):
+        cls = super().__new__(mcs, name, bases, namespace, **kwargs)
+        
+        if any(isinstance(base, _SymbolMeta) for base in bases):
+            mcs._registry[name] = cls
+        
+        return cls
+
     def _resolve(self, data: Any, symbols: Optional[Sequence[Symbol]] = None) -> Any:
         """ Only X without operations on it will be required to be resolved here. """
 
@@ -293,9 +311,27 @@ class _XMeta(_OpActionMixin, Delayable, abc.ABCMeta):
 
     def __repr__(cls) -> str:
         return cls.__name__
-    
 
-class Symbol(metaclass=_XMeta):
+
+class _SymMeta(type):
+    def __getattr__(self, name):
+        if name in _SymbolMeta._registry:
+            return _SymbolMeta._registry[name]
+
+        return type(name, (Symbol,), {})
+
+    def __call__(self, *args, **kwargs):
+        raise NotImplementedError("Cannot call Sym")
+
+
+class Sym(metaclass=_SymMeta):
+    """
+    dynamically create a symbol class, for example Sym.Y will create a new `Symbol` class called Y, and it will be addeed to the symbol registry.
+    """
+    pass
+   
+
+class Symbol(metaclass=_SymbolMeta):
     pass
 
 
@@ -335,130 +371,6 @@ class _Unpack(Delayable):
             prefix = "*"
         return f"{prefix}{self.target!r}"
 
-# class _OpBase(Delayable):
-#     def _unary_op(self, oper):
-#         return F(oper, self)
-
-#     def _binary_op(self, oper, other):
-#         if isinstance(other, Parallels):
-#             return Parallels([self], other, func=oper)
-#         elif isinstance(other, nn.Module):
-#             return F(oper, self, other(X))
-#         else:
-#             return F(oper, self, other)
-
-#     def _rbinary_op(self, oper, other):
-#         return F(oper, other, self)
-
-
-# def op_unary_method[T: _OpBase](oper: Callable[[T], _OpBase]) -> Callable[[T], _OpBase]:
-#     def func(self: T) -> _OpBase:
-#         return self._unary_op(oper)
-
-#     return func
-
-
-# def op_binary_method[T: _OpBase](
-#     oper: Callable[[T, T], T], is_right: bool
-# ) -> Callable[[T, Any], F]:
-#     def func(self: T, other: Any) -> F:
-#         if is_right:
-#             return self._rbinary_op(oper, other)
-#         else:
-#             return self._binary_op(oper, other)
-
-#     return func
-
-
-# for bin_op, (method, rmethod) in binary_operators.items():
-#     if method in ("__rshift__", "__lshift__"):
-#         continue
-#     setattr(_OpBase, method, op_binary_method(bin_op, False))
-#     setattr(_OpBase, rmethod, op_binary_method(bin_op, True))
-
-# for uni_op, method in unary_operators.items():
-#     setattr(_OpBase, method, op_unary_method(uni_op))
-
-
-class _Strategy(ABC):
-    @abstractmethod
-    def __call__(self, data: Any) -> Any:
-        pass
-
-    @abstractmethod
-    def __repr__(self) -> str:
-        pass
-
-
-class _NoopStrategy(_Strategy):
-    def __call__(self, data: Any) -> Any:
-        return data
-
-    def __repr__(self):
-        return "<noop>"
-
-
-class _XStrategy(_Strategy):
-    """
-    F Strategy when `op` is an instance of `X`. E.g.:
-
-    ```python
-    data >> F(X[0])
-    ```
-    """
-
-    def __init__(self, op: X) -> None:
-        self._op = op
-
-    def __call__(self, data: Any) -> Any:
-        return conjure(self._op, data)
-
-    def __repr__(self):
-        return f"{self._op!r}"
-
-
-class _CallableStrategy(_Strategy):
-    """
-    F Strategy when `op` is a Callable.out._condition = self._condition
-        out._else_ = self._else_
-        return out E.g.:
-
-    ```python
-    data >> F(torch.cat, [X[0], X[1]], dim=1)
-    ```
-    """
-
-    def __init__(self, op: Callable[..., Any], *args, **kwargs) -> None:
-        self.op = op
-        # self.args = A(*args, **kwargs)
-        self.args = args
-        self.kwargs = kwargs
-
-    def __call__(self, data: Any) -> Any:
-        args = [conjure(arg, data) for arg in self.args]
-        kwargs = {k: conjure(v, data) for k, v in self.kwargs.items()}
-        return self.op(*args, **kwargs)
-        # return data >> self.args >> self.op
-
-    def __repr__(self):
-        try:
-            name = self.op.__name__
-        except AttributeError:
-            name = f"{self.op!r}"
-
-        if name == "Module.__call__" and len(self.args.args) > 0:
-            name, *args = self.args  # .args
-        else:
-            args = self.args  # .args
-
-        args = ", ".join(map(repr, args))
-        # kwargs = ", ".join(f"{k}={v!r}" for k, v in self.args.kwargs.items())
-
-        # if kwargs:
-        #     args = args + ", " + kwargs
-
-        return f"{name}({args})"
-
 
 class F(_OpActionMixin, Delayable):
     def __init__(self, op: Callable[..., Any], *args, **kwargs) -> None:
@@ -470,7 +382,6 @@ class F(_OpActionMixin, Delayable):
         resolved_args = []
         for arg in self._fae_args:
             if isinstance(arg, Delayable):
-                print(data, symbols, arg)
                 resolved = arg._resolve(data, symbols)
             else:
                 resolved = arg
@@ -523,6 +434,9 @@ class F(_OpActionMixin, Delayable):
             args.extend(f"{k}={v!r}" for k, v in self._fae_kwargs.items())
             args = ", ".join(args)
             return f"{name}({args})"
+
+    def __repr__(self) -> str:
+        return str(self)
 
 
 class Input:
@@ -601,6 +515,24 @@ class Input:
 I = Input
 
 
+class Substitute:
+    """
+    Performs substitution of specific symbols with their values.
+
+    Examples:
+        Substitute(X=10, Y=20) | X + Y => 30
+
+        Substitute(X=10) | X + Y  => 10 + Y (Delayable object is returned)
+
+    """
+    def __init__(self, **kwargs: Any) -> None:
+        self._kwargs = kwargs
+
+    def __or__(self, other: Delayable) -> Any:
+        return other._resolve(self._kwargs, symbols=[X])
+
+
+
 def conjure(x: Any, data: Any, fast: bool = False) -> Any:
     """
     Evaluate the operations stored in the `X` buffer. If the input is not an instance of `X`,
@@ -654,10 +586,10 @@ def _new_instance(cls, *args, **kwargs):
     return instance
 
 
-class IF(Delayable, _OpActionMixin):
+class IF(_OpActionMixin, Delayable):
     def __init__(
         self, 
-        condition: bool | Delayable, 
+        condition: bool | Symbol | F,
         then_: Delayable,
         else_: Optional[Delayable] = None
     ) -> None:
@@ -937,170 +869,120 @@ class FVar(ContainerBase):
         return False
 
 
-class FList(_OpActionMixin, Delayable, list):
-    pass
+class FList(_OpActionMixin, Delayable):
+    """
+    TODO: Make FList generic e.g. Flist[Delayable, etc..]
+    """
+    def __init__(self, expressions: list[Delayable]) -> None:
+        self._fae_expr = expressions
+
+    def _op_action(self, name: str, *args: Any, **kwargs: Any) -> FList:
+        opinfo = get_opinfo(attr_name=name)
+
+        raveled = []
+        n = 0
+        for arg in itertools.chain(args, kwargs.values()):
+            if isinstance(arg, FList):
+                n += 1
+                raveled.append(arg._fae_expr)
+            elif isinstance(arg, FDict):
+                raise ValueError("Cannot mix `FList` and `FDict` arguments. Choose one.")
+            else:
+                raveled.append(itertools.repeat(arg))
+
+        if n == 0:
+            return FList([F(opinfo, item, *args, **kwargs) for item in self._fae_expr])
+
+        raveled = zip(*raveled)
+        out = []
+        for item, arg in zip(self._fae_expr, raveled):
+            items_args = arg[:len(args)]
+            items_kwargs = dict(zip(kwargs.keys(), arg[len(args):]))
+            out.append(F(opinfo, item, *items_args, **items_kwargs))
+        return FList(out)
+
+    def _resolve(self, data: Any) -> Any:
+        return [item._resolve(data) for item in self._fae_expr]
+
+    def __lshift__(self, other: Delayable) -> FList:
+        out = []
+        for expr in self._fae_expr:
+            out.append(expr >> other)
+        return FList(out)
+        
+    def __str__(self) -> str:
+        return str(self._fae_expr)
+
+    def __repr__(self) -> str:
+        return str(self)
 
 
-class FDict(_OpActionMixin, Delayable, dict):
-    pass
+class FDict(_OpActionMixin, Delayable):
+    def __init__(self, expressions: dict[str, Delayable]) -> None:
+        self._fae_expr = expressions
+
+    def _op_action(self, name: str, *args: Any, **kwargs: Any) -> FDict:
+        opinfo = get_opinfo(attr_name=name)
+
+        raveled = defaultdict(list)
+        n = 0
+        keys = set(self._fae_expr)
+        for arg in itertools.chain(args, kwargs.values()):
+            if isinstance(arg, FDict):
+                n += 1
+                if keys != set(arg._fae_expr):
+                    raise ValueError("All arguments of type `FDict` must have the same keys.")
+
+                for key, item in arg._fae_expr.items():
+                    raveled[key].append(item)
+            elif isinstance(arg, FList):
+                raise ValueError("Cannot mix `FList` and `FDict` arguments. Choose one.")
+            else:
+                for key in keys:
+                    raveled[key].append(arg)
+
+        if n == 0:
+            return FDict(
+                {key: F(opinfo, item, *args, **kwargs) 
+                for key, item in self._fae_expr.items()}
+            )
+
+        out = {}
+        nargs = len(args)
+        for key, value in self._fae_expr.items():
+            items_args = raveled[key][:nargs]
+            items_kwargs = dict(zip(kwargs, raveled[key][nargs:]))
+            out[key] = F(opinfo, value, *items_args, **items_kwargs)
+        return FDict(out)
+
+    def _resolve(self, data: Any) -> Any:
+        return {key: item._resolve(data) for key, item in self._fae_expr.items()}
+
+    def __lshift__(self, other: Delayable) -> FDict:
+        out = {}
+        for key, item in self._fae_expr.items():
+            out[key] = item >> other
+        return FDict(out)
+
+    def __str__(self) -> str:
+        return str(self._fae_expr)
+
+    def __repr__(self) -> str:
+        return str(self)
 
 
-# class FList(ContainerBase):
-#     def __init__(self, *args) -> None:
-#         super().__init__(list(args))
-
-#     def _set(self, data: Any) -> None:
-#         self.value.append(data)
-
-#     def __len__(self):
-#         return len(self.value)
-
-#     def _shedder(self) -> Any:
-#         return list(self.value)
-
-#     @property
-#     def is_empty(self) -> bool:
-#         return len(self) == 0
-
-#     @property
-#     def is_appendable(self) -> bool:
-#         return True
-
-
-# class KeyedContainer(ContainerBase):
-#     def __init__(self, **kwargs):
-#         super().__init__(kwargs)
-#         self._key = None
-
-#     def __getitem__(self, key: str):
-#         if self._key is not None:
-#             raise KeyError(
-#                 f"Key has already been assigned to {self.__class__.__name__} and no data used yet."
-#             )
-#         out = self.copy()
-#         out._key = key
-#         out._parents.append(self)
-#         return out
-
-#     @abstractmethod
-#     def _set_item(self, data: Any) -> None:
-#         pass
-
-#     def _set(self, data: Any) -> None:
-#         if self._key is None:
-#             raise KeyError(f"No key has been provided {self.__class__.__name__}, cannot set value.")
-
-#         self._set_item(data)
-
-#     def __len__(self):
-#         return len(self.value)
-
-#     @property
-#     def is_empty(self) -> bool:
-#         return len(self) == 0
-
-
-# class FDict(KeyedContainer):
-#     def __init__(self, morphable: bool = True, **kwargs) -> None:
-#         super().__init__(**kwargs)
-#         self.morphable = morphable
-
-#     def _set_item(self, data: Any) -> None:
-#         if self._key in self.value and self.morphable:
-#             mmap = defaultdict(list)
-#             for k, v in self.value.items():
-#                 mmap[k].append(v)
-#             self.value = mmap
-#             self.morph(FMMap)
-#             # self.__class__ = FMMap  # type: ignore[assignment]
-#             # self._parent.__class__ = FMMap
-#             self._set_item(data)
-#         else:
-#             self.value[self._key] = data
-
-#     def _shedder(self) -> Any:
-#         return dict(self.value)
-
-#     @property
-#     def is_appendable(self) -> bool:
-#         return self._key is None
-
-
-# class FMMap(KeyedContainer):
-#     def __init__(self, **kwargs) -> None:
-#         for value in kwargs.values():
-#             if not isinstance(value, list):
-#                 raise ValueError("All values in FMMap must be lists.")
-
-#         super().__init__(**kwargs)
-#         self.value = defaultdict(list, self.value)
-
-#     def _set_item(self, data: Any) -> None:
-#         self.value[self._key].append(data)
-
-#     def _shedder(self) -> Any:
-#         out = {}
-#         for k, v in self.value.items():
-#             out[k] = list(v)
-#         return out
-
-#     @property
-#     def is_appendable(self) -> bool:
-#         return True
-
-
-class Chain(_OpActionMixin):
+class Chain(_OpActionMixin, Delayable):
     """
     A Chain is a sequence of operations: `op0 >> op1 << op2 >> ... >> opn`.
     """
-    def __init__(
-        self, 
-        *ops: Delayable | nn.Module | list[Delayable | nn.Module] | dict[str, Delayable | nn.Module],
-        reduce: Optional[list[bool], bool] = None
-    ) -> None:
-        self._ops = []
+    def __init__(self, *ops: Delayable,) -> None:
+        self._fae_ops = []
         for op in ops:
-            if isinstance(op, nn.Module):
-                self._ops.append(op(X))
-            elif isinstance(op, Delayable):
-                self._ops.append(op)
-            elif isinstance(op, list):
-                if not all(isinstance(item, Delayable | nn.Module) for item in op):
-                    raise ValueError(
-                        "All items in a list must be of subtype `Delayable` or `nn.Module`."
-                    )
-                self._ops.append(op)
-            elif isinstance(op, dict):
-                if not all(isinstance(item, Delayable | nn.Module) for item in op.values()):
-                    raise ValueError(
-                        "All values in a dictionary must be of subtype `Delayable` or `nn.Module`."
-                    )
-                self._ops.append(op)
+            if isinstance(op, Delayable):
+                self._fae_ops.append(op)
             else:
                 raise ValueError("All arguments must be of subtype `Delayable` or `nn.Module`.")
-        self._ops = tuple(self._ops)
-
-        if reduce is None:
-            self._reduce = [False] * (len(self._ops) - 1)
-        else:
-            if isinstance(reduce, bool):
-                self._reduce = [reduce] * (len(self._ops) - 1)
-            elif isinstance(reduce, list):
-                if len(reduce) != len(self._ops) - 1:
-                    raise ValueError(
-                        "`gather` must be the same length as the number of operations minus one."
-                    )
-                self._reduce = reduce
-            else:
-                raise ValueError(
-                    "`gather` must be a boolean or list of booleans of the same length as "
-                    "the number of operations minus one."
-                )
-
-    def __getitem__(self, idx: int | str) -> Delayable:
-        # TODO: Handle string indexing, which will try to resolve the operation by name, if any 
-        # operation has a name (include regex support).
-        return self._ops[idx]
+        self._fae_ops = tuple(self._fae_ops)
 
     def _resolve(self, inputs: Any) -> Any:
         """
@@ -1109,7 +991,7 @@ class Chain(_OpActionMixin):
         if not self._ops:
             return inputs
 
-        data = self._ops[0]._using(inputs)
+        data = self._ops[0]._resolve(inputs)
 
         for op, reduce in zip(self._ops[1:], self._reduce):
             if reduce:
@@ -1118,135 +1000,11 @@ class Chain(_OpActionMixin):
                 data = op._using(inputs)
         return data
 
+    def __lshift__(self, other: Delayable) -> Chain:
+        return Chain(*self._fae_ops[:-1], self._fae_ops[-1] << other)
+
     def __len__(self) -> int:
         return len(self._ops)
-
-
-# class Parallels(_OpBase):
-#     ops: tuple[Iterable[Delayable] | Parallels, ...]
-#     _else_: Optional[Parallels]
-
-#     def __init__(
-#         self,
-#         *ops: list[Delayable | X | nn.Module] | Delayable | X | nn.Module,
-#         func: Optional[Callable[[Any], Any]] = None,
-#     ) -> None:
-#         lengths = []
-#         error_msg = (
-#             "All arguments must be of subtype `Delayable | X | nn.Module` or lists of that with "
-#             "broadcastable lengths."
-#         )
-
-#         for op in ops:
-#             if isinstance(op, list):
-#                 if not all(isinstance(item, Delayable | X | nn.Module) for item in op):
-#                     raise ValueError(error_msg)
-#                 lengths.append(len(op))
-#             elif isinstance(op, Parallels):
-#                 lengths.append(len(op))
-#             elif not isinstance(op, Delayable | X | nn.Module):
-#                 raise ValueError(error_msg)
-#             else:
-#                 lengths.append(1)
-
-#         unique_lengths = set(lengths)
-#         self.length = max(unique_lengths)
-
-#         unique_lengths.discard(1)
-#         if len(unique_lengths) > 1:
-#             raise ValueError(error_msg)
-
-#         new_ops: list[list[Delayable] | Parallels] = []
-#         for op in ops:
-#             if isinstance(op, list):
-#                 new_op = []
-#                 for item in op:
-#                     if isinstance(item, nn.Module):
-#                         new_op.append(item(X))
-#                     elif isinstance(item, X):
-#                         new_op.append(F(item))
-#                     else:
-#                         new_op.append(item)
-
-#                 if len(new_op) != self.length:
-#                     new_op = op * self.length
-#                 new_ops.append(new_op)
-#             elif isinstance(op, Parallels):
-#                 if len(op) != self.length:
-#                     new_ops.append([op] * self.length)
-#                 else:
-#                     new_ops.append(op)
-#             elif isinstance(op, Delayable):
-#                 new_ops.append([op] * self.length)
-#             elif isinstance(op, X):
-#                 new_ops.append([F(op)] * self.length)
-#             elif isinstance(op, nn.Module):
-#                 new_ops.append([op(X)] * self.length)
-#             else:
-#                 raise ValueError(error_msg)
-
-#         self.ops = tuple(new_ops)
-#         self.func = func
-#         self.items = []
-#         # for i in range(self.length):
-#         #     args = [op[i] for op in self.ops]
-#         #     if self.func is not None:
-#         #         self.items.append(F(self.func, *args))
-#         #     else:
-#         #         self.items.append(Serials(*args))
-
-#     def __getitem__(self, idx: int) -> Delayable:
-#         # out = self.items[idx]
-#         args = [op[idx] for op in self.ops]
-
-#         out: Delayable
-#         if self.func is not None:
-#             out = F(self.func, *args)
-#         else:
-#             out = Serials(*args)
-
-#         if self._condition is not None:
-#             if self._else_ is not None:
-#                 if len(self._else_) == 1:
-#                     else_ = self._else_[0]
-#                 else:
-#                     else_ = self._else_[idx]
-#             else:
-#                 else_ = None
-#             out = out.if_(self._condition, else_)
-
-#         return out
-
-#     def if_(self, condition: bool | Delayable, else_: Optional[Parallels] = None) -> Parallels:
-#         if else_ is not None:
-#             if not isinstance(else_, Parallels):
-#                 raise ValueError("`else_` must be of type `Parallels`.")
-#             if len(else_) != self.length:
-#                 raise ValueError("`else_` must have length equal to `self.length`.")
-
-#         return super().if_(condition, else_)
-
-#     def __len__(self) -> int:
-#         return self.length
-
-#     def copy(self):
-#         out = Parallels(*self.ops)
-#         out._condition = self._condition
-#         out._else_ = self._else_
-#         return out
-
-#     def _resolve(self, data: Any) -> Any:
-#         for i in range(self.length):
-#             data = data >> self[i]
-#         return data
-
-#     def _unary_op(self, oper):
-#         return Parallels(self, func=oper)
-
-#     def _binary_op(self, oper, other):
-#         if isinstance(other, _OpBase):
-#             return Parallels(self, other, func=oper)
-#         return NotImplemented
 
 
 class W(enum.Enum):
