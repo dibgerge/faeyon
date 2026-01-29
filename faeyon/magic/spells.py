@@ -21,6 +21,21 @@ from ._opinfo import get_opinfo, OpInfo
 modifierType = str
 
 
+class _NoValue:
+    """A unique sentinel to represent empty."""
+    __slots__ = ()
+
+    @property
+    def value(self):
+        return self
+
+    def __repr__(self):
+        return "<NO_VALUE>"
+
+    def __str__(self):
+        return "<NO_VALUE>"
+
+
 class _MappingKey(str):
     """ 
     This is a sentinel type to be used with Delayable objects to indicate a map packing.
@@ -35,7 +50,7 @@ class Delayable:
     # TODO: Delayable should be an abstract base class.
     """
     @abstractmethod
-    def _resolve(self, data: Any, symbols: Optional[Sequence[Symbol]] = None) -> Any:
+    def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
         """Uses data to resolve the delayable. Must be implemented by subclasses."""
 
     def __or__(self, other: Any) -> Any:
@@ -78,7 +93,7 @@ class Delayable:
         
         if not isinstance(other, Delayable):
             return NotImplemented
-        return Chain(self, other, reduce=False)
+        return Chain(self, other)
 
     def __rrshift__(self, other: Any) -> Any:
         """
@@ -286,16 +301,20 @@ class _SymbolMeta(_OpActionMixin, Delayable, abc.ABCMeta):
         if any(isinstance(base, _SymbolMeta) for base in bases):
             mcs._registry[name] = cls
         
+        cls._cls_name = name
         return cls
 
-    def _resolve(self, data: Any, symbols: Optional[Sequence[Symbol]] = None) -> Any:
-        """ Only X without operations on it will be required to be resolved here. """
-
-        if symbols is not None:
-            if not isinstance(self, tuple(symbols)):
-                return self
-
-        return data
+    def _resolve(self, _default: Any = _NoValue, /, **kwargs: Any) -> Any:
+        """ 
+        If symbol is in kwargs, it will be replaced with the value of the key.
+        If symbol is not in kwargs, the default value will be used, if specified. 
+        If no default value is specified, and no value is provided in kwargs, the symbol will be returned as is.
+        """
+        if self._cls_name in kwargs:
+            return kwargs[self._cls_name]        
+        if _default is not _NoValue:
+            return _default
+        return self
 
     def __instancecheck__(cls, instance):
         return (
@@ -361,8 +380,8 @@ class _Unpack(Delayable):
         self.target = target
         self.is_map = is_map
     
-    def _resolve(self, data: Any, symbols: Optional[Sequence[Symbol]] = None) -> Iterator[Any]:
-        return self.target._resolve(data, symbols)
+    def _resolve(self, _default: Any, /, **kwargs: Any) -> Iterator[Any]:
+        return self.target._resolve(_default, **kwargs)
     
     def __repr__(self) -> str:
         if self.is_map:
@@ -378,11 +397,11 @@ class F(_OpActionMixin, Delayable):
         self._fae_args = args
         self._fae_kwargs = kwargs
 
-    def _resolve(self, data: Any, symbols: Optional[Sequence[Symbol]] = None) -> Any:
+    def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
         resolved_args = []
         for arg in self._fae_args:
             if isinstance(arg, Delayable):
-                resolved = arg._resolve(data, symbols)
+                resolved = arg._resolve(_default, **kwargs)
             else:
                 resolved = arg
             
@@ -394,7 +413,7 @@ class F(_OpActionMixin, Delayable):
         resolved_kwargs = {}
         for k, v in self._fae_kwargs.items():
             if isinstance(v, Delayable):
-                resolved = v._resolve(data, symbols)
+                resolved = v._resolve(_default, **kwargs)
             else:
                 resolved = v
         
@@ -597,7 +616,7 @@ class IF(_OpActionMixin, Delayable):
         self._then_ = then_
         self._else_ = else_
 
-    def _resolve(self, data: Any) -> Any:
+    def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
         if isinstance(self._condition, bool):
             condition = self._condition
         else:
@@ -677,20 +696,6 @@ class Exportable:
 
         config = {"_target_": target, "_args_": args, "_kwargs_": kwargs, "_meta_": {}}
         return config
-
-
-class _NoValue:
-    """A unique sentinel to represent empty."""
-
-    @property
-    def value(self):
-        return self
-
-    def __repr__(self):
-        return "<NO_VALUE>"
-
-    def __str__(self):
-        return "<NO_VALUE>"
 
 
 class _Variable:
@@ -838,7 +843,6 @@ class FVar(ContainerBase):
     or `FDict` if requesting a key when it is empty, or adding a new value if another already
     exists.
     """
-
     def __init__(self, morphable: bool = True) -> None:
         super().__init__()
         self.morphable = morphable
@@ -901,21 +905,38 @@ class FList(_OpActionMixin, Delayable):
             out.append(F(opinfo, item, *items_args, **items_kwargs))
         return FList(out)
 
-    def _resolve(self, data: Any) -> Any:
-        return [item._resolve(data) for item in self._fae_expr]
+    def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
+        return [item._resolve(_default, **kwargs) for item in self._fae_expr]
 
-    def __lshift__(self, other: Delayable) -> FList:
-        out = []
-        for expr in self._fae_expr:
-            out.append(expr >> other)
-        return FList(out)
+    def __lshift__(self, other: Delayable) -> FList:       
+        if isinstance(other, FList):
+            out = []
+            if len(other) == len(self):
+                out = [left >> right for left, right in zip(self._fae_expr, other._fae_expr)]
+            elif len(other) == 1:
+                right = other._fae_expr[0]
+                out = [left >> right for left in self._fae_expr]
+            elif len(self) == 1:
+                left = self._fae_expr[0]
+                out = [left >> right for right in other._fae_expr]  
+            else:
+                return NotImplemented
+
+            return FList(out)
+        elif isinstance(other, (Symbol, F)):
+            return FList([expr >> other for expr in self._fae_expr])
+        else:
+            return NotImplemented
         
     def __str__(self) -> str:
         return str(self._fae_expr)
 
+    def __len__(self) -> int:
+        return len(self._fae_expr)
+
     def __repr__(self) -> str:
         return str(self)
-
+    
 
 class FDict(_OpActionMixin, Delayable):
     def __init__(self, expressions: dict[str, Delayable]) -> None:
@@ -955,14 +976,24 @@ class FDict(_OpActionMixin, Delayable):
             out[key] = F(opinfo, value, *items_args, **items_kwargs)
         return FDict(out)
 
-    def _resolve(self, data: Any) -> Any:
-        return {key: item._resolve(data) for key, item in self._fae_expr.items()}
+    def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
+        return {key: item._resolve(_default, **kwargs) for key, item in self._fae_expr.items()}
 
     def __lshift__(self, other: Delayable) -> FDict:
-        out = {}
-        for key, item in self._fae_expr.items():
-            out[key] = item >> other
-        return FDict(out)
+        if isinstance(other, FDict):
+            out = {}
+            other = other._fae_expr
+
+            if set(self._fae_expr) != set(other):
+                return NotImplemented
+
+            for key, item in self._fae_expr.items():
+                out[key] = item >> other[key]
+            return FDict(out)
+        elif isinstance(other, (Symbol, F)):
+            return FDict({key: item >> other for key, item in self._fae_expr.items()})
+        else:
+            return NotImplemented
 
     def __str__(self) -> str:
         return str(self._fae_expr)
@@ -970,12 +1001,18 @@ class FDict(_OpActionMixin, Delayable):
     def __repr__(self) -> str:
         return str(self)
 
+    def __len__(self) -> int:
+        return len(self._fae_expr)
+
 
 class Chain(_OpActionMixin, Delayable):
     """
     A Chain is a sequence of operations: `op0 >> op1 << op2 >> ... >> opn`.
     """
-    def __init__(self, *ops: Delayable,) -> None:
+    def __init__(self, *ops: Delayable) -> None:
+        if not ops:
+            raise ValueError("Chain must have at least one operation.")
+        
         self._fae_ops = []
         for op in ops:
             if isinstance(op, Delayable):
@@ -984,27 +1021,26 @@ class Chain(_OpActionMixin, Delayable):
                 raise ValueError("All arguments must be of subtype `Delayable` or `nn.Module`.")
         self._fae_ops = tuple(self._fae_ops)
 
-    def _resolve(self, inputs: Any) -> Any:
+    def _resolve(self, _default: Any = _NoValue, /, **kwargs: Any) -> Any:
         """
-        TODO: Need to differentiate between X and A here.
-        """
-        if not self._ops:
-            return inputs
+        data | chain. 
 
-        data = self._ops[0]._resolve(inputs)
-
-        for op, reduce in zip(self._ops[1:], self._reduce):
-            if reduce:
-                data = op._using(inputs)
-            else:
-                data = op._using(inputs)
-        return data
+        - The first item in chain will be resolved like any F, based on the data provided.
+        - X is a special symbol that represents the output of the previous item in chain.
+          So if X is given as input, it will be replaced with the output of the 
+          previous item in chain. If you have arguments needed downstream, use another symbol.
+        """       
+        x = self._fae_ops[0]._resolve(_default, **kwargs)
+        kwargs.pop("X", None)
+        for op in self._fae_ops[1:]:
+            x = op._resolve(_default, X=x, **kwargs)
+        return x
 
     def __lshift__(self, other: Delayable) -> Chain:
         return Chain(*self._fae_ops[:-1], self._fae_ops[-1] << other)
 
     def __len__(self) -> int:
-        return len(self._ops)
+        return len(self._fae_ops)
 
 
 class W(enum.Enum):

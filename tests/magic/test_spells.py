@@ -28,7 +28,6 @@ class TestX:
         """ The right shift operator results in a Chain Object if both arguments are of type X."""
         x = left >> right
         assert isinstance(x, Chain)
-        assert not any(x._reduce)
         assert len(x) == 2
 
     @pytest.mark.parametrize("expr", [param(X, id="meta"), param(X + 1, id="instance")])
@@ -45,25 +44,18 @@ class TestX:
         with pytest.raises(TypeError):
             x = input >> expr
 
-    @pytest.mark.parametrize("left, right", [
-        param(X, X, id="meta << meta"),
-        param(X, X + 1, id="meta << instance"),
-        param(X + 1, X, id="instance << meta"),
-        param(X + 1, X + 1, id="instance << instance"),
+    @pytest.mark.parametrize("left,right", [
+        param(X, X, id="meta_meta"),
+        param(X + 1, X, id="instance_meta"),
+        param(X, X + 1, id="meta_instance"),
+        param(X + 1, X + 1, id="instance_instance"),
     ])
-    def test_lshift(self, left, right):
-        """ The right shift operator results in a Chain Object if both arguments are of type X."""
-        x = left << right
-        assert isinstance(x, Chain)
-        assert all(x._reduce)
-        assert len(x) == 2
-
-    @pytest.mark.parametrize("expr", [param(X, id="meta"), param(X + 1, id="instance")])
-    @pytest.mark.parametrize("input", [param(1, id="int"), param(tensor(1), id="tensor")])
-    def test_lshift_error(self, expr, input):
-        """ Shift operator not defined with non-X arguments. """
+    def test_lshift_error(self, left, right):
+        """ 
+        Left shift operator not defined on non FList or FDict arguments.
+        """
         with pytest.raises(TypeError):
-            x = expr << input
+            left << right
     
     @pytest.mark.parametrize("expr", [param(X, id="meta"), param(X + 1, id="instance")])
     @pytest.mark.parametrize("input", [param(1, id="int"), param(tensor(1), id="tensor")])
@@ -496,13 +488,6 @@ class TestX:
         torch.testing.assert_close(res, expected)
 
 
-def test_selective_resolve():
-    expr = A + X
-    res = expr._resolve(1, symbols=[X])
-    assert isinstance(res, F)
-    assert str(res) == "A + 1"
-
-
 class TestFList:
     flist =  FList([X, X - 1])
 
@@ -511,8 +496,48 @@ class TestFList:
         param(1 + flist, "[1 + X, 1 + X - 1]", [2, 1], id="int_flist"),
         param(flist + flist, "[X + X, X - 1 + X - 1]", [2, 0], id="flist_flist")
     ])
-    def test_flist(self, expr, expected, result):
+    def test_op_action(self, expr, expected, result):
         assert str(expr) == expected
+        assert 1 | expr == result
+
+    @pytest.mark.parametrize("left, right, result", [
+        param(flist, X, [1, 0], id="flist_meta"),
+        param(flist, X + 1, [2, 1], id="flist_instance"),
+        param(flist, flist, [1, -1], id="flist_flist"),
+        param(flist, FList([X+1]), [2, 1], id="flist_flist_1"),
+        param(FList([X+1]), flist, [2, 1], id="flist_1_flist"),
+        param(flist + 1, flist, [2, 0], id="F(flist)_flist"),
+        param(flist, flist + 1, [2, 0], id="flist_F(flist)"),
+    ])
+    def test_lshift(self, left, right, result):
+        expr = left << right
+        assert isinstance(expr, FList)
+        for item in expr._fae_expr:
+            assert isinstance(item, Chain)
+        assert 1 | expr == result
+
+    @pytest.mark.parametrize("left, right", [
+        param(X, flist, id="meta_flist"),
+        param(X + 1, flist, id="instance_flist"),
+        param(FList([X, X, X]), flist, id="flist_flist_non_broadcastable"),
+        param(flist, FList([X, X, X]), id="flist_flist_non_broadcastable2"),
+
+    ])
+    def test_lshift_error(self, left, right):
+        """ 
+        Cannot have Flist on the right hand side of a left shift operator, if right hand 
+        side is not a Flist will broadcastable lengths.
+        """
+        with pytest.raises(TypeError):
+            left << right
+
+    @pytest.mark.parametrize("left, right, result", [
+        param(flist, X, [1, 0], id="flist_meta"),
+        param(flist, F(sum, X), 1, id="flist_F"),
+    ])
+    def test_rshift(self, left, right, result):
+        expr = left >> right
+        assert isinstance(expr, Chain)
         assert 1 | expr == result
 
 
@@ -526,6 +551,44 @@ class TestFDict:
     ])
     def test_fdict(self, expr, expected, result):
         assert str(expr) == expected
+        assert 1 | expr == result
+
+    @pytest.mark.parametrize("left, right, result", [
+        param(fdict, X, {"a": 1, "b": 0}, id="fdict_meta"),
+        param(fdict, X + 1, {"a": 2, "b": 1}, id="fdict_instance"),
+        param(fdict, fdict, {"a": 1, "b": -1}, id="fdict_fdict"),
+        param(fdict + 1, fdict, {"a": 2, "b": 0}, id="F(fdict)_fdict"),
+        param(fdict, fdict + 1, {"a": 2, "b": 0}, id="fdict_F(fdict)"),
+    ])
+    def test_lshift(self, left, right, result):
+        expr = left << right
+        assert isinstance(expr, FDict)
+        for item in expr._fae_expr.values():
+            assert isinstance(item, Chain)
+        assert 1 | expr == result
+
+    @pytest.mark.parametrize("left, right", [
+        param(X, fdict, id="meta_fdict"),
+        param(X + 1, fdict, id="instance_fdict"),
+        param(FDict({"a": X}), fdict, id="fdict_fdict_incompatible_keys"),
+        param(fdict, FDict({"a": X}), id="fdict_fdict_incompatible_keys2"),
+
+    ])
+    def test_lshift_error(self, left, right):
+        """ 
+        Cannot have Flist on the right hand side of a left shift operator, if right hand 
+        side is not a Flist will broadcastable lengths.
+        """
+        with pytest.raises(TypeError):
+            left << right
+
+    @pytest.mark.parametrize("left, right, result", [
+        param(fdict, X, {"a": 1, "b": 0}, id="fdict_meta"),
+        param(fdict, F(sum, X.values()), 1, id="fdict_F"),
+    ])
+    def test_rshift(self, left, right, result):
+        expr = left >> right
+        assert isinstance(expr, Chain)
         assert 1 | expr == result
 
 
