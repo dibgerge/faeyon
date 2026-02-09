@@ -2,6 +2,7 @@ from __future__ import annotations
 from sympy.core import N
 import torch
 import abc
+import dataclasses
 import sys
 import inspect
 import enum
@@ -10,7 +11,7 @@ from collections.abc import Callable, Iterator, Iterable, Sequence
 from typing import Any, Optional, overload
 from types import NoneType
 from abc import ABC, abstractmethod
-from collections import defaultdict
+from collections import defaultdict, deque
 
 from torch import nn
 from torch import optim
@@ -43,15 +44,220 @@ class _MappingKey(str):
     pass
 
 
+@dataclasses.dataclass(frozen=True)
+class DelayableNamespace:
+    expr: Delayable
+    arguments: Optional[inspect.BoundArguments] = None
+    
+    name: Optional[str] = None
+    group: Optional[int] = None
+    modifiers: tuple[Modifier, ...] = dataclasses.field(default_factory=tuple)
+
+    def update(self, **kwargs: Any) -> Delayable:
+        fae = dataclasses.replace(self, **kwargs)
+        out = self.clone()
+
+    def append(self, *modifiers: Modifier) -> Delayable:
+        """ Add modifiers to the namespace, and returns a copy of the expression. """
+        modifiers = self.modifiers + modifiers
+        return self.update(modifiers=modifiers)
+
+    @property
+    def has_modifiers(self) -> bool:
+        return len(self.modifiers) > 0 or self.name is not None or self.group is not None
+
+    def clone(self, recurse: bool = False) -> DelayableNamespace:
+        """ 
+        Clone the namespace. If `recurse` is True, also clone any Delayable objects passed to the
+        constructor.
+        """
+        if not recurse:
+            if self.arguments is None:
+                return self.expr
+
+            return self.expr.__class__(*self.arguments.args, **self.arguments.kwargs)
+        
+        bound = self.walk(callback=lambda x: x.clone(recurse=recurse))
+        return self.expr.__class__(*bound.args, **bound.kwargs)
+        
+    def walk(self, callback: Optional[Callable[[Delayable], Delayable]] = None) -> Iterator[Any]:   
+        """ Iterate over any argument which is a Delayable. """ 
+
+        def check(arg: Any) -> bool:
+            if isinstance(arg, Delayable) and callback is not None:
+                return callback(arg)
+                
+            return arg
+
+        if self.arguments is None:
+            return
+
+        all_args = [
+            *zip(itertools.repeat(None), self.arguments.args), 
+            *self.arguments.kwargs.items()
+        ]
+        args, kwargs = [], {}
+        for key, arg in all_args:
+            if isinstance(arg, Sequence):
+                new_arg = [check(item) for item in arg]
+            elif isinstance(arg, dict):
+                new_arg = {k: check(v) for k, v in arg.items()}
+            else:
+                new_arg = check(arg)
+
+            if key is not None:
+                kwargs[key] = new_arg
+            else:
+                args.append(new_arg)
+                    
+        return self.arguments.signature.bind(*args, **kwargs)
+
+    def _iter(self) -> Iterator[Any]:   
+        """ Iterate over any argument which is a Delayable. """ 
+        if self.arguments is None:
+            return iter(())
+
+        arguments = self.arguments.arguments
+        for arg in arguments.values():
+            if isinstance(arg, Delayable):
+                yield arg
+            elif isinstance(arg, Sequence):
+                for item in arg:
+                    if isinstance(item, Delayable):
+                        yield item
+            elif isinstance(arg, dict):
+                for item in arg.values():
+                    if isinstance(item, Delayable):
+                        yield item
+
+    def __iter__(self) -> Iterator[Delayable]:
+        """ Iterate over any elements of the Delayable"""
+        yield from self._iter()
+
+    def __getattr__(self, name: str) -> Any:
+        return self.arguments.arguments[name]
+
+# @dataclasses.dataclass(frozen=True)
+# class SymbolNamespace(DelayableNamespace):
+#     def clone(self, recurse: bool = False) -> Symbol:
+#         return self.expr
+    
+#     def __iter__(self) -> Iterator[Symbol]:
+#         return (self.expr,)
+
+
+# @dataclasses.dataclass(frozen=True)
+# class UnPackNamespace(DelayableNamespace):
+#     target: Delayable = dataclasses.field(default=...)
+#     is_map: bool = False
+
+#     def __post_init__(self) -> None:
+#         if self.target is None or not isinstance(self.target, Delayable):
+#             raise ValueError("target must be a Delayable.")
+#         if not isinstance(self.target, Delayable):
+#             raise TypeError(f"target must be a Delayable, got {type(self.target)}.")
+
+#     def clone(self, recurse: bool = False) -> _Unpack:
+#         if recurse:
+#             target = self.target.clone(recurse=True)
+#         else:
+#             target = self.target
+
+#         return _Unpack(target, self.is_map)
+
+#     def __iter__(self) -> Iterator[Delayable]:
+#         yield (self.target,)
+
+
+# @dataclasses.dataclass(frozen=True)
+# class FNamespace(DelayableNamespace):
+#     op: Callable[..., Any] = dataclasses.field(default=...)
+#     args: tuple[Any, ...] = dataclasses.field(default_factory=tuple)
+#     kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
+
+#     def clone_replacing(self, old_child, new_child):
+#         new_args = []
+#         for a in self.args:
+#             if a.fae.name == old_child:
+#                 print("adding new child", new_child.fae.modifiers)
+#                 new_args.append(new_child)
+#             else:
+#                 new_args.append(a)
+#         new_kwargs = {k: (new_child if v.fae.name == old_child else v) for k, v in self.kwargs.items()}
+#         out = F(self.op, *new_args, **new_kwargs)
+
+#         fae = dataclasses.replace(out.fae, modifiers=self.modifiers, name=self.name, group=self.group)
+#         out.fae = fae
+#         return out
+
+#     def clone(self, recurse: bool = False) -> F:
+#         if recurse:
+#             args = []
+#             for arg in self.args:
+#                 if isinstance(arg, Delayable):
+#                     args.append(arg.clone(recurse=True))
+#                 else:
+#                     args.append(arg)
+
+#             kwargs = {}
+#             for k, v in self.kwargs.items():
+#                 if isinstance(v, Delayable):
+#                     kwargs[k] = v.clone(recurse=True)
+#                 else:
+#                     kwargs[k] = v
+
+#         return F(self.op, *args, **kwargs)
+
+#     def __iter__(self) -> Iterator[Any]:
+#         yield from self.args
+#         yield from self.kwargs.values()
+
+
+# @dataclasses.dataclass(frozen=True)
+# class ChainNamespace(DelayableNamespace):
+#     ops: tuple[Delayable, ...] = dataclasses.field(default_factory=tuple)
+
+#     def clone(self, recurse: bool = False) -> Chain:
+#         if recurse:
+#             ops = tuple(op.clone(recurse=True) for op in self.ops)
+#         else:
+#             ops = self.ops
+#         return Chain(*ops)
+
+#     def __iter__(self) -> Iterator[Delayable]:
+#         return iter(self.ops)
+
+#     def __getitem__(self, key: int) -> Delayable:
+#         return self.ops[key]
+
+#     def __len__(self) -> int:
+#         return len(self.ops)
+
+#     def clone_replacing(self, old_child, new_child):
+#         new_ops = tuple(new_child if op.fae.name == old_child else op for op in self.ops)
+#         out = Chain(*new_ops)
+#         fae = dataclasses.replace(out.fae, modifiers=self.modifiers, name=self.name, group=self.group)
+#         out.fae = fae
+#         return out
+
+
 class Delayable:
     """
     Delayable is the base class for all delayable objects. It provides the base functionality for
     conditional evaluation, chaining, and resolving with data.
     # TODO: Delayable should be an abstract base class.
     """
+    def __init__(self, *args, **kwargs) -> None:
+        sig = inspect.signature(self.__init__)
+        bound = sig.bind(*args, **kwargs)
+        bound.apply_defaults()
+        self.fae = DelayableNamespace(expr=self, arguments=bound)
+
     @abstractmethod
     def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
-        """Uses data to resolve the delayable. Must be implemented by subclasses."""
+        """
+        Uses data to resolve the delayable. Must be implemented by subclasses.
+        """
 
     def __or__(self, other: Any) -> Any:
         """ The case of `X | data` is not defined."""
@@ -69,13 +275,28 @@ class Delayable:
             return NotImplemented
         return self._resolve(other)
 
-    def __mod__[T: Delayable](self: T, other: modifierType) -> T:
+    def __mod__[T: Delayable](self: T, modifier: modifierType) -> T:
         """
         The modulate operator `%` is used to name the operation. It can also be used to modify Delayables, for example, set Optimizer to parameters in delayable modules, etc...
         (TODO: How to handle general modifiers, e.g. optimizer.)
         """
-        if isinstance(other, str):
-            return Modifiers(self, name=other)
+        if not isinstance(modifier, (str, At)):
+            return NotImplemented
+
+        if isinstance(modifier, str):
+            if "." in modifier:
+                raise ValueError("Modifier cannot contain a period.")
+
+            fae = dataclasses.replace(self.fae, name=modifier)
+            # out = self.clone()
+            # out.fae = fae
+            # TODO: This should not be inplace
+            self.fae = fae
+            return self
+        elif isinstance(modifier, At):
+            return modifier.__rmod__(self)
+            
+            #TODO: I need a way to copy current Delayable
         return NotImplemented
         
     def __rmod__[T: Delayable](self: T, other: str) -> T:
@@ -100,19 +321,6 @@ class Delayable:
         In this case `other` cannot be of type `Delayable` (__rshift__ is called instead).
         """
         return NotImplemented
-
-    # def __lshift__(self, other: Delayable) -> Chain:
-    #     """
-    #     """
-    #     if not isinstance(other, Delayable):
-    #         return NotImplemented
-    #     return Chain(self, other)
-
-    # def __rlshift__(self, other: Any) -> Any:
-    #     """
-    #     In this case `other` cannot be of type `Delayable` (__lshift__ is called instead).
-    #     """
-    #     return NotImplemented
 
 
 class _OpActionMixin:
@@ -300,9 +508,12 @@ class _SymbolMeta(_OpActionMixin, Delayable, abc.ABCMeta):
         
         if any(isinstance(base, _SymbolMeta) for base in bases):
             mcs._registry[name] = cls
-        
-        cls._cls_name = name
+    
         return cls
+
+    def __init__(cls, name, bases, namespace, **kwargs):
+        super().__init__(name, bases, namespace, **kwargs)
+        cls.fae = DelayableNamespace(expr=cls, name=cls.__name__)
 
     def _resolve(self, _default: Any = _NoValue, /, **kwargs: Any) -> Any:
         """ 
@@ -310,8 +521,8 @@ class _SymbolMeta(_OpActionMixin, Delayable, abc.ABCMeta):
         If symbol is not in kwargs, the default value will be used, if specified. 
         If no default value is specified, and no value is provided in kwargs, the symbol will be returned as is.
         """
-        if self._cls_name in kwargs:
-            return kwargs[self._cls_name]        
+        if self.fae.name in kwargs:
+            return kwargs[self.fae.name]
         if _default is not _NoValue:
             return _default
         return self
@@ -375,31 +586,26 @@ class _Unpack(Delayable):
     Represents an unpacking operation (*X). When resolved, unpacks the data as *args.
     """
     def __init__(self, target, is_map: bool = False) -> None:
-        if not isinstance(target, Delayable):
-            raise ValueError(f"Target of Unpack must be a Delayable, got {type(target)}.")
-        self.target = target
-        self.is_map = is_map
+        super().__init__(target=target, is_map=is_map)
     
     def _resolve(self, _default: Any, /, **kwargs: Any) -> Iterator[Any]:
-        return self.target._resolve(_default, **kwargs)
+        return self.fae.target._resolve(_default, **kwargs)
     
     def __repr__(self) -> str:
-        if self.is_map:
+        if self.fae.is_map:
             prefix = "**"
         else:
             prefix = "*"
-        return f"{prefix}{self.target!r}"
+        return f"{prefix}{self.fae.target!r}"
 
 
 class F(_OpActionMixin, Delayable):
-    def __init__(self, op: Callable[..., Any], *args, **kwargs) -> None:
-        self._fae_op = op
-        self._fae_args = args
-        self._fae_kwargs = kwargs
+    def __init__(self, op: Callable[..., Any], /, *args, **kwargs) -> None:
+        super().__init__(op, *args, **kwargs)
 
     def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
         resolved_args = []
-        for arg in self._fae_args:
+        for arg in self.fae.args:
             if isinstance(arg, Delayable):
                 resolved = arg._resolve(_default, **kwargs)
             else:
@@ -411,7 +617,7 @@ class F(_OpActionMixin, Delayable):
                 resolved_args.append(resolved)
 
         resolved_kwargs = {}
-        for k, v in self._fae_kwargs.items():
+        for k, v in self.fae.kwargs.items():
             if isinstance(v, Delayable):
                 resolved = v._resolve(_default, **kwargs)
             else:
@@ -423,25 +629,25 @@ class F(_OpActionMixin, Delayable):
             # Need to do this because of the unpacking operation might have same key multiple times.
             for k in resolved:
                 if k in resolved_kwargs:
-                    raise TypeError(f"{self._fae_op} got multiple values for argument '{k}'.")
+                    raise TypeError(f"{self.fae.op} got multiple values for argument '{k}'.")
             resolved_kwargs.update(resolved)
 
         if any(
             isinstance(a, Delayable) 
             for a in itertools.chain(resolved_args, resolved_kwargs.values())
         ):
-            return F(self._fae_op, *resolved_args, **resolved_kwargs)
+            return F(self.fae.op, *resolved_args, **resolved_kwargs)
 
-        return self._fae_op(*resolved_args, **resolved_kwargs)
+        return self.fae.op(*resolved_args, **resolved_kwargs)
 
     def __str__(self):
-        if isinstance(self._fae_op, OpInfo):
-            return self._fae_op.to_string(*self._fae_args, **self._fae_kwargs)
+        if isinstance(self.fae.op, OpInfo):
+            return self.fae.op.to_string(*self.fae.args, **self.fae.kwargs)
         else:
             try:
-                name = self._fae_op.__name__
+                name = self.fae.op.__name__
             except AttributeError:
-                name = f"{self._fae_op!r}"
+                name = f"{self.fae.op!r}"
 
             # TODO: Might need special handling of module.__call__
             # if name == "Module.__call__" and len(self.args.args) > 0:
@@ -449,8 +655,8 @@ class F(_OpActionMixin, Delayable):
             # else:
             #     args = self.args  # .args
 
-            args = list(map(repr, self._fae_args))
-            args.extend(f"{k}={v!r}" for k, v in self._fae_kwargs.items())
+            args = list(map(repr, self.fae.args))
+            args.extend(f"{k}={v!r}" for k, v in self.fae.kwargs.items())
             args = ", ".join(args)
             return f"{name}({args})"
 
@@ -604,63 +810,6 @@ def _new_instance(cls, *args, **kwargs):
     super(cls, instance).__setattr__("_arguments", bound)
     return instance
 
-
-class IF(_OpActionMixin, Delayable):
-    def __init__(
-        self, 
-        condition: bool | Symbol | F,
-        then_: Delayable,
-        else_: Optional[Delayable] = None
-    ) -> None:
-        self._condition = condition
-        self._then_ = then_
-        self._else_ = else_
-
-    def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
-        if isinstance(self._condition, bool):
-            condition = self._condition
-        else:
-            condition = data | self.condition
-
-        if condition:
-            return data | self._then_
-        else:
-            if self._else_ is not None:
-                return data | self._else_
-            else:
-                return data
-
-
-class Modifiers(_OpActionMixin, Delayable):
-    def __init__(
-        self, 
-        expr: Delayable, 
-        name: Optional[str] = None,
-        optimizer: Optional[optim.Optimizer] = None,
-        
-    ) -> None:
-        if all(mod is None for mod in (name, optimizer)):
-            raise ValueError(
-                "At least one of `name` or `optimizer` must be provided."
-            )
-        self._name = name
-        self._optimizer = optimizer
-
-        if isinstance(expr, Modifiers):
-            if name is not None and expr.fae_has_name:
-                raise ValueError(f"Name already set on given modifier expression {expr}.")
-            if optimizer is not None and expr.fae_has_optimizer:
-                raise ValueError(f"Optimizer already set on given modifier expression {expr}.")
-        self.expr = expr
-
-    @property
-    def fae_has_name(self) -> bool:
-        return self._name is not None
-
-    @property
-    def fae_has_optimizer(self) -> bool:
-        return self._optimizer is not None
-            
 
 class Exportable:
     """
@@ -1013,13 +1162,13 @@ class Chain(_OpActionMixin, Delayable):
         if not ops:
             raise ValueError("Chain must have at least one operation.")
         
-        self._fae_ops = []
+        fae_ops = []
         for op in ops:
             if isinstance(op, Delayable):
-                self._fae_ops.append(op)
+                fae_ops.append(op)
             else:
                 raise ValueError("All arguments must be of subtype `Delayable` or `nn.Module`.")
-        self._fae_ops = tuple(self._fae_ops)
+        super().__init__(*fae_ops)
 
     def _resolve(self, _default: Any = _NoValue, /, **kwargs: Any) -> Any:
         """
@@ -1030,17 +1179,33 @@ class Chain(_OpActionMixin, Delayable):
           So if X is given as input, it will be replaced with the output of the 
           previous item in chain. If you have arguments needed downstream, use another symbol.
         """       
-        x = self._fae_ops[0]._resolve(_default, **kwargs)
+        x = self.fae.ops[0]._resolve(_default, **kwargs)
         kwargs.pop("X", None)
-        for op in self._fae_ops[1:]:
+        for op in self.fae.ops[1:]:
             x = op._resolve(_default, X=x, **kwargs)
         return x
 
     def __lshift__(self, other: Delayable) -> Chain:
-        return Chain(*self._fae_ops[:-1], self._fae_ops[-1] << other)
+        return Chain(*self.fae.ops[:-1], self.fae.ops[-1] << other)
+
+    def __rshift__(self, other: Any) -> Any:
+        if self.fae.has_modifiers:
+            return super().__rshift__(other)
+
+        if isinstance(other, Chain):
+            return Chain(*self.fae.ops, *other.fae.ops)
+        else:
+            return Chain(*self.fae.ops, other)
 
     def __len__(self) -> int:
-        return len(self._fae_ops)
+        return len(self.fae.ops)
+
+    def __repr__(self) -> str:
+        out = []
+        for item in self.fae.ops:
+            out.append(repr(item))  
+        return " >> ".join(out)
+
 
 
 class W(enum.Enum):
@@ -1145,3 +1310,178 @@ class Wire:
 
     def __rrshift__(self, data: Any) -> A:
         return self.step(data)
+
+
+
+class IF(_OpActionMixin, Delayable):
+    def __init__(
+        self, 
+        condition: bool | Symbol | F,
+        then_: Delayable,
+        else_: Optional[Delayable] = None
+    ) -> None:
+        self._condition = condition
+        self._then_ = then_
+        self._else_ = else_
+
+    def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
+        if isinstance(self._condition, bool):
+            condition = self._condition
+        else:
+            condition = data | self.condition
+
+        if condition:
+            return data | self._then_
+        else:
+            if self._else_ is not None:
+                return data | self._else_
+            else:
+                return data
+
+
+class At:
+    def __init__(self, lookup: Optional[str] = None, *modifiers: Modifier) -> None:
+        self.lookup = lookup
+        self.modifiers = modifiers
+
+    def __rmod__(self, other: Delayable) -> Delayable:
+        if not isinstance(other, Delayable):
+            return NotImplemented
+        walker = Coroutine(walk(other, self.lookup))
+        target = walker.start()
+        # Apply modifiers to the found node
+
+        # TODO: need to support multiple modifiers, currently its being overridden
+        new_node = target  # clone/modify as needed
+        for modifier in self.modifiers:
+            new_node = new_node.fae.append_modifier(modifier)
+
+        new_root = walker.send(new_node)
+        return new_root
+        # parts = deque(self.lookup.split("."))
+        # found_nodes = [other]
+        # while parts:
+        #     name = parts.popleft()
+        #     node = found_nodes.pop()
+        #     for expr in node.fae:
+        #         if expr.fae.name == name:
+        #             current_node = expr
+        #             break
+        #     else:
+        #         raise ValueError(f"No expression with name matching{self.lookup} found in {other}.")
+
+        # new_node =current_node.fae.append_modifiers(*self.modifiers)
+        
+
+
+
+ 
+
+class Modifier(abc.ABC):
+    """ 
+    Base class for modifiers.
+    """
+    @abstractmethod
+    def on_init(self, node: Delayable) -> None:
+        pass
+
+    @abstractmethod
+    def on_build(self) -> Any:
+        """
+        Logic used to specify the new expression to be used.
+        """
+
+    @abstractmethod
+    def on_resolve(self, result: Any) -> None:
+        """
+        Called at resolve time, which the modify can cache or use the result of the node.
+        """
+
+
+        # for expr in other.fae:
+        #     if expr.fae.name 
+
+
+class Record:
+    def __init__(self, pattern: str | Sequence[str] = None, output: FVar = None) -> None:
+        self.pattern = pattern
+        self.output = output
+
+    def on_init(self, node: Delayable) -> None:
+        pass
+
+    def on_build(self) -> Any:
+        pass
+
+    def on_resolve(self, result: Any) -> None:
+        pass
+
+    # def __rmod__(self, expr: Delayable) -> RecordMod:
+    #     """
+    #     Finds items in expr which match the pattern.
+    #     """
+    #     return RecordMod(expr, self.output)
+
+
+# class RecordMod(Modifier):
+#     """ 
+#     A wrapper to record the output of a delayable expression. The cached value is overwritten 
+#     everytime the expression is evaluated. Optionally, the output can be specified to be saved into
+#     a specific FVar.
+#     """
+#     def __init__(self, expr: Delayable, output: FVar = None) -> None:
+#         self._fae_expr = expr
+#         self._fae_cache = _NoValue()
+#         self._fae_output = output
+
+#     def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
+#         self._cached_value = self._fae_expr._resolve(_default, **kwargs)
+#         return self._cached_value
+
+
+class Coroutine:
+    def __init__(self, gen):
+        self._gen = gen
+        self.alive = True
+        self.value = None
+
+    def start(self):
+        self.value = next(self._gen)
+        return self.value
+
+    def send(self, val):
+        try:
+            self.value = self._gen.send(val)
+        except StopIteration as e:
+            self.value = e.value
+            self.alive = False
+        return self.value
+
+
+def _walk_recursive(node, parts):
+    """
+    Walk down the tree along `parts`. When we reach the target,
+    yield it. The caller sends back a modified version. Each level
+    then rebuilds its parent with the new child on the way back up.
+    """
+    if not parts:
+        # Reached the target — pause here.
+        # yield sends the target out; send() brings the replacement in.
+        replacement = yield node
+        return replacement
+
+    name, *rest = parts
+    for child in node.fae:
+        if child.fae.name == name:
+            # Recurse deeper. yield from delegates the yield/send
+            # through the entire recursive chain.
+            new_child = yield from _walk_recursive(child, rest)
+            out = node.fae.clone_replacing(name, new_child)
+            return out
+
+    raise ValueError(f"No node named '{name}' found.")
+
+
+def walk(root, path):
+    parts = path.split(".")
+    return (yield from _walk_recursive(root, parts))

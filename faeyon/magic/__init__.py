@@ -11,6 +11,5 @@ from .spells import (
     Chain,
     Wire,
     W,
-    Modifiers
 )
 from .faek import faek

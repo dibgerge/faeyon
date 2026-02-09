@@ -12,7 +12,6 @@ from .magic import (
     Chain,
     Wire,
     W,
-    Modifiers
 )
 
 from . import models

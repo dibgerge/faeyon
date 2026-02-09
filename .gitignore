@@ -136,3 +136,4 @@ scratch/
 try*.py
 site/
 docs/_build/
+design/

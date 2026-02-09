@@ -1,7 +1,7 @@
 import pytest
 import inspect
 import torch
-from faeyon import A, X, FVar, FList, FDict, F, Wire, W, Chain, Modifiers
+from faeyon import A, X, FVar, FList, FDict, F, Wire, W, Chain
 from faeyon.magic.spells import conjure, Delayable
 
 from tests.common import ConstantLayer
@@ -487,6 +487,20 @@ class TestX:
         res = data | relu(expr)
         torch.testing.assert_close(res, expected)
 
+    def test_clone(self):
+        expr = X + 1 >> X + 2
+        cloned = expr.fae.clone()
+
+        for original, cloned in zip(expr.fae, cloned.fae):
+            assert original is cloned
+
+    def test_clone_recurse(self):
+        expr = X + 1 >> X + 2
+        cloned = expr.fae.clone(recurse=True)
+
+        for original, cloned in zip(expr.fae, cloned.fae):
+            assert original is not cloned
+
 
 class TestFList:
     flist =  FList([X, X - 1])
@@ -593,6 +607,7 @@ class TestFDict:
 
 
 def test_sym():
+    """ Test Sym class and symbol registry. """
     from faeyon.magic.spells import Sym, Symbol, _SymbolMeta
     Y = Sym.Y
     assert isinstance(Y, Symbol)
@@ -1472,3 +1487,17 @@ def test_sym():
 #         assert isinstance(mux, _Mux)
 #         assert mux.s0 == "s0"
 #         assert mux.s1 == "s1"
+
+
+def test_modifiers():
+    from faeyon.magic.spells import At, Record
+    expr = (
+        X + 2 
+        >> ((X / 2) % "baz" + X * X ) % "bar"
+        >> X * 10
+    ) % "foo"
+
+    #print("expression", expr.fae[1])
+    out = expr % At("bar.baz", Record())
+    # print(out)
+    print("final", out.fae[1].fae.args[0].fae)
