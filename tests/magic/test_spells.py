@@ -1,7 +1,7 @@
 import pytest
 import inspect
 import torch
-from faeyon import A, X, FVar, FList, FDict, F, Wire, W, Chain
+from faeyon import A, X, FVar, FList, FDict, F, Wire, W, Chain, At, Record
 from faeyon.magic.spells import conjure, Delayable
 
 from tests.common import ConstantLayer
@@ -1490,14 +1490,13 @@ def test_sym():
 
 
 def test_modifiers():
-    from faeyon.magic.spells import At, Record
     expr = (
         X + 2 
         >> ((X / 2) % "baz" + X * X ) % "bar"
         >> X * 10
     ) % "foo"
 
-    #print("expression", expr.fae[1])
     out = expr % At("bar.baz", Record())
-    # print(out)
-    print("final", out.fae[1].fae.args[0].fae)
+    modifiers = out.fae.ops[1].args[0].modifiers
+    assert len(modifiers) == 1
+    assert isinstance(modifiers[0], Record)

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from ast import USub
 from sympy.core import N
 import torch
 import abc
@@ -12,7 +13,7 @@ from typing import Any, Optional, overload
 from types import NoneType
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
-
+import re
 from torch import nn
 from torch import optim
 from ._opinfo import get_opinfo, OpInfo
@@ -51,13 +52,27 @@ class DelayableNamespace:
     
     name: Optional[str] = None
     group: Optional[int] = None
-    modifiers: tuple[Modifier, ...] = dataclasses.field(default_factory=tuple)
+
+    # TODO: need to use Modifier instead of Any
+    modifiers: tuple[Any, ...] = dataclasses.field(default_factory=tuple)
+    cache: Any = None
+
+    def from_arguments(self, arguments: Optional[inspect.BoundArguments]) -> DelayableNamespace:
+        if arguments is None:
+            return self.expr
+        else:
+            return self.expr.__class__(*arguments.args, **arguments.kwargs)
 
     def update(self, **kwargs: Any) -> Delayable:
-        fae = dataclasses.replace(self, **kwargs)
-        out = self.clone()
+        """ Always return a copy. """
+        if "expr" in kwargs:
+            raise ValueError("`expr` cannot be updated.")
+        
+        clone = self.from_arguments(kwargs.pop("arguments", self.arguments))
+        clone.fae = dataclasses.replace(self, **kwargs)
+        return clone
 
-    def append(self, *modifiers: Modifier) -> Delayable:
+    def append(self, *modifiers: Any) -> Delayable:
         """ Add modifiers to the namespace, and returns a copy of the expression. """
         modifiers = self.modifiers + modifiers
         return self.update(modifiers=modifiers)
@@ -72,26 +87,70 @@ class DelayableNamespace:
         constructor.
         """
         if not recurse:
-            if self.arguments is None:
-                return self.expr
-
-            return self.expr.__class__(*self.arguments.args, **self.arguments.kwargs)
+            return self.update()
         
         bound = self.walk(callback=lambda x: x.clone(recurse=recurse))
         return self.expr.__class__(*bound.args, **bound.kwargs)
-        
-    def walk(self, callback: Optional[Callable[[Delayable], Delayable]] = None) -> Iterator[Any]:   
-        """ Iterate over any argument which is a Delayable. """ 
 
+    def replace(self, name: str, node: Delayable) -> Delayable:
+        """ 
+        Finds the node with the given name and replaces it with the new node. 
+        This is returns a copy of the current delayable after the replacement.
+        """
+        pass
+
+    def find(self, path, callback: Optional[Callable[[Delayable], Delayable]] = None):
+        """
+        Walks to a given path, and returns the node. If a new node is received from the caller, 
+        it replaces the node with the new node, and copies all the node's ancestors.
+        """
+        def _recurse(node, parts):
+            """
+            Walk down the tree along `parts`. When we reach the target,
+            yield it. The caller sends back a modified version. Each level
+            then rebuilds its parent with the new child on the way back up.
+            """
+            if not parts:
+                return callback(node)
+
+            name, *rest = parts    
+            walker = node.fae.walk()
+            try:
+                child = next(walker)
+                while True:
+                    if child.fae.name and re.fullmatch(name, child.fae.name):
+                        new_child = _recurse(child, rest)
+                        child = walker.send(new_child)
+                    else:
+                        child = walker.send(None)
+            except StopIteration as e:
+                # The return value (new root)is stored in the StopIteration exception.
+                # https://peps.python.org/pep-0380/#use-of-stopiteration-to-return-values
+                return e.value
+
+            return node
+            
+        return _recurse(self.expr, path.split("."))
+        
+    def walk(self) -> Iterator[Any]:
+        """ 
+        Iterate over any argument which is a Delayable. Returns a New Delayable if any arguments 
+        were modified, otherwise returns the original Delayable.
+        """ 
         def check(arg: Any) -> bool:
-            if isinstance(arg, Delayable) and callback is not None:
-                return callback(arg)
+            if isinstance(arg, Delayable):
+                new_arg = yield arg
                 
+                if new_arg is None:
+                    return arg
+                else:  
+                    return new_arg
             return arg
 
         if self.arguments is None:
             return
 
+        changed = False
         all_args = [
             *zip(itertools.repeat(None), self.arguments.args), 
             *self.arguments.kwargs.items()
@@ -99,146 +158,42 @@ class DelayableNamespace:
         args, kwargs = [], {}
         for key, arg in all_args:
             if isinstance(arg, Sequence):
-                new_arg = [check(item) for item in arg]
+                new_arg = []
+                for item in arg:
+                    new_item = yield from check(item)
+                    changed = changed or (new_item is not item)
+                    new_arg.append(new_item)
+                
             elif isinstance(arg, dict):
-                new_arg = {k: check(v) for k, v in arg.items()}
+                new_arg = {}
+                for k, v in arg.items():
+                    new_item = yield from check(v)
+                    changed = changed or (new_item is not v)
+                    new_arg[k] = new_item
             else:
-                new_arg = check(arg)
+                new_arg = yield from check(arg)
+                changed = changed or (new_arg is not arg)
 
             if key is not None:
                 kwargs[key] = new_arg
             else:
                 args.append(new_arg)
                     
-        return self.arguments.signature.bind(*args, **kwargs)
+        if not changed:
+            return self.expr
 
-    def _iter(self) -> Iterator[Any]:   
-        """ Iterate over any argument which is a Delayable. """ 
-        if self.arguments is None:
-            return iter(())
-
-        arguments = self.arguments.arguments
-        for arg in arguments.values():
-            if isinstance(arg, Delayable):
-                yield arg
-            elif isinstance(arg, Sequence):
-                for item in arg:
-                    if isinstance(item, Delayable):
-                        yield item
-            elif isinstance(arg, dict):
-                for item in arg.values():
-                    if isinstance(item, Delayable):
-                        yield item
+        arguments = self.arguments.signature.bind(*args, **kwargs)
+        return self.from_arguments(arguments)
 
     def __iter__(self) -> Iterator[Delayable]:
         """ Iterate over any elements of the Delayable"""
-        yield from self._iter()
+        yield from self.walk()
 
     def __getattr__(self, name: str) -> Any:
-        return self.arguments.arguments[name]
-
-# @dataclasses.dataclass(frozen=True)
-# class SymbolNamespace(DelayableNamespace):
-#     def clone(self, recurse: bool = False) -> Symbol:
-#         return self.expr
-    
-#     def __iter__(self) -> Iterator[Symbol]:
-#         return (self.expr,)
-
-
-# @dataclasses.dataclass(frozen=True)
-# class UnPackNamespace(DelayableNamespace):
-#     target: Delayable = dataclasses.field(default=...)
-#     is_map: bool = False
-
-#     def __post_init__(self) -> None:
-#         if self.target is None or not isinstance(self.target, Delayable):
-#             raise ValueError("target must be a Delayable.")
-#         if not isinstance(self.target, Delayable):
-#             raise TypeError(f"target must be a Delayable, got {type(self.target)}.")
-
-#     def clone(self, recurse: bool = False) -> _Unpack:
-#         if recurse:
-#             target = self.target.clone(recurse=True)
-#         else:
-#             target = self.target
-
-#         return _Unpack(target, self.is_map)
-
-#     def __iter__(self) -> Iterator[Delayable]:
-#         yield (self.target,)
-
-
-# @dataclasses.dataclass(frozen=True)
-# class FNamespace(DelayableNamespace):
-#     op: Callable[..., Any] = dataclasses.field(default=...)
-#     args: tuple[Any, ...] = dataclasses.field(default_factory=tuple)
-#     kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
-
-#     def clone_replacing(self, old_child, new_child):
-#         new_args = []
-#         for a in self.args:
-#             if a.fae.name == old_child:
-#                 print("adding new child", new_child.fae.modifiers)
-#                 new_args.append(new_child)
-#             else:
-#                 new_args.append(a)
-#         new_kwargs = {k: (new_child if v.fae.name == old_child else v) for k, v in self.kwargs.items()}
-#         out = F(self.op, *new_args, **new_kwargs)
-
-#         fae = dataclasses.replace(out.fae, modifiers=self.modifiers, name=self.name, group=self.group)
-#         out.fae = fae
-#         return out
-
-#     def clone(self, recurse: bool = False) -> F:
-#         if recurse:
-#             args = []
-#             for arg in self.args:
-#                 if isinstance(arg, Delayable):
-#                     args.append(arg.clone(recurse=True))
-#                 else:
-#                     args.append(arg)
-
-#             kwargs = {}
-#             for k, v in self.kwargs.items():
-#                 if isinstance(v, Delayable):
-#                     kwargs[k] = v.clone(recurse=True)
-#                 else:
-#                     kwargs[k] = v
-
-#         return F(self.op, *args, **kwargs)
-
-#     def __iter__(self) -> Iterator[Any]:
-#         yield from self.args
-#         yield from self.kwargs.values()
-
-
-# @dataclasses.dataclass(frozen=True)
-# class ChainNamespace(DelayableNamespace):
-#     ops: tuple[Delayable, ...] = dataclasses.field(default_factory=tuple)
-
-#     def clone(self, recurse: bool = False) -> Chain:
-#         if recurse:
-#             ops = tuple(op.clone(recurse=True) for op in self.ops)
-#         else:
-#             ops = self.ops
-#         return Chain(*ops)
-
-#     def __iter__(self) -> Iterator[Delayable]:
-#         return iter(self.ops)
-
-#     def __getitem__(self, key: int) -> Delayable:
-#         return self.ops[key]
-
-#     def __len__(self) -> int:
-#         return len(self.ops)
-
-#     def clone_replacing(self, old_child, new_child):
-#         new_ops = tuple(new_child if op.fae.name == old_child else op for op in self.ops)
-#         out = Chain(*new_ops)
-#         fae = dataclasses.replace(out.fae, modifiers=self.modifiers, name=self.name, group=self.group)
-#         out.fae = fae
-#         return out
+        out = self.arguments.arguments[name]
+        if isinstance(out, Delayable):
+            return out.fae
+        return out
 
 
 class Delayable:
@@ -1313,175 +1268,24 @@ class Wire:
 
 
 
-class IF(_OpActionMixin, Delayable):
-    def __init__(
-        self, 
-        condition: bool | Symbol | F,
-        then_: Delayable,
-        else_: Optional[Delayable] = None
-    ) -> None:
-        self._condition = condition
-        self._then_ = then_
-        self._else_ = else_
-
-    def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
-        if isinstance(self._condition, bool):
-            condition = self._condition
-        else:
-            condition = data | self.condition
-
-        if condition:
-            return data | self._then_
-        else:
-            if self._else_ is not None:
-                return data | self._else_
-            else:
-                return data
-
 
 class At:
+    """
+    Used in conjunction with modifiers to specify where at in the expression tree to 
+    apply the modifiers.
+    """
     def __init__(self, lookup: Optional[str] = None, *modifiers: Modifier) -> None:
         self.lookup = lookup
         self.modifiers = modifiers
 
-    def __rmod__(self, other: Delayable) -> Delayable:
-        if not isinstance(other, Delayable):
-            return NotImplemented
-        walker = Coroutine(walk(other, self.lookup))
-        target = walker.start()
-        # Apply modifiers to the found node
-
-        # TODO: need to support multiple modifiers, currently its being overridden
-        new_node = target  # clone/modify as needed
-        for modifier in self.modifiers:
-            new_node = new_node.fae.append_modifier(modifier)
-
-        new_root = walker.send(new_node)
-        return new_root
-        # parts = deque(self.lookup.split("."))
-        # found_nodes = [other]
-        # while parts:
-        #     name = parts.popleft()
-        #     node = found_nodes.pop()
-        #     for expr in node.fae:
-        #         if expr.fae.name == name:
-        #             current_node = expr
-        #             break
-        #     else:
-        #         raise ValueError(f"No expression with name matching{self.lookup} found in {other}.")
-
-        # new_node =current_node.fae.append_modifiers(*self.modifiers)
+    def __rmod__(self, root: Delayable) -> Delayable:
         
+        def callback(node: Delayable) -> Delayable:
+            return node.fae.append(*self.modifiers)
 
+        if not isinstance(root, Delayable):
+            return NotImplemented
+            # The return value (new root)is stored in the StopIteration exception.
+            # https://peps.python.org/pep-0380/#use-of-stopiteration-to-return-values
+        return root.fae.find(self.lookup, callback=callback)
 
-
- 
-
-class Modifier(abc.ABC):
-    """ 
-    Base class for modifiers.
-    """
-    @abstractmethod
-    def on_init(self, node: Delayable) -> None:
-        pass
-
-    @abstractmethod
-    def on_build(self) -> Any:
-        """
-        Logic used to specify the new expression to be used.
-        """
-
-    @abstractmethod
-    def on_resolve(self, result: Any) -> None:
-        """
-        Called at resolve time, which the modify can cache or use the result of the node.
-        """
-
-
-        # for expr in other.fae:
-        #     if expr.fae.name 
-
-
-class Record:
-    def __init__(self, pattern: str | Sequence[str] = None, output: FVar = None) -> None:
-        self.pattern = pattern
-        self.output = output
-
-    def on_init(self, node: Delayable) -> None:
-        pass
-
-    def on_build(self) -> Any:
-        pass
-
-    def on_resolve(self, result: Any) -> None:
-        pass
-
-    # def __rmod__(self, expr: Delayable) -> RecordMod:
-    #     """
-    #     Finds items in expr which match the pattern.
-    #     """
-    #     return RecordMod(expr, self.output)
-
-
-# class RecordMod(Modifier):
-#     """ 
-#     A wrapper to record the output of a delayable expression. The cached value is overwritten 
-#     everytime the expression is evaluated. Optionally, the output can be specified to be saved into
-#     a specific FVar.
-#     """
-#     def __init__(self, expr: Delayable, output: FVar = None) -> None:
-#         self._fae_expr = expr
-#         self._fae_cache = _NoValue()
-#         self._fae_output = output
-
-#     def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
-#         self._cached_value = self._fae_expr._resolve(_default, **kwargs)
-#         return self._cached_value
-
-
-class Coroutine:
-    def __init__(self, gen):
-        self._gen = gen
-        self.alive = True
-        self.value = None
-
-    def start(self):
-        self.value = next(self._gen)
-        return self.value
-
-    def send(self, val):
-        try:
-            self.value = self._gen.send(val)
-        except StopIteration as e:
-            self.value = e.value
-            self.alive = False
-        return self.value
-
-
-def _walk_recursive(node, parts):
-    """
-    Walk down the tree along `parts`. When we reach the target,
-    yield it. The caller sends back a modified version. Each level
-    then rebuilds its parent with the new child on the way back up.
-    """
-    if not parts:
-        # Reached the target — pause here.
-        # yield sends the target out; send() brings the replacement in.
-        replacement = yield node
-        return replacement
-
-    name, *rest = parts
-    for child in node.fae:
-        if child.fae.name == name:
-            # Recurse deeper. yield from delegates the yield/send
-            # through the entire recursive chain.
-            new_child = yield from _walk_recursive(child, rest)
-            out = node.fae.clone_replacing(name, new_child)
-            return out
-
-    raise ValueError(f"No node named '{name}' found.")
-
-
-def walk(root, path):
-    parts = path.split(".")
-    return (yield from _walk_recursive(root, parts))
