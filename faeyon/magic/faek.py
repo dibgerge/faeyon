@@ -10,52 +10,56 @@ from .spells import (
     FList, 
     FDict, 
     A, 
-    X, 
+    X,
+    I,
+    Symbol,
     FVar, 
     Delayable,
+    DelayedModule,
     _new_instance
 )
 
 from faeyon.utils import Singleton
-  
 
-class FState:
-    """ A simple container which generate fVar on demand. """
-    def __init__(self):
-        self._states_ = {}
+
+
+# class FState:
+#     """ A simple container which generate fVar on demand. """
+#     def __init__(self):
+#         self._states_ = {}
     
-    def __getattr__(self, name):
-        if name in self._states_:
-            return self._states_[name]
-        fvar = FVar()
-        self._states_[name] = fvar
-        return fvar
+#     def __getattr__(self, name):
+#         if name in self._states_:
+#             return self._states_[name]
+#         fvar = FVar()
+#         self._states_[name] = fvar
+#         return fvar
 
-    def reset(self):
-        self._states_.clear()
+#     def reset(self):
+#         self._states_.clear()
     
-    def __iter__(self):
-        return iter(self._states_.items())
+#     def __iter__(self):
+#         return iter(self._states_.items())
     
-    def collect(self):
-        out = {}
-        for k, v in self:
-            try:
-                out[k] = +v
-            except ValueError:
-                pass
-        return out
+#     def collect(self):
+#         out = {}
+#         for k, v in self:
+#             try:
+#                 out[k] = +v
+#             except ValueError:
+#                 pass
+#         return out
 
 
-def _new_module(cls, *args, **kwargs):
-    a = A(*args, **kwargs)
+# def _new_module(cls, *args, **kwargs):
+#     a = A(*args, **kwargs)
 
-    if a.is_resolved:
-        instance = _new_instance(cls, *args, **kwargs)
-        super(cls, instance).__setattr__("fstate", FState())
-        return instance
-    else:
-        return F(cls, *args, **kwargs)
+#     if a.is_resolved:
+#         instance = _new_instance(cls, *args, **kwargs)
+#         # super(cls, instance).__setattr__("fstate", FState())
+#         return instance
+#     else:
+#         return F(cls, *args, **kwargs)
 
 
 def __new__(cls, *args, **kwargs):
@@ -66,68 +70,78 @@ def __new__(cls, *args, **kwargs):
     When any of the arguments is of type `FList` or `FDict`, special handing is applied to 
     generate clones.
     """
-    try:
-        kwargs_keys, kwargs_values = zip(*kwargs.items())
-    except ValueError:
-        kwargs_keys, kwargs_values = [], []
+    for arg in itertools.chain(args, kwargs.values()):
+        if isinstance(arg, Delayable):
+            if not isinstance(arg, I):
+                raise ValueError("The only delayable supported in Module init is the `I` Symbol.")
+
+            return DelayedModule(cls, *args, **kwargs)
+        
+    return _new_instance(cls, *args, **kwargs)
+
+
+    # try:
+    #     kwargs_keys, kwargs_values = zip(*kwargs.items())
+    # except ValueError:
+    #     kwargs_keys, kwargs_values = [], []
     
-    raveled_args = []
-    num_flist = 0
-    num_fdict = 0
-    fkeys = None
-    flen = None
-    for arg in itertools.chain(args, kwargs_values):
-        if isinstance(arg, FList):
-            num_flist += 1
-            arg_value = arg.shed()
+    # raveled_args = []
+    # num_flist = 0
+    # num_fdict = 0
+    # fkeys = None
+    # flen = None
+    # for arg in itertools.chain(args, kwargs_values):
+    #     if isinstance(arg, FList):
+    #         num_flist += 1
+    #         arg_value = arg.shed()
 
-            if flen is None:
-                flen = len(arg_value)
-            elif flen != len(arg_value):
-                raise ValueError("All arguments of type `FList` must have the same length.")
+    #         if flen is None:
+    #             flen = len(arg_value)
+    #         elif flen != len(arg_value):
+    #             raise ValueError("All arguments of type `FList` must have the same length.")
 
-            raveled_args.append(arg_value)
-        elif isinstance(arg, FDict):
-            num_fdict += 1
-            arg_value = arg.shed()
+    #         raveled_args.append(arg_value)
+    #     elif isinstance(arg, FDict):
+    #         num_fdict += 1
+    #         arg_value = arg.shed()
 
-            if fkeys is None:
-                fkeys = list(arg_value.keys())
-                flen = len(fkeys)
-            else:
-                if set(fkeys) != set(arg_value.keys()):
-                    raise ValueError("All arguments of type `FDict` must have the same keys.")
+    #         if fkeys is None:
+    #             fkeys = list(arg_value.keys())
+    #             flen = len(fkeys)
+    #         else:
+    #             if set(fkeys) != set(arg_value.keys()):
+    #                 raise ValueError("All arguments of type `FDict` must have the same keys.")
 
-            raveled_args.append([arg_value[k] for k in fkeys])
-        else:
-            raveled_args.append(itertools.repeat(arg))
+    #         raveled_args.append([arg_value[k] for k in fkeys])
+    #     else:
+    #         raveled_args.append(itertools.repeat(arg))
 
-    if num_flist > 0 and num_fdict > 0:
-        raise ValueError("Cannot mix `FList` and `FDict` arguments. Choose one.")
+    # if num_flist > 0 and num_fdict > 0:
+    #     raise ValueError("Cannot mix `FList` and `FDict` arguments. Choose one.")
 
-    num_fae = max(num_flist, num_fdict)
+    # num_fae = max(num_flist, num_fdict)
 
-    # No argument parametrization, return a regular nn.Module instance
-    if num_fae == 0:
-        return _new_module(cls, *args, **kwargs)
+    # # No argument parametrization, return a regular nn.Module instance
+    # if num_fae == 0:
+    #     return _new_module(cls, *args, **kwargs)
 
-    nkeys = len(kwargs_keys)
-    nargs = len(raveled_args)
-    args = [val[:nargs-nkeys] for val in zip(*raveled_args)]
-    kwargs = [dict(zip(kwargs_keys, val[nargs-nkeys:])) for val in zip(*raveled_args)]
+    # nkeys = len(kwargs_keys)
+    # nargs = len(raveled_args)
+    # args = [val[:nargs-nkeys] for val in zip(*raveled_args)]
+    # kwargs = [dict(zip(kwargs_keys, val[nargs-nkeys:])) for val in zip(*raveled_args)]
 
-    out = []
-    for c_args, c_kwargs in zip(args, kwargs):
-        inst = _new_module(cls, *c_args, **c_kwargs)
-        # Call __init__ on each instance since it will not be called when different class type
-        # is returned in __new__
-        cls.__init__(inst, *c_args, **c_kwargs)
-        out.append(inst)
+    # out = []
+    # for c_args, c_kwargs in zip(args, kwargs):
+    #     inst = _new_module(cls, *c_args, **c_kwargs)
+    #     # Call __init__ on each instance since it will not be called when different class type
+    #     # is returned in __new__
+    #     cls.__init__(inst, *c_args, **c_kwargs)
+    #     out.append(inst)
     
-    if fkeys is not None:
-        out = dict(zip(fkeys, out))
+    # if fkeys is not None:
+    #     out = dict(zip(fkeys, out))
 
-    return out
+    # return out
 
 
 def __default_new__(cls, *args, **kwargs):
@@ -224,7 +238,6 @@ def clone[T: nn.Module](self: T, *args: Any, **kwargs: Any) -> T:
 
 
 def _resolved_call(self, *args, **kwargs):
-    self.fstate.reset()
     return faek.module__call__(self, *args, **kwargs)
 
 
@@ -325,23 +338,23 @@ class Faek(metaclass=Singleton):
         nn.Module.from_file = classmethod(from_file)
         nn.Module.load = load
 
-        # for opinfo in get_opinfo(type=OperatorType.BINARY | OperatorType.RBINARY):
-        #     setattr(
-        #         nn.Module, 
-        #         opinfo.attr_name, 
-        #         getattr(
-        #             current_module, 
-        #             opinfo.attr_name, 
-        #             delayed_binary_method(opinfo.attr_name, opinfo.is_right)
-        #         )
-        #     )
+        for opinfo in get_opinfo(type=OperatorType.BINARY | OperatorType.RBINARY):
+            setattr(
+                nn.Module, 
+                opinfo.attr_name, 
+                getattr(
+                    current_module, 
+                    opinfo.attr_name, 
+                    delayed_binary_method(opinfo.attr_name, opinfo.is_right)
+                )
+            )
                 
-        # for opinfo in get_opinfo(type=OperatorType.UNARY):
-        #     setattr(
-        #         nn.Module, 
-        #         opinfo.attr_name, 
-        #         getattr(current_module, opinfo.attr_name, delayed_unary_method(opinfo.attr_name))
-        #     )
+        for opinfo in get_opinfo(type=OperatorType.UNARY):
+            setattr(
+                nn.Module, 
+                opinfo.attr_name, 
+                getattr(current_module, opinfo.attr_name, delayed_unary_method(opinfo.attr_name))
+            )
 
         self._is_on = True
 

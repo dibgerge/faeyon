@@ -1,6 +1,4 @@
 from __future__ import annotations
-from ast import USub
-from sympy.core import N
 import torch
 import abc
 import dataclasses
@@ -8,15 +6,15 @@ import sys
 import inspect
 import enum
 import itertools
-from collections.abc import Callable, Iterator, Iterable, Sequence
-from typing import Any, Optional, overload
-from types import NoneType
-from abc import ABC, abstractmethod
-from collections import defaultdict, deque
 import re
+
+from abc import ABC, abstractmethod
+from collections import defaultdict
+from collections.abc import Callable, Iterator, Sequence
+from typing import Any, Optional, overload
+
 from torch import nn
-from torch import optim
-from ._opinfo import get_opinfo, OpInfo
+from ._opinfo import get_opinfo, OpInfo, _getitem
 
 
 # TODO: This will be expanded to include other modifier types, like optimizer, etc...
@@ -69,7 +67,7 @@ class DelayableNamespace:
             raise ValueError("`expr` cannot be updated.")
         
         clone = self.from_arguments(kwargs.pop("arguments", self.arguments))
-        clone.fae = dataclasses.replace(self, **kwargs)
+        clone.fae = dataclasses.replace(clone.fae, **kwargs)
         return clone
 
     def append(self, *modifiers: Any) -> Delayable:
@@ -99,43 +97,65 @@ class DelayableNamespace:
         """
         pass
 
-    def find(self, path, callback: Optional[Callable[[Delayable], Delayable]] = None):
+    def find(
+        self, 
+        pattern: str | type[Delayable], 
+        callback: Optional[Callable[[Delayable], Delayable]]
+    ) -> Delayable:
         """
         Walks to a given path, and returns the node. If a new node is received from the caller, 
         it replaces the node with the new node, and copies all the node's ancestors.
+
+        # TODO: update to properly handle regex (need to build path rather than split it...)
         """
-        def _recurse(node, parts):
+        def _recurse(node: Delayable, current_path: str | type[Delayable]):
             """
             Walk down the tree along `parts`. When we reach the target,
             yield it. The caller sends back a modified version. Each level
             then rebuilds its parent with the new child on the way back up.
             """
-            if not parts:
-                return callback(node)
-
-            name, *rest = parts    
             walker = node.fae.walk()
             try:
                 child = next(walker)
                 while True:
-                    if child.fae.name and re.fullmatch(name, child.fae.name):
-                        new_child = _recurse(child, rest)
-                        child = walker.send(new_child)
+                    new_child = None
+                    if isinstance(pattern, str):
+                        if child.fae.name is None:
+                            child_path = f"{current_path}._"
+                        else:
+                            child_path = f"{current_path}.{child.fae.name}"
+
+                        if re.fullmatch(pattern, child_path):
+                            new_child = callback(child)
+                        else:
+                            new_child = _recurse(child, child_path)
                     else:
-                        child = walker.send(None)
+                        res = _recurse(child, pattern)
+                        base = child if res is None else res
+
+                        if isinstance(child, pattern):
+                            modified = callback(base)
+                            new_child = modified if modified is not None else base
+                        else:
+                            new_child = res
+                    child = walker.send(new_child)
             except StopIteration as e:
                 # The return value (new root)is stored in the StopIteration exception.
                 # https://peps.python.org/pep-0380/#use-of-stopiteration-to-return-values
                 return e.value
 
             return node
-            
-        return _recurse(self.expr, path.split("."))
+        
+        if isinstance(pattern, str):
+            return _recurse(self.expr, self.name)
+        else:
+            return _recurse(self.expr, pattern)
         
     def walk(self) -> Iterator[Any]:
         """ 
-        Iterate over any argument which is a Delayable. Returns a New Delayable if any arguments 
-        were modified, otherwise returns the original Delayable.
+        Iterate over children of current Delayable. Uses coroutines to receive an updated version 
+        of the child. Returns a New Delayable if any arguments were modified, otherwise returns 
+        the original Delayable.
         """ 
         def check(arg: Any) -> bool:
             if isinstance(arg, Delayable):
@@ -178,12 +198,19 @@ class DelayableNamespace:
                 kwargs[key] = new_arg
             else:
                 args.append(new_arg)
-                    
+
         if not changed:
             return self.expr
 
         arguments = self.arguments.signature.bind(*args, **kwargs)
         return self.from_arguments(arguments)
+
+    def collect(self) -> Any:
+        """
+        Collect all the cached results of the Delayable and its children.
+        TODO:
+        """
+        pass
 
     def __iter__(self) -> Iterator[Delayable]:
         """ Iterate over any elements of the Delayable"""
@@ -235,24 +262,14 @@ class Delayable:
         The modulate operator `%` is used to name the operation. It can also be used to modify Delayables, for example, set Optimizer to parameters in delayable modules, etc...
         (TODO: How to handle general modifiers, e.g. optimizer.)
         """
-        if not isinstance(modifier, (str, At)):
-            return NotImplemented
-
         if isinstance(modifier, str):
             if "." in modifier:
                 raise ValueError("Modifier cannot contain a period.")
-
-            fae = dataclasses.replace(self.fae, name=modifier)
-            # out = self.clone()
-            # out.fae = fae
-            # TODO: This should not be inplace
-            self.fae = fae
-            return self
-        elif isinstance(modifier, At):
-            return modifier.__rmod__(self)
-            
-            #TODO: I need a way to copy current Delayable
-        return NotImplemented
+            out = self.fae.clone()
+            out.fae = dataclasses.replace(out.fae, name=modifier)
+            return out
+        else:
+            return modifier.__rmod__(self) 
         
     def __rmod__[T: Delayable](self: T, other: str) -> T:
         """
@@ -262,9 +279,10 @@ class Delayable:
             raise TypeError(f"Modifier should be to the right of the Delayable, not the left.")
         return NotImplemented
         
-    def __rshift__(self, other: Delayable) -> Chain:
+    def __rshift__(self, other: Delayable | int) -> Chain:
         if isinstance(other, int):
             # TODO: Do cloning of Module types...
+            # iterate every node in the tree
             pass
         
         if not isinstance(other, Delayable):
@@ -536,6 +554,16 @@ class A(Symbol):
     pass
 
 
+class _IndexMeta(_SymbolMeta):
+    def __getitem__(self, data: Sequence[Any]) -> int:
+        return F(_getitem, data, I)
+
+
+class I(metaclass=_IndexMeta):
+    """ A special symbol that represents an index."""
+    pass
+    
+
 class _Unpack(Delayable):
     """
     Represents an unpacking operation (*X). When resolved, unpacks the data as *args.
@@ -581,7 +609,7 @@ class F(_OpActionMixin, Delayable):
             if not isinstance(v, _Unpack):
                 resolved = {k: resolved}
             
-            # Need to do this because of the unpacking operation might have same key multiple times.
+            # Need to do this because the unpacking operation might have same key multiple times.
             for k in resolved:
                 if k in resolved_kwargs:
                     raise TypeError(f"{self.fae.op} got multiple values for argument '{k}'.")
@@ -618,6 +646,75 @@ class F(_OpActionMixin, Delayable):
     def __repr__(self) -> str:
         return str(self)
 
+
+class Chain(_OpActionMixin, Delayable):
+    """
+    A Chain is a sequence of operations: `op0 >> op1 << op2 >> ... >> opn`.
+    """
+    def __init__(self, *ops: Delayable) -> None:
+        if not ops:
+            raise ValueError("Chain must have at least one operation.")
+        
+        fae_ops = []
+        for op in ops:
+            if isinstance(op, Delayable):
+                fae_ops.append(op)
+            else:
+                raise ValueError("All arguments must be of subtype `Delayable` or `nn.Module`.")
+        super().__init__(*fae_ops)
+
+    def _resolve(self, _default: Any = _NoValue, /, **kwargs: Any) -> Any:
+        """
+        data | chain. 
+
+        - The first item in chain will be resolved like any F, based on the data provided.
+        - X is a special symbol that represents the output of the previous item in chain.
+          So if X is given as input, it will be replaced with the output of the 
+          previous item in chain. If you have arguments needed downstream, use another symbol.
+        """       
+        x = self.fae.ops[0]._resolve(_default, **kwargs)
+        kwargs.pop("X", None)
+        for op in self.fae.ops[1:]:
+            x = op._resolve(_default, X=x, **kwargs)
+        return x
+
+    def __lshift__(self, other: Delayable) -> Chain:
+        return Chain(*self.fae.ops[:-1], self.fae.ops[-1] << other)
+
+    def __rshift__(self, other: Any) -> Any:
+        if self.fae.has_modifiers:
+            return super().__rshift__(other)
+
+        if isinstance(other, Chain):
+            return Chain(*self.fae.ops, *other.fae.ops)
+        else:
+            return Chain(*self.fae.ops, other)
+
+    def __len__(self) -> int:
+        return len(self.fae.ops)
+
+    def __repr__(self) -> str:
+        out = []
+        for item in self.fae.ops:
+            out.append(repr(item))  
+        return " >> ".join(out)
+
+
+class DelayedModule(F):
+    """
+    This is for modules whose constructor arguments are delayables.
+    """
+    def __init__(self, module: type[nn.Module], /, *args, **kwargs) -> None:
+        super().__init__(module, *args, **kwargs)
+        self._is_resolved = False
+
+    def __rshift__(self, other: Delayable | int) -> DelayedModule:
+        if not isinstance(other, int):
+            return super().__rshift__(other)
+        
+        
+
+    
 
 class Input:
     """
@@ -691,10 +788,6 @@ class Input:
         return f"A({', '.join(arguments)})"
 
 
-# Alias for Input
-I = Input
-
-
 class Substitute:
     """
     Performs substitution of specific symbols with their values.
@@ -710,43 +803,6 @@ class Substitute:
 
     def __or__(self, other: Delayable) -> Any:
         return other._resolve(self._kwargs, symbols=[X])
-
-
-
-def conjure(x: Any, data: Any, fast: bool = False) -> Any:
-    """
-    Evaluate the operations stored in the `X` buffer. If the input is not an instance of `X`,
-    return it as is.
-    """
-
-    if not fast:
-        if isinstance(x, Delayable):
-            return x._using(data)
-
-        if not isinstance(x, X):
-            return x
-
-    inputs = data
-    for name, args, kwargs in x:
-        # Recursively evaluate the arguments.
-        args = tuple(
-            conjure(arg, inputs, fast=True) if isinstance(arg, Delayable) else arg
-            for arg in args
-        )
-        kwargs = {
-            k: conjure(v, inputs, fast=True) if isinstance(v, Delayable) else v
-            for k, v in kwargs.items()
-        }
-
-        if name == "__getattr__":
-            data = getattr(data, args[0])
-        elif name == "__getitem__":
-            data = data[args[0]]
-        elif name == "__call__":
-            data = data(*args, **kwargs)
-        else:
-            data = getattr(data, name)(*args, **kwargs)
-    return data
 
 
 def _new_instance(cls, *args, **kwargs):
@@ -982,7 +1038,7 @@ class FList(_OpActionMixin, Delayable):
     TODO: Make FList generic e.g. Flist[Delayable, etc..]
     """
     def __init__(self, expressions: list[Delayable]) -> None:
-        self._fae_expr = expressions
+        super().__init__(expressions=expressions)
 
     def _op_action(self, name: str, *args: Any, **kwargs: Any) -> FList:
         opinfo = get_opinfo(attr_name=name)
@@ -992,51 +1048,51 @@ class FList(_OpActionMixin, Delayable):
         for arg in itertools.chain(args, kwargs.values()):
             if isinstance(arg, FList):
                 n += 1
-                raveled.append(arg._fae_expr)
+                raveled.append(arg.fae.expressions)
             elif isinstance(arg, FDict):
                 raise ValueError("Cannot mix `FList` and `FDict` arguments. Choose one.")
             else:
                 raveled.append(itertools.repeat(arg))
 
         if n == 0:
-            return FList([F(opinfo, item, *args, **kwargs) for item in self._fae_expr])
+            return FList([F(opinfo, item, *args, **kwargs) for item in self.fae.expressions])
 
         raveled = zip(*raveled)
         out = []
-        for item, arg in zip(self._fae_expr, raveled):
+        for item, arg in zip(self.fae.expressions, raveled):
             items_args = arg[:len(args)]
             items_kwargs = dict(zip(kwargs.keys(), arg[len(args):]))
             out.append(F(opinfo, item, *items_args, **items_kwargs))
         return FList(out)
 
     def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
-        return [item._resolve(_default, **kwargs) for item in self._fae_expr]
+        return [item._resolve(_default, **kwargs) for item in self.fae.expressions]
 
     def __lshift__(self, other: Delayable) -> FList:       
         if isinstance(other, FList):
             out = []
             if len(other) == len(self):
-                out = [left >> right for left, right in zip(self._fae_expr, other._fae_expr)]
+                out = [left >> right for left, right in zip(self.fae.expressions, other.fae.expressions)]
             elif len(other) == 1:
-                right = other._fae_expr[0]
-                out = [left >> right for left in self._fae_expr]
+                right = other.fae.expressions[0]
+                out = [left >> right for left in self.fae.expressions]
             elif len(self) == 1:
-                left = self._fae_expr[0]
-                out = [left >> right for right in other._fae_expr]  
+                left = self.fae.expressions[0]
+                out = [left >> right for right in other.fae.expressions]  
             else:
                 return NotImplemented
 
             return FList(out)
         elif isinstance(other, (Symbol, F)):
-            return FList([expr >> other for expr in self._fae_expr])
+            return FList([expr >> other for expr in self.fae.expressions])
         else:
             return NotImplemented
         
     def __str__(self) -> str:
-        return str(self._fae_expr)
+        return str(self.fae.expressions)
 
     def __len__(self) -> int:
-        return len(self._fae_expr)
+        return len(self.fae.expressions)
 
     def __repr__(self) -> str:
         return str(self)
@@ -1109,183 +1165,108 @@ class FDict(_OpActionMixin, Delayable):
         return len(self._fae_expr)
 
 
-class Chain(_OpActionMixin, Delayable):
-    """
-    A Chain is a sequence of operations: `op0 >> op1 << op2 >> ... >> opn`.
-    """
-    def __init__(self, *ops: Delayable) -> None:
-        if not ops:
-            raise ValueError("Chain must have at least one operation.")
-        
-        fae_ops = []
-        for op in ops:
-            if isinstance(op, Delayable):
-                fae_ops.append(op)
-            else:
-                raise ValueError("All arguments must be of subtype `Delayable` or `nn.Module`.")
-        super().__init__(*fae_ops)
+# class W(enum.Enum):
+#     Fanout = "Fanout"
+#     Pass = "Pass"
+#     Mux = "Mux"
 
-    def _resolve(self, _default: Any = _NoValue, /, **kwargs: Any) -> Any:
-        """
-        data | chain. 
-
-        - The first item in chain will be resolved like any F, based on the data provided.
-        - X is a special symbol that represents the output of the previous item in chain.
-          So if X is given as input, it will be replaced with the output of the 
-          previous item in chain. If you have arguments needed downstream, use another symbol.
-        """       
-        x = self.fae.ops[0]._resolve(_default, **kwargs)
-        kwargs.pop("X", None)
-        for op in self.fae.ops[1:]:
-            x = op._resolve(_default, X=x, **kwargs)
-        return x
-
-    def __lshift__(self, other: Delayable) -> Chain:
-        return Chain(*self.fae.ops[:-1], self.fae.ops[-1] << other)
-
-    def __rshift__(self, other: Any) -> Any:
-        if self.fae.has_modifiers:
-            return super().__rshift__(other)
-
-        if isinstance(other, Chain):
-            return Chain(*self.fae.ops, *other.fae.ops)
-        else:
-            return Chain(*self.fae.ops, other)
-
-    def __len__(self) -> int:
-        return len(self.fae.ops)
-
-    def __repr__(self) -> str:
-        out = []
-        for item in self.fae.ops:
-            out.append(repr(item))  
-        return " >> ".join(out)
+#     def __call__(self, *args, **kwargs) -> Any:
+#         cls = getattr(sys.modules[__name__], f"_{self.name}")
+#         return cls(*args, **kwargs)
 
 
-
-class W(enum.Enum):
-    Fanout = "Fanout"
-    Pass = "Pass"
-    Mux = "Mux"
-
-    def __call__(self, *args, **kwargs) -> Any:
-        cls = getattr(sys.modules[__name__], f"_{self.name}")
-        return cls(*args, **kwargs)
+# class Wiring(ABC):
+#     @abstractmethod
+#     def __getitem__(self, key: int) -> Any:
+#         pass
 
 
-class Wiring(ABC):
-    @abstractmethod
-    def __getitem__(self, key: int) -> Any:
-        pass
+# class _Fanout(Wiring):
+#     def __init__(self, obj: Any) -> None:
+#         self.obj = obj
+
+#     def __getitem__(self, key: int) -> Any:
+#         """Basic usage of Fanout only needs to support integer keys, and no slices."""
+#         if isinstance(self.obj, Delayable):
+#             return self.obj >> X[key]
+
+#         return self.obj[key]
 
 
-class _Fanout(Wiring):
-    def __init__(self, obj: Any) -> None:
-        self.obj = obj
+# class _Pass(Wiring):
+#     def __init__(self, obj: Any) -> None:
+#         self.obj = obj
 
-    def __getitem__(self, key: int) -> Any:
-        """Basic usage of Fanout only needs to support integer keys, and no slices."""
-        if isinstance(self.obj, Delayable):
-            return self.obj >> X[key]
-
-        return self.obj[key]
+#     def __getitem__(self, key: int) -> Any:
+#         return self.obj
 
 
-class _Pass(Wiring):
-    def __init__(self, obj: Any) -> None:
-        self.obj = obj
+# class _Mux(Wiring):
+#     def __init__(self, s0: Any, s1: Any) -> None:
+#         self.s0 = s0
+#         self.s1 = s1
 
-    def __getitem__(self, key: int) -> Any:
-        return self.obj
+#     def __getitem__(self, key: int) -> Any:
+#         if key == 0:
+#             return self.s0
 
-
-class _Mux(Wiring):
-    def __init__(self, s0: Any, s1: Any) -> None:
-        self.s0 = s0
-        self.s1 = s1
-
-    def __getitem__(self, key: int) -> Any:
-        if key == 0:
-            return self.s0
-
-        return self.s1
+#         return self.s1
 
 
-class Wire:
-    _fanout: dict[str, Iterator]
-    _current_wire: Optional[inspect.BoundArguments]
+# class Wire:
+#     _fanout: dict[str, Iterator]
+#     _current_wire: Optional[inspect.BoundArguments]
 
-    def __init__(self, *args, **kwargs) -> None:
-        self.args = args
-        self.kwargs = kwargs
-        self.reset()
+#     def __init__(self, *args, **kwargs) -> None:
+#         self.args = args
+#         self.kwargs = kwargs
+#         self.reset()
 
-    def reset(self) -> None:
-        self._fanout = {}
-        self._current_wire = None
+#     def reset(self) -> None:
+#         self._fanout = {}
+#         self._current_wire = None
 
-    def init(self, sig: inspect.Signature, *args, **kwargs) -> A:
-        self.reset()
-        bound = sig.bind(*args, **kwargs)
-        bound.apply_defaults()
-        given_wire = sig.bind_partial(*self.args, **self.kwargs)
+#     def init(self, sig: inspect.Signature, *args, **kwargs) -> A:
+#         self.reset()
+#         bound = sig.bind(*args, **kwargs)
+#         bound.apply_defaults()
+#         given_wire = sig.bind_partial(*self.args, **self.kwargs)
 
-        # Replace fanout arguments with their first value in bound
-        # update given_wire with bound arguments for passthru arguments only, or if argument does
-        # not exist in given_wire, add it.
-        for k, v in bound.arguments.items():
-            if k not in given_wire.arguments:
-                given_wire.arguments[k] = v
-            elif not isinstance(given_wire.arguments[k], W):
-                continue
+#         # Replace fanout arguments with their first value in bound
+#         # update given_wire with bound arguments for passthru arguments only, or if argument does
+#         # not exist in given_wire, add it.
+#         for k, v in bound.arguments.items():
+#             if k not in given_wire.arguments:
+#                 given_wire.arguments[k] = v
+#             elif not isinstance(given_wire.arguments[k], W):
+#                 continue
 
-            match given_wire.arguments[k]:
-                case W.Fanout:
-                    self._fanout[k] = iter(v)
-                    bound.arguments[k] = next(self._fanout[k])
-                case W.Pass:
-                    given_wire.arguments[k] = v
+#             match given_wire.arguments[k]:
+#                 case W.Fanout:
+#                     self._fanout[k] = iter(v)
+#                     bound.arguments[k] = next(self._fanout[k])
+#                 case W.Pass:
+#                     given_wire.arguments[k] = v
 
-        self._current_wire = given_wire
-        return A(*bound.args, **bound.kwargs)
+#         self._current_wire = given_wire
+#         return A(*bound.args, **bound.kwargs)
 
-    def step(self, data: Any) -> A:
-        if self._current_wire is None:
-            raise ValueError("No wire has been initialized.")
+#     def step(self, data: Any) -> A:
+#         if self._current_wire is None:
+#             raise ValueError("No wire has been initialized.")
 
-        for k, v in self._fanout.items():
-            try:
-                v = next(v)
-            except StopIteration:
-                raise ValueError(f"Fanout argument {k} has no more values.")
-            else:
-                self._current_wire.arguments[k] = v
+#         for k, v in self._fanout.items():
+#             try:
+#                 v = next(v)
+#             except StopIteration:
+#                 raise ValueError(f"Fanout argument {k} has no more values.")
+#             else:
+#                 self._current_wire.arguments[k] = v
 
-        return data >> A(*self._current_wire.args, **self._current_wire.kwargs)
+#         return data >> A(*self._current_wire.args, **self._current_wire.kwargs)
 
-    def __rrshift__(self, data: Any) -> A:
-        return self.step(data)
-
-
+#     def __rrshift__(self, data: Any) -> A:
+#         return self.step(data)
 
 
-class At:
-    """
-    Used in conjunction with modifiers to specify where at in the expression tree to 
-    apply the modifiers.
-    """
-    def __init__(self, lookup: Optional[str] = None, *modifiers: Modifier) -> None:
-        self.lookup = lookup
-        self.modifiers = modifiers
-
-    def __rmod__(self, root: Delayable) -> Delayable:
-        
-        def callback(node: Delayable) -> Delayable:
-            return node.fae.append(*self.modifiers)
-
-        if not isinstance(root, Delayable):
-            return NotImplemented
-            # The return value (new root)is stored in the StopIteration exception.
-            # https://peps.python.org/pep-0380/#use-of-stopiteration-to-return-values
-        return root.fae.find(self.lookup, callback=callback)
 

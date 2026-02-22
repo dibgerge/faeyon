@@ -1,12 +1,33 @@
 import abc
 
 from typing import Any, Optional
-from faeyon import Delayable, FVar, X
+from faeyon.magic.spells import Delayable
+from faeyon import FVar, X
+
+
+class Modify:
+    """
+    Used in conjunction with modifiers to specify where at in the expression tree to 
+    apply the modifiers.
+    """
+    def __init__(self, lookup: str | type[Delayable], *modifiers: Modifier) -> None:
+        self.lookup = lookup
+        self.modifiers = modifiers
+
+    def __rmod__(self, root: Delayable) -> Delayable:        
+        def callback(node: Delayable) -> Delayable:
+            return node.fae.append(*self.modifiers)
+
+        if not isinstance(root, Delayable):
+            return NotImplemented
+        return root.fae.find(self.lookup, callback=callback)
 
 
 class Modifier(abc.ABC):
     """ 
     Base class for modifiers.
+
+    # TODO: make this a protocol
     """
     @abc.abstractmethod
     def on_init(self, node: Delayable) -> None:
@@ -46,6 +67,7 @@ class Record:
 
 
 class IF:
+    # TODO: this does not work
     def __init__(
         self, 
         condition: bool | Delayable,

@@ -3,11 +3,11 @@ from torch import nn
 from typing import Any, Optional, overload, Iterator, Iterable
 from collections import OrderedDict
 
-from faeyon.magic.spells import ContainerBase, Wire, X, A, Wiring, Chain
+from faeyon.magic.spells import ContainerBase, X, A, Chain
 
 
 class FaeSequential(nn.Module):
-    fae_wire: Optional[Wire]
+    fae_wire: Optional[Chain]
     reports: list[ContainerBase]
 
     @overload

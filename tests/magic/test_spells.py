@@ -1,9 +1,9 @@
 import pytest
 import inspect
 import torch
-from faeyon import A, X, FVar, FList, FDict, F, Wire, W, Chain, At, Record
-from faeyon.magic.spells import conjure, Delayable
-
+from faeyon import A, X, FVar, FList, FDict, F, Chain
+from faeyon.magic.spells import Delayable
+from faeyon.modifiers import Record, Modify
 from tests.common import ConstantLayer
 from pytest import param
 from torch import tensor
@@ -490,6 +490,7 @@ class TestX:
     def test_clone(self):
         expr = X + 1 >> X + 2
         cloned = expr.fae.clone()
+        assert cloned.fae.expr is cloned
 
         for original, cloned in zip(expr.fae, cloned.fae):
             assert original is cloned
@@ -1495,8 +1496,26 @@ def test_modifiers():
         >> ((X / 2) % "baz" + X * X ) % "bar"
         >> X * 10
     ) % "foo"
-
-    out = expr % At("bar.baz", Record())
-    modifiers = out.fae.ops[1].args[0].modifiers
+    record = Record()
+    out = expr % Modify(r"foo\.bar\.baz", record)
+    modifiers = out.fae.ops[1].fae.args[0].fae.modifiers
     assert len(modifiers) == 1
-    assert isinstance(modifiers[0], Record)
+    assert modifiers[0] is record
+
+
+def test_modifiers_type():
+    expr = (
+        X + 2 
+        >> ((X / 2) % "baz" + X * X ) % "bar"
+        >> X * 10
+    ) #% "foo"
+
+    print(expr.fae.expr is expr)
+    return
+    record = Record()
+    out = expr % Modify(F, record)
+    assert out.fae.ops[0].fae.modifiers[0] is record
+    assert out.fae.ops[1].fae.modifiers[0] is record
+    assert out.fae.ops[2].fae.modifiers[0] is record
+    assert out.fae.ops[1].fae.args[0].fae.modifiers[0] is record
+    assert out.fae.ops[1].fae.args[1].fae.modifiers[0] is record

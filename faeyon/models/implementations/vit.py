@@ -9,7 +9,7 @@ from faeyon.nn import (
     head_to_attn_mask,
     Concat
 )
-from faeyon import W, X, F    
+from faeyon import X, F    
 
 
 class ViT(nn.Module):
@@ -149,7 +149,8 @@ class ViT(nn.Module):
                     self.blocks.lnorm_in
                     << self.blocks.attention(
                         X, X, X, 
-                        attn_mask=W.Fanout(attn_mask), 
+                        # TODO: Fix this
+                        #attn_mask=W.Fanout(attn_mask), 
                         need_weights=keep_attn_weights
                     )
                     << self.fstate.attn_weights.if_(keep_attn_weights) @ X[1]
