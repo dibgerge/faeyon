@@ -55,18 +55,30 @@ class DelayableNamespace:
     modifiers: tuple[Any, ...] = dataclasses.field(default_factory=tuple)
     cache: Any = None
 
-    def from_arguments(self, arguments: Optional[inspect.BoundArguments]) -> DelayableNamespace:
-        if arguments is None:
+    def from_arguments(self, *args, **kwargs) -> Delayable:
+        if len(args) == 1 and len(kwargs) == 0:
+            if isinstance(args[0], inspect.BoundArguments):
+                return self.expr.__class__(*args[0].args, **args[0].kwargs)
+        
+        if len(args) == 0 and len(kwargs) == 0:
             return self.expr
-        else:
-            return self.expr.__class__(*arguments.args, **arguments.kwargs)
+        return self.expr.__class__(*args, **kwargs)
 
     def update(self, **kwargs: Any) -> Delayable:
         """ Always return a copy. """
         if "expr" in kwargs:
             raise ValueError("`expr` cannot be updated.")
         
-        clone = self.from_arguments(kwargs.pop("arguments", self.arguments))
+        arguments = kwargs.pop("arguments", self.arguments)
+
+        if isinstance(arguments, inspect.BoundArguments):
+            clone = self.from_arguments(arguments)
+        elif isinstance(arguments, dict):
+            clone = self.from_arguments(*arguments["args"], **arguments["kwargs"])
+        elif arguments is None:
+            clone = self.from_arguments()
+        else:
+            raise ValueError(f"Invalid arguments: {arguments}")
         clone.fae = dataclasses.replace(clone.fae, **kwargs)
         return clone
 
@@ -79,23 +91,40 @@ class DelayableNamespace:
     def has_modifiers(self) -> bool:
         return len(self.modifiers) > 0 or self.name is not None or self.group is not None
 
-    def clone(self, recurse: bool = False) -> DelayableNamespace:
+    def clone(
+        self, 
+        recurse: bool = False, 
+        clone_modules: int | bool = False
+    ) -> DelayableNamespace:
         """ 
         Clone the namespace. If `recurse` is True, also clone any Delayable objects passed to the
         constructor.
         """
-        if not recurse:
-            return self.update()
-        
-        bound = self.walk(callback=lambda x: x.clone(recurse=recurse))
-        return self.expr.__class__(*bound.args, **bound.kwargs)
+        def callback(node: Delayable) -> Delayable:
+            if clone_modules is not False:
+                if isinstance(node, DelayedModule):
+                    if not isinstance(clone_modules, int):
+                        raise ValueError(
+                            "`clone_modules` must be an integer to resolve `DelayedModule` objects."
+                        )
+                    return node._generate(clone_modules)
+                elif isinstance(node, F):
+                    if isinstance(node.fae.args[0], nn.Module):
+                        arguments = {
+                            "args": (node.fae.op, node.fae.args[0].clone(), *node.fae.args[1:]), 
+                            "kwargs": node.fae.kwargs
+                        }
+                        return node.fae.update(arguments=arguments)
 
-    def replace(self, name: str, node: Delayable) -> Delayable:
-        """ 
-        Finds the node with the given name and replaces it with the new node. 
-        This is returns a copy of the current delayable after the replacement.
-        """
-        pass
+            return node.fae.update()
+
+        if not recurse:
+            return callback(self.expr)
+        else:
+            result = self.find(Delayable, callback=callback)
+            if result is None:
+                return self.expr
+            return result
 
     def find(
         self, 
@@ -218,8 +247,6 @@ class DelayableNamespace:
 
     def __getattr__(self, name: str) -> Any:
         out = self.arguments.arguments[name]
-        if isinstance(out, Delayable):
-            return out.fae
         return out
 
 
@@ -281,13 +308,15 @@ class Delayable:
         
     def __rshift__(self, other: Delayable | int) -> Chain:
         if isinstance(other, int):
-            # TODO: Do cloning of Module types...
-            # iterate every node in the tree
-            pass
+            nodes = []
+            for i in range(other):
+                nodes.append(self.fae.clone(recurse=True, clone_modules=i))
+            return Chain(*nodes)
         
-        if not isinstance(other, Delayable):
-            return NotImplemented
-        return Chain(self, other)
+        if isinstance(other, Delayable):
+            return Chain(self, other)
+        
+        return NotImplemented
 
     def __rrshift__(self, other: Any) -> Any:
         """
@@ -687,8 +716,10 @@ class Chain(_OpActionMixin, Delayable):
 
         if isinstance(other, Chain):
             return Chain(*self.fae.ops, *other.fae.ops)
-        else:
+        elif isinstance(other, Delayable):
             return Chain(*self.fae.ops, other)
+        else:
+            return super().__rshift__(other)
 
     def __len__(self) -> int:
         return len(self.fae.ops)
@@ -706,15 +737,15 @@ class DelayedModule(F):
     """
     def __init__(self, module: type[nn.Module], /, *args, **kwargs) -> None:
         super().__init__(module, *args, **kwargs)
-        self._is_resolved = False
-
-    def __rshift__(self, other: Delayable | int) -> DelayedModule:
-        if not isinstance(other, int):
-            return super().__rshift__(other)
         
-        
+    def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
+        raise ValueError("`DelayedModule` cannot be resolved directly.")
 
-    
+    def _generate(self, data: Any) -> F:
+        """ 
+        """
+        return super()._resolve(data)
+
 
 class Input:
     """

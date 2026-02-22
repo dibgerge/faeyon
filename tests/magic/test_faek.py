@@ -45,6 +45,19 @@ def test_faek_as_context_manager():
     faek.on()
 
 
+def test_module_rshift():
+    expr = X + 1 >> nn.Linear(in_features=10, out_features=2)
+    assert isinstance(expr, Chain)
+    assert len(expr) == 2
+
+
+def test_module_rrshift():
+    expr = nn.Linear(in_features=10, out_features=2) >> X + 1
+    assert isinstance(expr, Chain)
+    assert len(expr) == 2
+
+
+
 def test_new_with_flist():
     out_features = [1, 2, 3]
     in_features = [[10, 10, 10], [10, 10, 10], [10, 10, 10], [10, 11, 12]]

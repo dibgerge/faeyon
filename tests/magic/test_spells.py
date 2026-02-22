@@ -2,7 +2,7 @@ import pytest
 import inspect
 import torch
 from faeyon import A, X, FVar, FList, FDict, F, Chain
-from faeyon.magic.spells import Delayable
+from faeyon.magic.spells import Delayable, Symbol
 from faeyon.modifiers import Record, Modify
 from tests.common import ConstantLayer
 from pytest import param
@@ -29,6 +29,16 @@ class TestX:
         x = left >> right
         assert isinstance(x, Chain)
         assert len(x) == 2
+
+    def test_rshift_int(self):
+        """ The right shift operator results in a Chain Object if both arguments are of type X."""
+        from torch import nn
+        
+        x = X + 1 >> nn.Linear(in_features=10, out_features=10) >> 2
+        
+        assert isinstance(x, Chain)
+        assert len(x) == 2
+        print(x)
 
     @pytest.mark.parametrize("expr", [param(X, id="meta"), param(X + 1, id="instance")])
     @pytest.mark.parametrize("input", [param(1, id="int"), param(tensor(1), id="tensor")])
@@ -465,7 +475,10 @@ class TestX:
         """
         def func(a, b, c):
             return a + b + c
-        res = torch.tensor([1, 2, 3]) | F(func, *(X + 1))
+        
+        expr = F(func, *(X + 1))
+
+        res = torch.tensor([1, 2, 3]) | expr
         assert res == 9
 
     def test_packing_map(self):
@@ -495,12 +508,37 @@ class TestX:
         for original, cloned in zip(expr.fae, cloned.fae):
             assert original is cloned
 
-    def test_clone_recurse(self):
-        expr = X + 1 >> X + 2
+    @pytest.mark.parametrize("clone_modules", [False, True])
+    def test_clone_modules(self, clone_modules):
+        from torch import nn
+        expr = X + 1 >> nn.Linear(in_features=10, out_features=2)
+
+        cloned = expr.fae.clone(recurse=True, clone_modules=clone_modules)
+        clone_weights = cloned.fae.ops[1].fae.args[0].weight
+        expr_weights = expr.fae.ops[1].fae.args[0].weight
+
+        print(cloned)
+        #print(expr_weights)
+
+        if clone_modules:
+            with pytest.raises(AssertionError):
+                torch.testing.assert_close(clone_weights, expr_weights)
+        else:
+            torch.testing.assert_close(clone_weights, expr_weights)
+        
+    @pytest.mark.parametrize("expr", [
+        param(X + 1 >> X + 2, id="chain"), 
+        param(X + 1, id="F"),
+        param(X, id="symbol")
+    ])
+    def test_clone_recurse(self, expr):
         cloned = expr.fae.clone(recurse=True)
 
         for original, cloned in zip(expr.fae, cloned.fae):
-            assert original is not cloned
+            if isinstance(original, Symbol):
+                assert original is cloned
+            else:
+                assert original is not cloned
 
 
 class TestFList:
@@ -1498,6 +1536,7 @@ def test_modifiers():
     ) % "foo"
     record = Record()
     out = expr % Modify(r"foo\.bar\.baz", record)
+
     modifiers = out.fae.ops[1].fae.args[0].fae.modifiers
     assert len(modifiers) == 1
     assert modifiers[0] is record

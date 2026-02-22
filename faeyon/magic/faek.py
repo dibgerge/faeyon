@@ -77,7 +77,9 @@ def __new__(cls, *args, **kwargs):
 
             return DelayedModule(cls, *args, **kwargs)
         
-    return _new_instance(cls, *args, **kwargs)
+    out =  _new_instance(cls, *args, **kwargs)
+    #print("out", type(out))
+    return out
 
 
     # try:
@@ -195,23 +197,19 @@ def __rmul__[T: nn.Module](self: T, other: int | nn.Module | F) -> list[T] | F:
     return self.__mul__(other)  # type: ignore
 
 
-@overload
-def __rrshift__[T: nn.Module](self: T, other: Delayable) -> Delayable: ...
-
-
-@overload
-def __rrshift__[T: nn.Module](self: T, other: Any) -> Any: ...
-
-
-def __rrshift__[T: nn.Module](self: T, other: Any | Delayable) -> Any | Delayable:
+def __rrshift__[T: nn.Module](self: T, other: nn.Module | Delayable) -> Delayable:
     """
     This is an alias for `__call__`. The limitation here is that it only works for 
     single inputs. If you need to pass multiple inputs, use the `A` class.
     """
     if isinstance(other, Delayable):
         return other >> self(X)
-        
-    return self(other)
+    
+    elif isinstance(other, nn.Module):
+        return other(X) >> self(X)
+    
+    else:
+        return NotImplemented
 
 
 def clone[T: nn.Module](self: T, *args: Any, **kwargs: Any) -> T:
@@ -245,9 +243,9 @@ _resolved_call.__name__ = "Module.__call__"
 
 
 def __call__(self, *args, **kwargs):
-    fargs = A(*args, **kwargs)
-    if fargs.is_resolved:
-        return _resolved_call(self, *args, **kwargs)
+    #fargs = A(*args, **kwargs)
+    # if fargs.is_resolved:
+    #     return _resolved_call(self, *args, **kwargs)
     
     return F(_resolved_call, self, *args, **kwargs)
 
