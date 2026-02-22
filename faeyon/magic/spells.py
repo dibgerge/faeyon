@@ -516,6 +516,10 @@ class _OpActionMixin:
 
 
 class _SymbolMeta(_OpActionMixin, Delayable, abc.ABCMeta):
+    """
+    TODO: I should disable applying modifiers or names to symbols.... because they apply globally
+    on class instances.
+    """
     _registry: dict[str, type[Symbol]] = {}
     
     def __new__(mcs, name, bases, namespace, **kwargs):
@@ -805,7 +809,7 @@ class Input:
     """
     A placeholder for providing arguments to resolve delayables. Examples:
 
-        A(data, bias=bar) | X[0] >> 2 * X + A["bias"]
+        Substitute(A=Input(data, bias=bar)) | A[0] >> 2 * X + A["bias"]
     
     This makes expressions act like functions, where the expression can resolve position arguments
     by their index, e.g. A[0] will use the first argument in the provided `A` input to the 
@@ -870,7 +874,7 @@ class Input:
             f"{val!r}" if key is None else f"{key}={val!r}" 
             for key, val in self._items
         ]
-        return f"A({', '.join(arguments)})"
+        return f"Input({', '.join(arguments)})"
 
 
 class Substitute:
@@ -1251,110 +1255,3 @@ class FDict(_OpActionMixin, Delayable):
 
     def __len__(self) -> int:
         return len(self.fae.expressions)
-
-
-# class W(enum.Enum):
-#     Fanout = "Fanout"
-#     Pass = "Pass"
-#     Mux = "Mux"
-
-#     def __call__(self, *args, **kwargs) -> Any:
-#         cls = getattr(sys.modules[__name__], f"_{self.name}")
-#         return cls(*args, **kwargs)
-
-
-# class Wiring(ABC):
-#     @abstractmethod
-#     def __getitem__(self, key: int) -> Any:
-#         pass
-
-
-# class _Fanout(Wiring):
-#     def __init__(self, obj: Any) -> None:
-#         self.obj = obj
-
-#     def __getitem__(self, key: int) -> Any:
-#         """Basic usage of Fanout only needs to support integer keys, and no slices."""
-#         if isinstance(self.obj, Delayable):
-#             return self.obj >> X[key]
-
-#         return self.obj[key]
-
-
-# class _Pass(Wiring):
-#     def __init__(self, obj: Any) -> None:
-#         self.obj = obj
-
-#     def __getitem__(self, key: int) -> Any:
-#         return self.obj
-
-
-# class _Mux(Wiring):
-#     def __init__(self, s0: Any, s1: Any) -> None:
-#         self.s0 = s0
-#         self.s1 = s1
-
-#     def __getitem__(self, key: int) -> Any:
-#         if key == 0:
-#             return self.s0
-
-#         return self.s1
-
-
-# class Wire:
-#     _fanout: dict[str, Iterator]
-#     _current_wire: Optional[inspect.BoundArguments]
-
-#     def __init__(self, *args, **kwargs) -> None:
-#         self.args = args
-#         self.kwargs = kwargs
-#         self.reset()
-
-#     def reset(self) -> None:
-#         self._fanout = {}
-#         self._current_wire = None
-
-#     def init(self, sig: inspect.Signature, *args, **kwargs) -> A:
-#         self.reset()
-#         bound = sig.bind(*args, **kwargs)
-#         bound.apply_defaults()
-#         given_wire = sig.bind_partial(*self.args, **self.kwargs)
-
-#         # Replace fanout arguments with their first value in bound
-#         # update given_wire with bound arguments for passthru arguments only, or if argument does
-#         # not exist in given_wire, add it.
-#         for k, v in bound.arguments.items():
-#             if k not in given_wire.arguments:
-#                 given_wire.arguments[k] = v
-#             elif not isinstance(given_wire.arguments[k], W):
-#                 continue
-
-#             match given_wire.arguments[k]:
-#                 case W.Fanout:
-#                     self._fanout[k] = iter(v)
-#                     bound.arguments[k] = next(self._fanout[k])
-#                 case W.Pass:
-#                     given_wire.arguments[k] = v
-
-#         self._current_wire = given_wire
-#         return A(*bound.args, **bound.kwargs)
-
-#     def step(self, data: Any) -> A:
-#         if self._current_wire is None:
-#             raise ValueError("No wire has been initialized.")
-
-#         for k, v in self._fanout.items():
-#             try:
-#                 v = next(v)
-#             except StopIteration:
-#                 raise ValueError(f"Fanout argument {k} has no more values.")
-#             else:
-#                 self._current_wire.arguments[k] = v
-
-#         return data >> A(*self._current_wire.args, **self._current_wire.kwargs)
-
-#     def __rrshift__(self, data: Any) -> A:
-#         return self.step(data)
-
-
-

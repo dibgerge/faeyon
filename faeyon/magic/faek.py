@@ -7,59 +7,13 @@ from collections.abc import Callable
 from ._opinfo import get_opinfo, OperatorType
 from .spells import (
     F, 
-    FList, 
-    FDict, 
-    A, 
     X,
-    I,
-    Symbol,
-    FVar, 
     Delayable,
     DelayedModule,
     _new_instance
 )
 
 from faeyon.utils import Singleton
-
-
-
-# class FState:
-#     """ A simple container which generate fVar on demand. """
-#     def __init__(self):
-#         self._states_ = {}
-    
-#     def __getattr__(self, name):
-#         if name in self._states_:
-#             return self._states_[name]
-#         fvar = FVar()
-#         self._states_[name] = fvar
-#         return fvar
-
-#     def reset(self):
-#         self._states_.clear()
-    
-#     def __iter__(self):
-#         return iter(self._states_.items())
-    
-#     def collect(self):
-#         out = {}
-#         for k, v in self:
-#             try:
-#                 out[k] = +v
-#             except ValueError:
-#                 pass
-#         return out
-
-
-# def _new_module(cls, *args, **kwargs):
-#     a = A(*args, **kwargs)
-
-#     if a.is_resolved:
-#         instance = _new_instance(cls, *args, **kwargs)
-#         # super(cls, instance).__setattr__("fstate", FState())
-#         return instance
-#     else:
-#         return F(cls, *args, **kwargs)
 
 
 def __new__(cls, *args, **kwargs):
@@ -72,78 +26,10 @@ def __new__(cls, *args, **kwargs):
     """
     for arg in itertools.chain(args, kwargs.values()):
         if isinstance(arg, Delayable):
-            # if not isinstance(arg, I):
-            #     raise ValueError("The only delayable supported in Module init is the `I` Symbol.")
-
             return DelayedModule(cls, *args, **kwargs)
         
     out =  _new_instance(cls, *args, **kwargs)
-    #print("out", type(out))
     return out
-
-
-    # try:
-    #     kwargs_keys, kwargs_values = zip(*kwargs.items())
-    # except ValueError:
-    #     kwargs_keys, kwargs_values = [], []
-    
-    # raveled_args = []
-    # num_flist = 0
-    # num_fdict = 0
-    # fkeys = None
-    # flen = None
-    # for arg in itertools.chain(args, kwargs_values):
-    #     if isinstance(arg, FList):
-    #         num_flist += 1
-    #         arg_value = arg.shed()
-
-    #         if flen is None:
-    #             flen = len(arg_value)
-    #         elif flen != len(arg_value):
-    #             raise ValueError("All arguments of type `FList` must have the same length.")
-
-    #         raveled_args.append(arg_value)
-    #     elif isinstance(arg, FDict):
-    #         num_fdict += 1
-    #         arg_value = arg.shed()
-
-    #         if fkeys is None:
-    #             fkeys = list(arg_value.keys())
-    #             flen = len(fkeys)
-    #         else:
-    #             if set(fkeys) != set(arg_value.keys()):
-    #                 raise ValueError("All arguments of type `FDict` must have the same keys.")
-
-    #         raveled_args.append([arg_value[k] for k in fkeys])
-    #     else:
-    #         raveled_args.append(itertools.repeat(arg))
-
-    # if num_flist > 0 and num_fdict > 0:
-    #     raise ValueError("Cannot mix `FList` and `FDict` arguments. Choose one.")
-
-    # num_fae = max(num_flist, num_fdict)
-
-    # # No argument parametrization, return a regular nn.Module instance
-    # if num_fae == 0:
-    #     return _new_module(cls, *args, **kwargs)
-
-    # nkeys = len(kwargs_keys)
-    # nargs = len(raveled_args)
-    # args = [val[:nargs-nkeys] for val in zip(*raveled_args)]
-    # kwargs = [dict(zip(kwargs_keys, val[nargs-nkeys:])) for val in zip(*raveled_args)]
-
-    # out = []
-    # for c_args, c_kwargs in zip(args, kwargs):
-    #     inst = _new_module(cls, *c_args, **c_kwargs)
-    #     # Call __init__ on each instance since it will not be called when different class type
-    #     # is returned in __new__
-    #     cls.__init__(inst, *c_args, **c_kwargs)
-    #     out.append(inst)
-    
-    # if fkeys is not None:
-    #     out = dict(zip(fkeys, out))
-
-    # return out
 
 
 def __default_new__(cls, *args, **kwargs):
@@ -243,10 +129,6 @@ _resolved_call.__name__ = "Module.__call__"
 
 
 def __call__(self, *args, **kwargs):
-    #fargs = A(*args, **kwargs)
-    # if fargs.is_resolved:
-    #     return _resolved_call(self, *args, **kwargs)
-    
     return F(_resolved_call, self, *args, **kwargs)
 
     

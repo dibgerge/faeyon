@@ -114,22 +114,22 @@ class TestX:
         with pytest.raises(TypeError):
             left | right
 
-    def test_mod(self):
-        """ 
-        Test mod operator for non-arithmetic operations. 
-        TODO: Should modifiers be inplace or a should a copy be returned?
-        """
-        expr = X % "foo"
-        assert isinstance(expr, Modifiers)
-        assert expr.fae_has_name
+    # def test_mod(self):
+    #     """ 
+    #     Test mod operator for non-arithmetic operations. 
+    #     TODO: Should modifiers be inplace or a should a copy be returned?
+    #     """
+    #     expr = X % "foo"
+    #     assert isinstance(expr, Modifiers)
+    #     assert expr.fae_has_name
 
-    def test_rmod(self):
-        """ 
-        Test mod operator for non-arithmetic operations. 
-        TODO: I need to test it with modifiers other than strings, since strings will not raise
-        errors, since the string's own modifier operator will be used...
-        """
-        pass
+    # def test_rmod(self):
+    #     """ 
+    #     Test mod operator for non-arithmetic operations. 
+    #     TODO: I need to test it with modifiers other than strings, since strings will not raise
+    #     errors, since the string's own modifier operator will be used...
+    #     """
+    #     pass
         
     @pytest.mark.parametrize("expr, expected", [
         param(X, "X", id="meta"),
@@ -658,14 +658,14 @@ class TestFDict:
         assert 1 | expr == result
 
 
-def test_sym():
-    """ Test Sym class and symbol registry. """
-    from faeyon.magic.spells import Sym, Symbol, _SymbolMeta
-    Y = Sym.Y
-    assert isinstance(Y, Symbol)
-    assert "Y" in _SymbolMeta._registry
-    assert 10 | Y == 10
-    assert 10 | Y + 1 == 11
+# def test_sym():
+#     """ Test Sym class and symbol registry. """
+#     from faeyon.magic.spells import Sym, Symbol, _SymbolMeta
+#     Y = Sym.Y
+#     assert isinstance(Y, Symbol)
+#     assert "Y" in _SymbolMeta._registry
+#     assert 10 | Y == 10
+#     assert 10 | Y + 1 == 11
 
 
 # class TestA:

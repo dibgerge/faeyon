@@ -9,7 +9,71 @@ from faeyon.nn import (
     head_to_attn_mask,
     Concat
 )
-from faeyon import X, F    
+from faeyon import X, F, A
+
+
+class ViT2(nn.Module):
+    """
+    # TODO: inherit from FaeModule
+    """
+    def __init__(
+        self,
+        embed_size: int,
+        heads: int,
+        image_size: int | tuple[int, int],
+        patch_size: int | tuple[int, int],
+        num_layers: int,
+        mlp_size: int,
+        pos_embedding: Optional[nn.Module] = None,
+        use_patch_mask: bool = False,
+        in_channels: int = 3,
+        dropout: float = 0.1,
+        lnorm_eps: float = 1e-12,
+    ):
+        pass
+
+    def build(self):
+        cls_token = self.cls_token.expand(img.shape[0], -1, -1)
+        attn_mask = F(
+            head_to_attn_mask, 
+            head_mask, 
+            X.shape[0], 
+            X.shape[1], 
+            X.shape[1],
+            ravel=True,
+            num_layers=self.num_layers
+        )
+
+        # TODO: Because of the cloning, this will not work, since the new Modules are not registered
+        # in __init__.
+        return (
+            self.patch_embedding(A.img)
+            >> self.pos_embeddings(X.shape[2:]) + self.mask_token(X, mask=patch_mask)
+            >> X.flatten(-2).mT
+            >> self.concat(cls_token, X, dim=1)
+            >> self.dropout
+            >> (
+                X + (
+                    self.blocks.lnorm_in
+                    >> self.blocks.attention(
+                        X, X, X, 
+                        # TODO: Fix this
+                        #attn_mask=W.Fanout(attn_mask), 
+                        need_weights=keep_attn_weights
+                    )
+                    >> X[0]
+                )
+                >> X + (
+                    self.blocks.lnorm_out
+                    >> self.blocks.linear1
+                    >> self.blocks.gelu
+                    >> self.blocks.linear2  
+                    >> self.blocks.dropout
+                )
+                >> self.num_layers
+            )
+            >> self.lnorm
+        )
 
 
 class ViT(nn.Module):
