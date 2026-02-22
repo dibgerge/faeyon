@@ -33,12 +33,25 @@ class TestX:
     def test_rshift_int(self):
         """ The right shift operator results in a Chain Object if both arguments are of type X."""
         from torch import nn
-        
         x = X + 1 >> nn.Linear(in_features=10, out_features=10) >> 2
-        
         assert isinstance(x, Chain)
-        assert len(x) == 2
-        print(x)
+        assert len(x) == 4
+
+    def test_rshift_int2(self):
+        """ The right shift operator results in a Chain Object if both arguments are of type X."""
+        from torch import nn
+        from faeyon import I, P
+        sizes = [10, 5, 6]
+        data = list(zip(sizes[:-1], sizes[1:]))
+        expr = X + 1 >> nn.Linear(in_features=P[I][0], out_features=P[I][1]) >> data
+        assert len(expr) == 4
+        assert isinstance(expr, Chain)
+
+        with pytest.raises(AssertionError):
+            torch.testing.assert_close(
+                expr.fae.ops[1].fae.args[0].weight, 
+                expr.fae.ops[3].fae.args[0].weight
+            )
 
     @pytest.mark.parametrize("expr", [param(X, id="meta"), param(X + 1, id="instance")])
     @pytest.mark.parametrize("input", [param(1, id="int"), param(tensor(1), id="tensor")])
@@ -565,7 +578,7 @@ class TestFList:
     def test_lshift(self, left, right, result):
         expr = left << right
         assert isinstance(expr, FList)
-        for item in expr._fae_expr:
+        for item in expr.fae:
             assert isinstance(item, Chain)
         assert 1 | expr == result
 
@@ -616,7 +629,7 @@ class TestFDict:
     def test_lshift(self, left, right, result):
         expr = left << right
         assert isinstance(expr, FDict)
-        for item in expr._fae_expr.values():
+        for item in expr.fae.expressions.values():
             assert isinstance(item, Chain)
         assert 1 | expr == result
 

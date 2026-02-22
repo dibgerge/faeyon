@@ -34,7 +34,8 @@ def get_precedence(item) -> Optional[int]:
     """
     from .spells import F
     if isinstance(item, F):
-        return item.fae.op.precedence
+        op = item.fae.op
+        return op.precedence if isinstance(op, OpInfo) else None
     elif isinstance(item, OpInfo):
         return item.precedence
     return None

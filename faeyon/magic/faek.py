@@ -72,8 +72,8 @@ def __new__(cls, *args, **kwargs):
     """
     for arg in itertools.chain(args, kwargs.values()):
         if isinstance(arg, Delayable):
-            if not isinstance(arg, I):
-                raise ValueError("The only delayable supported in Module init is the `I` Symbol.")
+            # if not isinstance(arg, I):
+            #     raise ValueError("The only delayable supported in Module init is the `I` Symbol.")
 
             return DelayedModule(cls, *args, **kwargs)
         

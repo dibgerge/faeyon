@@ -10,6 +10,7 @@ from .magic import (
     F,
     Chain,
     I,
+    P,
     DelayedModule,
 )
 

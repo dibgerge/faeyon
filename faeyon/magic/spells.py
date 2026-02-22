@@ -94,7 +94,8 @@ class DelayableNamespace:
     def clone(
         self, 
         recurse: bool = False, 
-        clone_modules: int | bool = False
+        clone_modules: bool | int = False,
+        data: Optional[Sequence[Any]] = None,
     ) -> DelayableNamespace:
         """ 
         Clone the namespace. If `recurse` is True, also clone any Delayable objects passed to the
@@ -107,9 +108,9 @@ class DelayableNamespace:
                         raise ValueError(
                             "`clone_modules` must be an integer to resolve `DelayedModule` objects."
                         )
-                    return node._generate(clone_modules)
+                    return node._generate(P=data, I=clone_modules)
                 elif isinstance(node, F):
-                    if isinstance(node.fae.args[0], nn.Module):
+                    if node.fae.args and isinstance(node.fae.args[0], nn.Module):
                         arguments = {
                             "args": (node.fae.op, node.fae.args[0].clone(), *node.fae.args[1:]), 
                             "kwargs": node.fae.kwargs
@@ -306,16 +307,28 @@ class Delayable:
             raise TypeError(f"Modifier should be to the right of the Delayable, not the left.")
         return NotImplemented
         
-    def __rshift__(self, other: Delayable | int) -> Chain:
-        if isinstance(other, int):
-            nodes = []
-            for i in range(other):
-                nodes.append(self.fae.clone(recurse=True, clone_modules=i))
-            return Chain(*nodes)
-        
+    def __rshift__(self, other: Delayable | int | Sequence[Any]) -> Chain:       
         if isinstance(other, Delayable):
             return Chain(self, other)
-        
+        elif isinstance(other, int):
+            out = None
+            for i in range(other):
+                cloned = self.fae.clone(recurse=True, clone_modules=i)
+                if out is None: 
+                    out = cloned
+                else:
+                    out = out >> cloned
+            return out
+        elif isinstance(other, Sequence):
+            out = None
+            for i in range(len(other)):
+                cloned = self.fae.clone(recurse=True, clone_modules=i, data=other)
+                if out is None: 
+                    out = cloned
+                else:
+                    out = out >> cloned
+            return out
+
         return NotImplemented
 
     def __rrshift__(self, other: Any) -> Any:
@@ -561,7 +574,7 @@ class Sym(metaclass=_SymMeta):
     dynamically create a symbol class, for example Sym.Y will create a new `Symbol` class called Y, and it will be addeed to the symbol registry.
     """
     pass
-   
+
 
 class Symbol(metaclass=_SymbolMeta):
     pass
@@ -583,13 +596,18 @@ class A(Symbol):
     pass
 
 
-class _IndexMeta(_SymbolMeta):
-    def __getitem__(self, data: Sequence[Any]) -> int:
-        return F(_getitem, data, I)
+# class _IndexMeta(_SymbolMeta):
+#     def __getitem__(self, data: Sequence[Any]) -> int:
+#         return F(_getitem, data, I)
 
 
-class I(metaclass=_IndexMeta):
+class I(Symbol):
     """ A special symbol that represents an index."""
+    pass
+
+
+class P(Symbol):
+    """ A special symbol that represents a placeholder for a parameter."""
     pass
     
 
@@ -735,16 +753,52 @@ class DelayedModule(F):
     """
     This is for modules whose constructor arguments are delayables.
     """
-    def __init__(self, module: type[nn.Module], /, *args, **kwargs) -> None:
-        super().__init__(module, *args, **kwargs)
+    # def __init__(self, module: type[nn.Module], /, *args, **kwargs) -> None:
+    #     super().__init__(module, *args, **kwargs)
         
     def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
         raise ValueError("`DelayedModule` cannot be resolved directly.")
 
-    def _generate(self, data: Any) -> F:
+    def __rshift__(self, other: Any) -> Any:
+        if isinstance(other, Delayable):
+            return self(X) >> other
+        else:
+            return super().__rshift__(other)
+
+    def __rrshift__(self, other: Any) -> Any:
+        if isinstance(other, Delayable):
+            return other >> self(X)
+        else:
+            return super().__rrshift__(other)
+
+    def _generate(self, I: int, P: Optional[Sequence[Any]] = None) -> F:
         """ 
         """
-        return super()._resolve(data)
+        if P is not None:
+            return super()._resolve(_NoValue, P=P, I=I)
+
+        return super()._resolve(_NoValue, I=I)
+        # from .faek import _resolved_call
+
+        # resolve_kwargs = {"I": I}
+        # if P is not None:
+        #     resolve_kwargs["P"] = P
+
+        # module_cls = self.fae.arguments.arguments["module"]
+        # raw_args = self.fae.arguments.arguments.get("args", ())
+        # raw_kwargs = self.fae.arguments.arguments.get("kwargs", {})
+
+        # resolved_args = [
+        #     v._resolve(_NoValue, **resolve_kwargs) if isinstance(v, Delayable) else v
+        #     for v in raw_args
+        # ]
+        # resolved_kwargs = {
+        #     k: v._resolve(_NoValue, **resolve_kwargs) if isinstance(v, Delayable) else v
+        #     for k, v in raw_kwargs.items()
+        # }
+
+        # module = module_cls(*resolved_args, **resolved_kwargs)
+        # return F(_resolved_call, module, X)
 
 
 class Input:
@@ -1131,21 +1185,21 @@ class FList(_OpActionMixin, Delayable):
 
 class FDict(_OpActionMixin, Delayable):
     def __init__(self, expressions: dict[str, Delayable]) -> None:
-        self._fae_expr = expressions
+        super().__init__(expressions=expressions)
 
     def _op_action(self, name: str, *args: Any, **kwargs: Any) -> FDict:
         opinfo = get_opinfo(attr_name=name)
 
         raveled = defaultdict(list)
         n = 0
-        keys = set(self._fae_expr)
+        keys = set(self.fae.expressions)
         for arg in itertools.chain(args, kwargs.values()):
             if isinstance(arg, FDict):
                 n += 1
-                if keys != set(arg._fae_expr):
+                if keys != set(arg.fae.expressions):
                     raise ValueError("All arguments of type `FDict` must have the same keys.")
 
-                for key, item in arg._fae_expr.items():
+                for key, item in arg.fae.expressions.items():
                     raveled[key].append(item)
             elif isinstance(arg, FList):
                 raise ValueError("Cannot mix `FList` and `FDict` arguments. Choose one.")
@@ -1156,44 +1210,47 @@ class FDict(_OpActionMixin, Delayable):
         if n == 0:
             return FDict(
                 {key: F(opinfo, item, *args, **kwargs) 
-                for key, item in self._fae_expr.items()}
+                for key, item in self.fae.expressions.items()}
             )
 
         out = {}
         nargs = len(args)
-        for key, value in self._fae_expr.items():
+        for key, value in self.fae.expressions.items():
             items_args = raveled[key][:nargs]
             items_kwargs = dict(zip(kwargs, raveled[key][nargs:]))
             out[key] = F(opinfo, value, *items_args, **items_kwargs)
         return FDict(out)
 
     def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
-        return {key: item._resolve(_default, **kwargs) for key, item in self._fae_expr.items()}
+        return {
+            key: item._resolve(_default, **kwargs) 
+            for key, item in self.fae.expressions.items()
+        }
 
     def __lshift__(self, other: Delayable) -> FDict:
         if isinstance(other, FDict):
             out = {}
-            other = other._fae_expr
+            other = other.fae.expressions
 
-            if set(self._fae_expr) != set(other):
+            if set(self.fae.expressions) != set(other):
                 return NotImplemented
 
-            for key, item in self._fae_expr.items():
+            for key, item in self.fae.expressions.items():
                 out[key] = item >> other[key]
             return FDict(out)
         elif isinstance(other, (Symbol, F)):
-            return FDict({key: item >> other for key, item in self._fae_expr.items()})
+            return FDict({key: item >> other for key, item in self.fae.expressions.items()})
         else:
             return NotImplemented
 
     def __str__(self) -> str:
-        return str(self._fae_expr)
+        return str(self.fae.expressions)
 
     def __repr__(self) -> str:
         return str(self)
 
     def __len__(self) -> int:
-        return len(self._fae_expr)
+        return len(self.fae.expressions)
 
 
 # class W(enum.Enum):
