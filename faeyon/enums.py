@@ -1,9 +1,18 @@
+import dataclasses
 from enum import Flag, auto, StrEnum
 from collections import namedtuple
+from numbers import Number
+from typing import Optional
 
 
-ImageSize = namedtuple("ImageSize", ["height", "width"])
+@dataclasses.dataclass
+class ImageSize:
+    height: Number
+    width: Optional[Number] = None
 
+    def __post_init__(self):
+        if self.width is None:
+            self.width = self.height
 
 class ClfTask(StrEnum):
     """

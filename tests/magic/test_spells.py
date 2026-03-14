@@ -34,6 +34,7 @@ class TestX:
         """ The right shift operator results in a Chain Object if both arguments are of type X."""
         from torch import nn
         x = X + 1 >> nn.Linear(in_features=10, out_features=10) >> 2
+
         assert isinstance(x, Chain)
         assert len(x) == 4
 

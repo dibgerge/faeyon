@@ -12,68 +12,78 @@ from faeyon.nn import (
 from faeyon import X, F, A
 
 
-class ViT2(nn.Module):
-    """
-    # TODO: inherit from FaeModule
-    """
-    def __init__(
-        self,
-        embed_size: int,
-        heads: int,
-        image_size: int | tuple[int, int],
-        patch_size: int | tuple[int, int],
-        num_layers: int,
-        mlp_size: int,
-        pos_embedding: Optional[nn.Module] = None,
-        use_patch_mask: bool = False,
-        in_channels: int = 3,
-        dropout: float = 0.1,
-        lnorm_eps: float = 1e-12,
-    ):
-        pass
+def vit(
+    embed_size: int,
+    heads: int,
+    image_size: int | tuple[int, int],
+    patch_size: int | tuple[int, int],
+    num_layers: int,
+    mlp_size: int,
+    pos_embedding: Optional[nn.Module] = None,
+    use_patch_mask: bool = False,
+    in_channels: int = 3,
+    dropout: float = 0.1,
+    lnorm_eps: float = 1e-12,
+):
+    if isinstance(image_size, int):
+        image_size = (image_size, image_size)
 
-    def build(self):
-        cls_token = self.cls_token.expand(img.shape[0], -1, -1)
-        attn_mask = F(
-            head_to_attn_mask, 
-            head_mask, 
-            X.shape[0], 
-            X.shape[1], 
-            X.shape[1],
-            ravel=True,
-            num_layers=self.num_layers
-        )
+    if isinstance(patch_size, int):
+        patch_size = (patch_size, patch_size)
 
-        # TODO: Because of the cloning, this will not work, since the new Modules are not registered
-        # in __init__.
-        return (
-            self.patch_embedding(A.img)
-            >> self.pos_embeddings(X.shape[2:]) + self.mask_token(X, mask=patch_mask)
-            >> X.flatten(-2).mT
-            >> self.concat(cls_token, X, dim=1)
-            >> self.dropout
-            >> (
-                X + (
-                    self.blocks.lnorm_in
-                    >> self.blocks.attention(
-                        X, X, X, 
-                        # TODO: Fix this
-                        #attn_mask=W.Fanout(attn_mask), 
-                        need_weights=keep_attn_weights
-                    )
-                    >> X[0]
+    image_size = ImageSize(*image_size)
+    patch_size = ImageSize(*patch_size)
+    feature_count = ImageSize(
+        (image_size.height // patch_size.height),
+        (image_size.width // patch_size.width)
+    )
+
+    cls_token = nn.Parameter(torch.randn(1, 1, embed_size))
+    mask_token = TokenizedMask(embed_size, enabled=use_patch_mask)
+    pos_embeddings = InterpolatedPosEmbedding(
+        size=feature_count,
+        embeddings=embed_size,
+        interpolate="bicubic",
+        align_corners=False,
+    )
+    attention = nn.MultiheadAttention(
+        embed_dim=embed_size,
+        num_heads=heads,
+        batch_first=True,
+        dropout=dropout,
+    )
+
+    return FaeModule(
+        nn.Conv2d(
+            in_channels, embed_size, kernel_size=patch_size, stride=patch_size
+        )(A.img)                                                        % "patch_embedding"
+        >> pos_embeddings(X.shape[2:]) + mask_token(X, mask=patch_mask) % "pos_embedding"
+        >> X.flatten(-2).mT
+        >> torch.concat(cls_token, X, dim=1)
+        >> nn.Dropout(dropout)
+        >> (
+            X + (
+                nn.LayerNorm(embed_size, eps=lnorm_eps)
+                >> attention(
+                    X, X, X, 
+                    # TODO: Fix this
+                    #attn_mask=W.Fanout(attn_mask), 
+                    need_weights=keep_attn_weights
                 )
-                >> X + (
-                    self.blocks.lnorm_out
-                    >> self.blocks.linear1
-                    >> self.blocks.gelu
-                    >> self.blocks.linear2  
-                    >> self.blocks.dropout
-                )
-                >> self.num_layers
+                    % "attention"
+                >> X[0]
             )
-            >> self.lnorm
-        )
+            >> X + (
+                nn.LayerNorm(embed_size, eps=lnorm_eps)
+                >> nn.Linear(embed_size, mlp_size)
+                >> nn.GELU()
+                >> nn.Linear(mlp_size, embed_size) 
+                >> nn.Dropout(dropout)
+            )
+            >> num_layers
+        )                                                               % "block"
+        >> nn.LayerNorm(embed_size, eps=lnorm_eps)
+    )
 
 
 class ViT(nn.Module):

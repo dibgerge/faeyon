@@ -10,6 +10,7 @@ from .spells import (
     X,
     Delayable,
     DelayedModule,
+    _NoValue,
     _new_instance
 )
 
@@ -44,43 +45,43 @@ def __default_new__(cls, *args, **kwargs):
     return object.__new__(cls)
 
 
-@overload
-def __mul__[T: nn.Module](self: T, other: int) -> list[T]: ...
+# @overload
+# def __mul__[T: nn.Module](self: T, other: int) -> list[T]: ...
 
-@overload
-def __mul__[T: nn.Module](self: T, other: nn.Module | F) -> F: ...
+# @overload
+# def __mul__[T: nn.Module](self: T, other: nn.Module | F) -> F: ...
 
 
-def __mul__[T: nn.Module](self: T, other: int | nn.Module | F) -> list[T] | F:
-    """
-    Creates a ModuleList of `other` clones of this module.
-    """
-    if isinstance(other, nn.Module):
-        return getattr(self(X), "__mul__")(other(X))
+# def __mul__[T: nn.Module](self: T, other: int | nn.Module | F) -> list[T] | F:
+#     """
+#     Creates a ModuleList of `other` clones of this module.
+#     """
+#     if isinstance(other, nn.Module):
+#         return getattr(self(X), "__mul__")(other(X))
     
-    if isinstance(other, Delayable):
-        return getattr(self(X), "__mul__")(other)
+#     if isinstance(other, Delayable):
+#         return getattr(self(X), "__mul__")(other)
 
-    if not isinstance(other, int):
-        return NotImplemented
+#     if not isinstance(other, int):
+#         return NotImplemented
     
-    if other < 1:
-        raise ValueError("Number of modules must be greater than 0.")
+#     if other < 1:
+#         raise ValueError("Number of modules must be greater than 0.")
 
-    return [self.clone() for _ in range(other)]
-
-
-@overload
-def __rmul__[T: nn.Module](self: T, other: int) -> list[T]: ...
+#     return [self.clone() for _ in range(other)]
 
 
-@overload
-def __rmul__[T: nn.Module](self: T, other: nn.Module | F) -> F: ...
+# @overload
+# def __rmul__[T: nn.Module](self: T, other: int) -> list[T]: ...
 
 
-def __rmul__[T: nn.Module](self: T, other: int | nn.Module | F) -> list[T] | F:
-    """ Multiplication is commutative. """
-    return self.__mul__(other)  # type: ignore
+# @overload
+# def __rmul__[T: nn.Module](self: T, other: nn.Module | F) -> F: ...
+
+
+# def __rmul__[T: nn.Module](self: T, other: int | nn.Module | F) -> list[T] | F:
+#     """ Multiplication is commutative. """
+#     return self.__mul__(other)  # type: ignore
 
 
 def __rrshift__[T: nn.Module](self: T, other: nn.Module | Delayable) -> Delayable:
@@ -121,15 +122,15 @@ def clone[T: nn.Module](self: T, *args: Any, **kwargs: Any) -> T:
     return cls(*new_bound.args, **new_bound.kwargs)
 
 
-def _resolved_call(self, *args, **kwargs):
-    return faek.module__call__(self, *args, **kwargs)
+# def _resolved_call(self, *args, **kwargs):
+#     return faek.module__call__(self, *args, **kwargs)
 
 
-_resolved_call.__name__ = "Module.__call__"
+# _resolved_call.__name__ = "Module.__call__"
 
 
 def __call__(self, *args, **kwargs):
-    return F(_resolved_call, self, *args, **kwargs)
+    return F(faek.module__call__, self, *args, **kwargs)
 
     
 def delayed_unary_method[T: nn.Module](op_name: str) -> Callable[[T], F]:
@@ -249,6 +250,20 @@ class Faek(metaclass=Singleton):
         nn.Module.__call__ = self.module__call__
         delattr(nn.Module, "clone")
         self._is_on = False
+
+
+class ModuleCall(F):
+    def __init__(self, module, /, *args, **kwargs):
+        Delayable.__init__(self, module, *args, **kwargs)
+        self._call = F(faek.module__call__, module, *args, **kwargs)
+
+    def _resolve(self, _default: _NoValue, / , **kwargs: Any) -> Any:
+        result = self._call._resolve(_default, **kwargs)
+
+        if isinstance(result, Delayable) and result.fae.op is faek.module__call__:
+            return ModuleCall(result.fae.args[0], )
+
+
 
 
 faek = Faek()

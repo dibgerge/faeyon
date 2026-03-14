@@ -51,7 +51,7 @@ class DelayableNamespace:
     name: Optional[str] = None
     group: Optional[int] = None
 
-    # TODO: need to use Modifier instead of Any
+    # TODO: Convert design from stored modifiers, to modifies which completely override node.
     modifiers: tuple[Any, ...] = dataclasses.field(default_factory=tuple)
     cache: Any = None
 

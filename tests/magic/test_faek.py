@@ -3,6 +3,8 @@ Note: Currently faek is automatically enabled when faeyon is imported.
 """
 import pytest
 import torch
+
+from pytest import param
 from torch import nn
 from faeyon import faek, A, FList, FDict, F, X, Chain
 from tests.common import ConstantLayer
@@ -127,7 +129,9 @@ def test_clone(args, kwargs, expected_in_features, expected_out_features):
     assert cloned_model.out_features == expected_out_features
 
 
-# class TestModuleOperators:
+class TestModuleOperators:
+    layer1 = ConstantLayer((1, 2), value=1.0)
+    layer2 = ConstantLayer((1, 2), value=1.0)
 #     def test_mul_int(self):
 #         """ Multiplication with int creates a list of layers, and it is commutative. """
 #         model = nn.Linear(in_features=10, out_features=2)
@@ -218,6 +222,28 @@ def test_clone(args, kwargs, expected_in_features, expected_out_features):
 #         assert isinstance(delayed, Parallels)
 #         assert len(delayed) == 1
 #         torch.testing.assert_close(y, torch.tensor([4.0, 8.0]))
+
+    @pytest.mark.parametrize("expr, expected", [
+        param(layer1 + layer2, "X", id="add"),
+        # param(X + 1, "X + 1", id="instance"),
+        # param(X[0], "X[0]", id="getitem"),
+        # param(X.a, "X.a", id="getattr"),
+        # param(X(), "X()", id="call"),
+        # param(X(1), "X(1)", id="call_args"),
+        # param(X("foo"), "X('foo')", id="call_string_arg"),
+        # param(X(1, "bar"), "X(1, 'bar')", id="call_multiple_args"),
+        # param(X(foo="bar"), "X(foo='bar')", id="call_kwargs"),
+        # param(X(foo="bar", baz="qux"), "X(foo='bar', baz='qux')", id="call_multiple_kwargs"),
+        # param(X(1, foo="bar"), "X(1, foo='bar')", id="call_args_kwargs"),
+        # param(X + X * 2, "X + X * 2", id="X + X * 2"),
+        # param(X + 2 * X, "X + 2 * X", id="X + 2 * X"),
+        # param((X + 1) * (2 + X), "(X + 1) * (2 + X)", id="arithmetic_parens_1"),
+        # param((X + 1) * X, "(X + 1) * X", id="arithmetic_parens_2"),
+        # param(X * 2 / (X + 1), "X * 2 / (X + 1)", id="arithmetic_parens_3"),
+    ])
+    def test_ops(self, expr, expected):
+        print(expr)
+        print(nn.Linear(10, 10) >> nn.Linear(10, 20))
 
 #     @pytest.mark.parametrize("op,expected", [
 #         ("add", [[2.0, 2.0]]), 

@@ -12,6 +12,7 @@ from .magic import (
     I,
     P,
     DelayedModule,
+    Substitute
 )
 
 from . import models

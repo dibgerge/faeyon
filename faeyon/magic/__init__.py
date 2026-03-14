@@ -10,6 +10,7 @@ from .spells import (
     Chain,
     DelayedModule,
     I,
-    P
+    P,
+    Substitute
 )
 from .faek import faek
