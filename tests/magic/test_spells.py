@@ -3,7 +3,7 @@ import inspect
 import torch
 from faeyon import A, X, FVar, FList, FDict, F, Chain
 from faeyon.magic.spells import Delayable, Symbol
-from faeyon.modifiers import Record, Modify
+from faeyon.modifiers import Modify, Modifier
 from tests.common import ConstantLayer
 from pytest import param
 from torch import tensor
@@ -553,6 +553,88 @@ class TestX:
                 assert original is cloned
             else:
                 assert original is not cloned
+
+
+class TestDelayableNamespace:
+    # --- update ---
+
+    def test_update_returns_new_node(self):
+        expr = X + 1
+        updated = expr.fae.update()
+        assert updated is not expr
+        assert 3 | updated == 4
+
+    def test_update_sets_fae_metadata(self):
+        expr = X + 1
+        named = expr.fae.update(name="foo")
+        assert named.fae.name == "foo"
+        assert 3 | named == 4
+
+    def test_update_symbol_is_identity(self):
+        # Symbols have no arguments; update() returns the symbol unchanged.
+        assert X.fae.update() is X
+
+    def test_update_raises_on_expr_kwarg(self):
+        with pytest.raises(ValueError, match="`expr` cannot be updated"):
+            (X + 1).fae.update(expr=X)
+
+    def test_update_raises_on_invalid_arguments_type(self):
+        with pytest.raises(ValueError):
+            (X + 1).fae.update(arguments="not_a_bound_arguments")
+
+    # --- walk ---
+
+    def test_walk_symbol_has_no_children(self):
+        assert list(X.fae) == []
+
+    def test_walk_yields_delayable_children(self):
+        # X + 1 = F(__add__, X, 1): only X is Delayable, 1 and OpInfo are not.
+        assert list((X + 1).fae) == [X]
+
+    def test_walk_replace_child_rebuilds_node(self):
+        expr = X + 1
+        walker = expr.fae.walk()
+        next(walker)  # receive X
+        try:
+            walker.send(X + 10)  # replace X with (X + 10)
+        except StopIteration as e:
+            new_expr = e.value
+        assert 5 | new_expr == 16  # (5 + 10) + 1
+
+    def test_walk_send_none_returns_original(self):
+        expr = X + 1
+        walker = expr.fae.walk()
+        next(walker)
+        try:
+            walker.send(None)  # no replacement
+        except StopIteration as e:
+            result = e.value
+        assert result is expr
+
+    # --- find ---
+
+    def test_find_by_path_replaces_node(self):
+        expr = ((X + 1) % "a" >> (X * 2) % "b") % "root"
+        result = expr.fae.find(r"root\.b", callback=lambda node: node + 100)
+        # chain: input 1 → (1+1)=2 → (2*2)+100=104
+        assert 1 | result == 104
+
+    def test_find_by_type_visits_all_matching(self):
+        expr = X + 1 >> X * 2
+        seen = []
+
+        def callback(node):
+            seen.append(node)
+            return node
+
+        expr.fae.find(F, callback=callback)
+        # Chain has two F children: (X+1) and (X*2)
+        assert len(seen) == 2
+
+    def test_find_no_match_returns_original(self):
+        expr = X + 1
+        result = expr.fae.find(r"no\.match", callback=lambda n: n * 2)
+        assert 3 | result == 4
 
 
 class TestFList:
@@ -1542,33 +1624,37 @@ class TestFDict:
 #         assert mux.s1 == "s1"
 
 
+class _DoubleModifier(Modifier):
+    """Test modifier that wraps a node as `node * 2`."""
+    def __call__(self, node):
+        return node * 2
+
+
 def test_modifiers():
+    """Modify("path", modifier) replaces the node at the path with modifier(node)."""
     expr = (
-        X + 2 
-        >> ((X / 2) % "baz" + X * X ) % "bar"
+        X + 2
+        >> ((X / 2) % "baz" + X * X) % "bar"
         >> X * 10
     ) % "foo"
-    record = Record()
-    out = expr % Modify(r"foo\.bar\.baz", record)
 
-    modifiers = out.fae.ops[1].fae.args[0].fae.modifiers
-    assert len(modifiers) == 1
-    assert modifiers[0] is record
+    modifier = _DoubleModifier()
+    out = expr % Modify(r"foo\.bar\.baz", modifier)
+
+    # The node at "foo.bar.baz" was (X / 2); after replacement it should be (X / 2) * 2.
+    # ops[1] is the "bar" chain node; its first arg is the "baz" sub-expression.
+    replaced = out.fae.ops[1].fae.args[0]
+    assert 3.0 == replaced._resolve(6.0)  # (6/2)*2 == 6
 
 
-def test_modifiers_type():
-    expr = (
-        X + 2 
-        >> ((X / 2) % "baz" + X * X ) % "bar"
-        >> X * 10
-    ) #% "foo"
+def test_modifiers_by_type():
+    """Modify(TypeClass, modifier) replaces every node of that type."""
+    expr = X + 2 >> X * 3
 
-    print(expr.fae.expr is expr)
-    return
-    record = Record()
-    out = expr % Modify(F, record)
-    assert out.fae.ops[0].fae.modifiers[0] is record
-    assert out.fae.ops[1].fae.modifiers[0] is record
-    assert out.fae.ops[2].fae.modifiers[0] is record
-    assert out.fae.ops[1].fae.args[0].fae.modifiers[0] is record
-    assert out.fae.ops[1].fae.args[1].fae.modifiers[0] is record
+    modifier = _DoubleModifier()
+    out = expr % Modify(F, modifier)
+
+    # Every F node is wrapped with *2, so resolving should double each op's output.
+    # ops[0] is (X+2), wrapped -> (X+2)*2; ops[1] receives that and is (X*3), wrapped -> (X*3)*2.
+    result = out._resolve(1.0)
+    assert result == ((1.0 + 2) * 2) * 3 * 2

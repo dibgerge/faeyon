@@ -56,7 +56,7 @@ class PatchedImageDecoder(nn.Module):
         kernel_size: int = 1,
         ignore_first: bool = True,
         bias: bool = True
-     ):
+    ):
         super().__init__()
         out_channels = encoder_stride ** 2 * num_channels
 

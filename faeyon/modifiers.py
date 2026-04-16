@@ -1,99 +1,75 @@
 import abc
 
-from typing import Any, Optional
-from faeyon.magic.spells import Delayable
-from faeyon import FVar, X
+from typing import Optional
+from faeyon.magic.spells import Delayable, X
+
+
+class Modifier(abc.ABC):
+    """
+    Base class for modifiers. A modifier is a callable that takes a node in the expression
+    tree and returns a new node that replaces it.
+
+    Usage:
+        model % Modify("encoder.attn", QuantModifier())
+    """
+    @abc.abstractmethod
+    def __call__(self, node: Delayable) -> Delayable:
+        """Return a new Delayable that replaces `node`."""
 
 
 class Modify:
     """
-    Used in conjunction with modifiers to specify where at in the expression tree to 
-    apply the modifiers.
+    Locates a node in the expression tree by path or type, then replaces it by calling
+    `modifier(node)`. The modifier is responsible for returning the replacement node.
+
+    Examples:
+        model % Modify("encoder.layer", Quantizer())
+        model % Modify(F, CacheModifier())
     """
-    def __init__(self, lookup: str | type[Delayable], *modifiers: Modifier) -> None:
+    def __init__(self, lookup: str | type[Delayable], modifier: Modifier) -> None:
         self.lookup = lookup
-        self.modifiers = modifiers
+        self.modifier = modifier
 
-    def __rmod__(self, root: Delayable) -> Delayable:        
-        def callback(node: Delayable) -> Delayable:
-            return node.fae.append(*self.modifiers)
-
+    def __rmod__(self, root: Delayable) -> Delayable:
         if not isinstance(root, Delayable):
             return NotImplemented
+
+        def callback(node: Delayable) -> Delayable:
+            return self.modifier(node)
+
         return root.fae.find(self.lookup, callback=callback)
 
 
-class Modifier(abc.ABC):
-    """ 
-    Base class for modifiers.
-
-    # TODO: make this a protocol
+class IF(Modifier):
     """
-    @abc.abstractmethod
-    def on_init(self, node: Delayable) -> None:
-        pass
+    Conditionally includes or replaces a node.
 
-    @abc.abstractmethod
-    def on_build(self) -> Any:
-        """
-        Logic used to specify the new expression to be used.
-        """
+    - If `condition` is True:  the node is kept as-is.
+    - If `condition` is False: the node is replaced with `else_` (or X if not provided).
+    - If `condition` is a Delayable: the replacement is deferred to resolve time via
+      a conditional F expression.
 
-    @abc.abstractmethod
-    def on_resolve(self, result: Any) -> None:
-        """
-        Called at resolve time, which the modify can cache or use the result of the node.
-        """
-
-
-class Record:
-    node: Delayable
-
-    def __init__(self, output: FVar = None) -> None:
-        self.output = output
-
-    def on_init(self, node: Delayable) -> None:
-        self.node = node
-
-    def on_build(self) -> Any:
-        return self.node
-
-    def on_resolve(self, result: Any) -> None:
-        if self.output is not None:
-            # TODO: need to update FVar interface
-            self.output.value = result
-        
-        self.node.fae.cache = result
-
-
-class IF:
-    # TODO: this does not work
+    Example:
+        model % Modify("encoder.dropout", IF(training, else_=X))
+    """
     def __init__(
-        self, 
+        self,
         condition: bool | Delayable,
-        else_: Optional[Delayable] = None
+        else_: Optional[Delayable] = None,
     ) -> None:
         self.condition = condition
         self.else_ = else_
 
-    def on_init(self, node: Delayable) -> None:
-        self.node = node
+    def __call__(self, node: Delayable) -> Delayable:
+        from faeyon.magic.spells import F
 
-    def on_build(self) -> Any:
         if isinstance(self.condition, bool):
             if self.condition:
-                return self.node
+                return node
             else:
-                if self.else_ is not None:  
-                    return self.else_
-                else:
-                    return X
+                return self.else_ if self.else_ is not None else X
         elif isinstance(self.condition, Delayable):
-            return 
+            else_ = self.else_ if self.else_ is not None else X
+            return F(lambda cond, a, b: a if cond else b, self.condition, node, else_)
         else:
             raise ValueError(f"Invalid condition type: {type(self.condition)}")
-
-    def on_resolve(self, result: Any) -> None:
-        pass
-
-
