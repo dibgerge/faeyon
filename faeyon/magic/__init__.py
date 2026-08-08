@@ -11,6 +11,9 @@ from .spells import (
     DelayedModule,
     I,
     P,
+    R,
     Substitute
 )
 from .faek import faek
+from .fae_module import FaeModule
+from .lower import lower

@@ -10,7 +10,7 @@ from torch.nn.attention.flex_attention import flex_attention
 
 class Enum(enum.StrEnum):
     RoPe = "rope"
-   
+
 
 class Attention(nn.Module):
     """

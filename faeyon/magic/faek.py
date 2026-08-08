@@ -2,9 +2,9 @@ import sys
 import inspect
 import itertools
 from torch import nn
-from typing import Any, overload
+from typing import Any
 from collections.abc import Callable
-from ._opinfo import get_opinfo, OperatorType
+from ._opinfo import get_opinfo, OperatorType, OpInfo
 from .spells import (
     F, 
     X,
@@ -34,7 +34,8 @@ def __new__(cls, *args, **kwargs):
 
 
 def __default_new__(cls, *args, **kwargs):
-    """ Once we override __new__ in `nn.Module`, we cannot restore the old one, since nn.Module 
+    """ 
+    Once we override __new__ in `nn.Module`, we cannot restore the old one, since nn.Module 
     (as of PyTorch 2.7) does not implement `__new__`, and hence expect it to have no arguments. 
     The custom __new__ method we implemented above does not match this signature, and hence 
     we cannot restore the old one. As a workaround, we define a default __new__ method that 
@@ -45,45 +46,6 @@ def __default_new__(cls, *args, **kwargs):
     return object.__new__(cls)
 
 
-# @overload
-# def __mul__[T: nn.Module](self: T, other: int) -> list[T]: ...
-
-# @overload
-# def __mul__[T: nn.Module](self: T, other: nn.Module | F) -> F: ...
-
-
-# def __mul__[T: nn.Module](self: T, other: int | nn.Module | F) -> list[T] | F:
-#     """
-#     Creates a ModuleList of `other` clones of this module.
-#     """
-#     if isinstance(other, nn.Module):
-#         return getattr(self(X), "__mul__")(other(X))
-    
-#     if isinstance(other, Delayable):
-#         return getattr(self(X), "__mul__")(other)
-
-#     if not isinstance(other, int):
-#         return NotImplemented
-    
-#     if other < 1:
-#         raise ValueError("Number of modules must be greater than 0.")
-
-#     return [self.clone() for _ in range(other)]
-
-
-# @overload
-# def __rmul__[T: nn.Module](self: T, other: int) -> list[T]: ...
-
-
-# @overload
-# def __rmul__[T: nn.Module](self: T, other: nn.Module | F) -> F: ...
-
-
-# def __rmul__[T: nn.Module](self: T, other: int | nn.Module | F) -> list[T] | F:
-#     """ Multiplication is commutative. """
-#     return self.__mul__(other)  # type: ignore
-
-
 def __rrshift__[T: nn.Module](self: T, other: nn.Module | Delayable) -> Delayable:
     """
     This is an alias for `__call__`. The limitation here is that it only works for 
@@ -91,10 +53,8 @@ def __rrshift__[T: nn.Module](self: T, other: nn.Module | Delayable) -> Delayabl
     """
     if isinstance(other, Delayable):
         return other >> self(X)
-    
     elif isinstance(other, nn.Module):
         return other(X) >> self(X)
-    
     else:
         return NotImplemented
 
@@ -106,7 +66,7 @@ def clone[T: nn.Module](self: T, *args: Any, **kwargs: Any) -> T:
 
     The module is cloned based on the arguments passed to its constructor during its creation. 
     If any of the arguments were changed after the module was created, the changes will not be 
-    reflected in the cloned module unless the changes were made on the arguments itslef inplace 
+    reflected in the cloned module unless the changes were made on the argument itself inplace 
     causing its mutation. E.g. passing a list to the current module and then mutating that same list
     outside the module...
 
@@ -122,47 +82,35 @@ def clone[T: nn.Module](self: T, *args: Any, **kwargs: Any) -> T:
     return cls(*new_bound.args, **new_bound.kwargs)
 
 
-# def _resolved_call(self, *args, **kwargs):
-#     return faek.module__call__(self, *args, **kwargs)
-
-
-# _resolved_call.__name__ = "Module.__call__"
-
-
 def __call__(self, *args, **kwargs):
     return F(faek.module__call__, self, *args, **kwargs)
 
-    
-def delayed_unary_method[T: nn.Module](op_name: str) -> Callable[[T], F]:
-    def func(self: T) -> F:
-        return getattr(self(X), op_name)()
-    return func
 
-
-def delayed_binary_method[T: nn.Module](
-    op_name: str,
-    is_right: bool
-) -> Callable[[T, nn.Module | Delayable], F]:
+def delayed_method[T: nn.Module](op_info: OpInfo) -> Callable[[T, nn.Module | Delayable], F]:
     """
     This method only handles arithmetic on two modules, e.g. module1 + module2. Thus we expect
     to implement only the left versions of the operators. If that failed, will call the 
     right type's operator.
     """
-    def func(self: T, other: nn.Module | Delayable) -> F:
-        if isinstance(other, nn.Module):
-            # module >> module
-            if is_right:
-                # This should not ever happen... 
-                return getattr(other(X), op_name.replace("r", "", count=1))(self(X))
+    if op_info.type == OperatorType.UNARY:
+        def func(self: T, other: nn.Module | Delayable) -> F:
+            return op_info.operator(self(X))
+
+    elif op_info.type == OperatorType.RBINARY:
+        def func(self: T, other: nn.Module | Delayable) -> F:
+            if isinstance(other, nn.Module):
+                return op_info.operator(other(X), self(X))
             else:
-                return getattr(self(X), op_name)(other(X))
-        else:
-            if is_right:
-                # any >> module 
-                return getattr(other, op_name.replace("r", "", count=1))(self(X))
+                return op_info.operator(other, self(X))
+    
+    elif op_info.type == OperatorType.BINARY:
+        def func(self: T, other: nn.Module | Delayable) -> F:
+            if isinstance(other, nn.Module):
+                return op_info.operator(self(X), other(X))
             else:
-                # module >> any
-                return getattr(self(X), op_name)(other)
+                return op_info.operator(self(X), other)
+    else:
+        raise ValueError(f"Unsupported operator type: {op_info.type}.")
 
     return func
 
@@ -194,16 +142,36 @@ class Faek(metaclass=Singleton):
     """
     This is a singleton class intended to be used as a context manager or as a general tool
     to enable the `ModuleMixin` functionality by Monkey patching the `nn.Module` in PyTorch.
+
+    The patch is opt-in (importing faeyon does not enable it). Either enable it
+    process-wide with `faek.on()` / `faek.off()`, or scope it to a block:
+
+        with faek:
+            expr = nn.Linear(10, 5) >> nn.ReLU()
+
+    The context manager is reentrant and restores the previous state on exit, so
+    nesting `with faek:` blocks or combining them with an explicit `faek.on()` is safe.
+    Only *building* expressions requires the patch; evaluating or materializing an
+    existing tree (`data | expr`, `FaeModule`, `lower`) works with the patch off.
     """
     def __init__(self):
         self._is_on = False
+        self._entered: list[bool] = []
         self.module__call__ = nn.Module.__call__
 
+    @property
+    def is_on(self) -> bool:
+        return self._is_on
+
     def __enter__(self):
+        self._entered.append(self._is_on)
         self.on()
+        return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.off()
+        was_on = self._entered.pop()
+        if not was_on:
+            self.off()
 
     def on(self):
         if self._is_on:
@@ -211,7 +179,6 @@ class Faek(metaclass=Singleton):
 
         from faeyon.io import save
 
-        current_module = sys.modules[__name__]
         nn.Module.__new__ = staticmethod(__new__)
         nn.Module.__call__ = __call__
         nn.Module.clone = clone
@@ -219,23 +186,8 @@ class Faek(metaclass=Singleton):
         nn.Module.from_file = classmethod(from_file)
         nn.Module.load = load
 
-        for opinfo in get_opinfo(type=OperatorType.BINARY | OperatorType.RBINARY):
-            setattr(
-                nn.Module, 
-                opinfo.attr_name, 
-                getattr(
-                    current_module, 
-                    opinfo.attr_name, 
-                    delayed_binary_method(opinfo.attr_name, opinfo.is_right)
-                )
-            )
-                
-        for opinfo in get_opinfo(type=OperatorType.UNARY):
-            setattr(
-                nn.Module, 
-                opinfo.attr_name, 
-                getattr(current_module, opinfo.attr_name, delayed_unary_method(opinfo.attr_name))
-            )
+        for opinfo in get_opinfo(type=OperatorType.ARITHMETIC):
+            setattr(nn.Module, opinfo.attr_name, delayed_method(opinfo))
 
         self._is_on = True
 
@@ -249,10 +201,16 @@ class Faek(metaclass=Singleton):
         nn.Module.__new__ = staticmethod(__default_new__)
         nn.Module.__call__ = self.module__call__
         delattr(nn.Module, "clone")
+        delattr(nn.Module, "save")
+        delattr(nn.Module, "from_file")
+        delattr(nn.Module, "load")
         self._is_on = False
 
 
 class ModuleCall(F):
+    """
+    TODO: What is this?
+    """
     def __init__(self, module, /, *args, **kwargs):
         Delayable.__init__(self, module, *args, **kwargs)
         self._call = F(faek.module__call__, module, *args, **kwargs)
@@ -262,8 +220,6 @@ class ModuleCall(F):
 
         if isinstance(result, Delayable) and result.fae.op is faek.module__call__:
             return ModuleCall(result.fae.args[0], )
-
-
 
 
 faek = Faek()

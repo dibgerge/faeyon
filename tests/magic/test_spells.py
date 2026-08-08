@@ -1,7 +1,7 @@
 import pytest
 import inspect
 import torch
-from faeyon import A, X, FVar, FList, FDict, F, Chain
+from faeyon import A, R, X, FVar, FList, FDict, F, Chain
 from faeyon.magic.spells import Delayable, Symbol
 from faeyon.modifiers import Modify, Modifier
 from tests.common import ConstantLayer
@@ -1624,6 +1624,49 @@ class TestFDict:
 #         assert mux.s1 == "s1"
 
 
+class TestR:
+    def test_recall_named_op(self):
+        """R["name"] reads the output a named node produced earlier in the chain."""
+        expr = (X + 1) % "tap" >> X * 2 >> X + R["tap"]
+        # 3: tap = 4, then 8, then 8 + 4
+        assert 3 | expr == 12
+
+    def test_recall_named_subchain(self):
+        """A named sub-chain records its final output under its name."""
+        expr = (X + 1 >> X * 2) % "enc" >> X + 3 >> R["enc"] * X
+        # 2: enc = (2+1)*2 = 6, then 9, then 6 * 9
+        assert 2 | expr == 54
+
+    def test_recall_into_fdict(self):
+        """Recall works inside container fan-out."""
+        expr = (X * 2) % "a" >> X + 1 >> FDict({"x": X, "a": R["a"]})
+        assert 3 | expr == {"x": 7, "a": 6}
+
+    def test_recall_from_inside_fdict(self):
+        """A named node nested inside a container is recallable downstream."""
+        expr = FDict({"a": (X + 1) % "t", "b": X * 2}) >> X["a"] + R["t"]
+        # 4: t = 5, then 5 + 5
+        assert 4 | expr == 10
+
+    def test_recall_before_definition_raises(self):
+        """Recalling a name before the named node has executed is an error."""
+        expr = X + R["nope"] >> X * 2
+        with pytest.raises(KeyError, match="nope"):
+            3 | expr
+
+    def test_recall_table_is_per_evaluation(self):
+        """Each evaluation gets a fresh table: no leakage across calls."""
+        expr = (X + 1) % "tap" >> X * 2 >> X + R["tap"]
+        assert 3 | expr == 12
+        assert 0 | expr == 3  # tap = 1, then 2, then 2 + 1
+
+    def test_recall_without_chain_stays_delayed(self):
+        """Outside a chain there is no recall table; R stays unresolved."""
+        expr = R["tap"] + X
+        result = 3 | expr
+        assert isinstance(result, Delayable)
+
+
 class _DoubleModifier(Modifier):
     """Test modifier that wraps a node as `node * 2`."""
     def __call__(self, node):
@@ -1644,7 +1687,7 @@ def test_modifiers():
     # The node at "foo.bar.baz" was (X / 2); after replacement it should be (X / 2) * 2.
     # ops[1] is the "bar" chain node; its first arg is the "baz" sub-expression.
     replaced = out.fae.ops[1].fae.args[0]
-    assert 3.0 == replaced._resolve(6.0)  # (6/2)*2 == 6
+    assert 6.0 == replaced._resolve(6.0)  # (6/2)*2 == 6
 
 
 def test_modifiers_by_type():

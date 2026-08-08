@@ -42,15 +42,31 @@ class _MappingKey(str):
     pass
 
 
+class _RecallTable(dict):
+    """
+    Per-evaluation storage of named-node outputs, read back by the `R` symbol.
+
+    A fresh table is seeded by the outermost `Chain` of every evaluation (and by the
+    forward emitted by `lower()`), so recalled values never leak across calls.
+    """
+    def __missing__(self, key):
+        raise KeyError(
+            f"R[{key!r}] was resolved before any node named {key!r} produced a value. "
+            "The named node must execute before the recall site (i.e. appear earlier "
+            "in the same chain)."
+        )
+
+
+# The key under which the recall table travels through resolution kwargs. It must equal
+# the class name of the `R` symbol so that symbol resolution finds the table by name.
+_RECALL_KEY = "R"
+
+
 @dataclasses.dataclass(frozen=True)
 class DelayableNamespace:
     expr: Delayable
     arguments: Optional[inspect.BoundArguments] = None
-    
     name: Optional[str] = None
-    group: Optional[int] = None
-
-    cache: Any = None
 
     def _from_arguments(self, *args, **kwargs) -> Delayable:
         """
@@ -77,14 +93,17 @@ class DelayableNamespace:
         if "expr" in kwargs:
             raise ValueError("`expr` cannot be updated.")
         arguments = kwargs.pop("arguments", self.arguments)
+        
         if isinstance(arguments, inspect.BoundArguments):
             clone = self._from_arguments(arguments)
         elif arguments is None:
             clone = self._from_arguments()
         else:
             raise ValueError(f"Invalid arguments type: {type(arguments)}")
+        
         if kwargs:
             clone.fae = dataclasses.replace(clone.fae, **kwargs)
+        
         return clone
 
     def clone(
@@ -260,7 +279,8 @@ class Delayable:
         sig = inspect.signature(self.__init__)
         bound = sig.bind(*args, **kwargs)
         bound.apply_defaults()
-        self.fae = DelayableNamespace(expr=self, arguments=bound)
+        # self.fae = DelayableNamespace(expr=self, arguments=bound)
+        self._fae_arguments = bound
 
     @abstractmethod
     def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
@@ -268,8 +288,193 @@ class Delayable:
         Uses data to resolve the delayable. Must be implemented by subclasses.
         """
 
+    @abstractmethod
+    def _fae_splice(self) -> Delayable:
+        """ 
+        This is a coroutine that yields the direct children of the delayable. This should be 
+        implemented by subclasses, where the subclasses yield immediate children of the delayable,
+        expect altered children, and return a new delayable instance.
+        """
+
+    def fae_splice(
+        self,
+        callback: Optional[Callable[[Delayable], Any]] = None,
+        always_copy: bool = False
+    ) -> Delayable:
+        """
+        Loop over immediate children of the delayable, send to callback to obtain a 
+        replacement child.
+        """
+        walker = self._fae_splice()
+        try:
+            child = next(walker)
+            changed = False
+            while True:
+                if callback is not None:
+                    new_child = callback(child)
+                    changed = changed or (new_child is not child)
+                    child = walker.send(new_child)
+                else:
+                    child = walker.send(child)
+        except StopIteration as e:
+            copied = e.value
+            if changed or always_copy:
+                return copied
+        return self
+
+    def fae_walk(self, callback: Optional[Callable[[Delayable], Any]] = None) -> Delayable:
+        """
+        Walk the expression tree and return a new expression with the updated children. This is the
+        recursive version of `fae_splice`.
+        """
+        stack = [(self, self._fae_splice(), None, False)]
+        result = None
+
+        while stack:
+            node, walker, parent_walker, done = stack.pop()
+
+            if node is None:
+                continue
+
+            if not done:
+                try:
+                    child = next(walker)
+                except StopIteration as e:
+                    stack.append((node, None, parent_walker, True))
+                else:
+                    stack.append((node, walker, parent_walker, True))
+            else:
+                if walker is None:
+                    new_node = callback(node) if callback else node
+                    if parent_walker is not None:
+                        try:
+                            child = parent_walker.send(new_node)
+                        except StopIteration as e:
+                            # this should be the new child
+                            parent_walker.send(e.value)
+                else:
+                    try:
+                        child = walker.send(child)
+                    except StopIteration as e:
+                        if parent_walker is None:
+                            return e.value
+                        else:
+                            parent_walker.send(e.value)
+            
+            if isinstance(child, Delayable):
+                stack.append((child, child._fae_splice(), walker, False))
+            else:
+                stack.append((child, None, walker, True))
+        return result
+
+    def fae_clone(
+        self: Delayable, 
+        recurse: bool = False, 
+        clone_modules: bool = False,
+    ) -> Delayable:
+        """
+        Return a copy of the expression.
+
+        Args:
+            recurse: If False (default), returns a shallow copy via `update()`. If True,
+                walks the entire expression tree and copies every node.
+            clone_modules: When recursing, controls how `DelayedModule` nodes are handled.
+                Must be an integer index used to generate the module from `data`. If False,
+                `DelayedModule` nodes are copied without being resolved. `nn.Module` arguments
+                inside `F` nodes are deep-copied via `.clone()`.
+            data: Sequence passed as `P` when generating `DelayedModule` nodes.
+        """
+        if not recurse and not clone_modules:
+            return self.fae_splice(always_copy=True)
+
+        def callback(node: Delayable) -> Delayable:
+
+            if clone_modules is not False:
+                # if isinstance(node, DelayedModule):
+                #     if not isinstance(clone_modules, int):
+                #         raise ValueError(
+                #             "`clone_modules` must be an integer to resolve `DelayedModule` objects."
+                #         )
+                #     return node._generate(P=data, I=clone_modules)
+                # elif isinstance(node, F) and node.fae.args and isinstance(node.fae.args[0], nn.Module):
+                #     return node.fae._from_arguments(node.fae.op, node.fae.args[0].clone(), *node.fae.args[1:], **node.fae.kwargs)
+            return node.fae.update()
+
+        return self.find(Delayable, callback=callback) or self.expr
+
+    def _record(self, result: Any, kwargs: dict[str, Any]) -> None:
+        """
+        Store `result` in the current evaluation's recall table (if one is active) under
+        this node's name, so `R["name"]` can read it later in the same evaluation.
+
+        No-op when the node is unnamed, no table is active, or the result is still
+        delayed (partial evaluation). Symbols (which are classes and whose `fae.name`
+        is the class name) are never recorded.
+        """
+        if self.fae.name is None or isinstance(self, type) or isinstance(result, Delayable):
+            return
+        table = kwargs.get(_RECALL_KEY)
+        if table is not None:
+            table[self.fae.name] = result
+
+    def fae_find(
+        self, 
+        pattern: str | type[Delayable], 
+        callback: Optional[Callable[[Delayable], Delayable]]
+    ) -> Delayable:
+        """
+        Walk the expression tree and optionally replace matching nodes.
+
+        `pattern` is either a dotted path string (e.g. `"root.layer._"`) matched against
+        each node's accumulated name, or a `Delayable` subtype matched by `isinstance`.
+
+        For each matching node, `callback` is called with the node as its argument. If
+        `callback` returns a new node, that node replaces the original and all ancestor
+        nodes along the path are copied to reflect the change. If `callback` returns
+        `None`, the node is left unchanged.
+
+        Returns the (possibly updated) root expression, or `None` if no nodes were visited.
+        """
+        def _recurse(node: Delayable, current_path: Optional[str] = None):
+
+
+            # walker = node.fae_splice()
+            # try:
+            #     child = next(walker)
+            #     while True:
+            #         child_path = f"{current_path}.{child.fae.name or '_'}"
+            #         next_child = _recurse(child, current_path=child_path)
+            #         base = next_child if next_child is not None else child
+            #         new_child = callback(base) if callback is not None else base
+            #         child = walker.send(new_child)
+
+
+                    # if isinstance(pattern, str):
+
+
+                    #     if re.fullmatch(pattern, child_path):
+                    #         new_child = callback(child)
+                    #     else:
+                    #         new_child = _recurse(child, child_path)
+                    # else:
+                    #     res = _recurse(child)
+                    #     base = res if res is not None else child
+                    #     if isinstance(child, pattern):
+                    #         replaced = callback(base)
+                    #         new_child = replaced if replaced is not None else base
+                    #     else:
+                    #         new_child = res
+                    # child = walker.send(new_child)
+            except StopIteration as e:
+                return e.value
+            return node
+
+        return _recurse(self.expr, self.name)
+
     def __or__(self, other: Any) -> Any:
-        """ The case of `X | data` is not defined."""
+        """ 
+        The case of `Delayable | Any` is not defined.
+        """
         if isinstance(other, torch.Tensor):
             # Prevent __torch_function__ from being called for `X | tensor`.
             # Because torch_function __ror__ uses bitwise_or instead, which we don't want to 
@@ -279,14 +484,17 @@ class Delayable:
         return NotImplemented
 
     def __ror__(self, other: Any) -> Any:
-        """ `data | X` results in evaluating the delayed operations. """
+        """ 
+        `data | Delayable` results in evaluating the delayed operations.
+        """
         if isinstance(other, Delayable):
             return NotImplemented
         return self._resolve(other)
 
     def __mod__[T: Delayable](self: T, modifier: modifierType) -> T:
         """
-        The modulate operator `%` is used to name the operation. It can also be used to modify Delayables, for example, set Optimizer to parameters in delayable modules, etc...
+        The modulate operator `%` is used to name the operation. It can also be used to modify 
+        Delayables, for example, set Optimizer to parameters in delayable modules, etc...
         (TODO: How to handle general modifiers, e.g. optimizer.)
         """
         if isinstance(modifier, str):
@@ -306,7 +514,16 @@ class Delayable:
             raise TypeError(f"Modifier should be to the right of the Delayable, not the left.")
         return NotImplemented
         
-    def __rshift__(self, other: Delayable | int | Sequence[Any]) -> Chain:       
+    def __rshift__(self, other: Delayable | int | Sequence[Any]) -> Chain:
+        """
+        The right shift operator (>>) is used to chain Delayables together, like the layers in 
+        a neural network.
+
+        There are three possible cases:
+        1. `Delayable >> Delayable` -> Chain(Delayable, Delayable)
+        2. `Delayable >> int` -> Chain(Delayable, Delayable, ..., Delayable) 
+        3. `Delayable >> Sequence[Any]` 
+        """
         if isinstance(other, Delayable):
             return Chain(self, other)
         elif isinstance(other, int):
@@ -332,7 +549,8 @@ class Delayable:
 
     def __rrshift__(self, other: Any) -> Any:
         """
-        In this case `other` cannot be of type `Delayable` (__rshift__ is called instead).
+        The rshift operator (>>) is only supported when both sides are Delayables. 
+        In this case `other` cannot be of type `Delayable` (`__rshift__` is called instead).
         """
         return NotImplemented
 
@@ -354,6 +572,7 @@ class _OpActionMixin:
             isinstance(arg, (FList, FDict)) 
             for arg in itertools.chain(args, kwargs.values())
         ):
+            # TODO: do i need this check?
             return NotImplemented
         return F(opinfo, self, *args, **kwargs)
         
@@ -493,7 +712,9 @@ class _OpActionMixin:
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):
         """
-        Note: For operators like `+`, `-`, `*`, etc., the `__torch_function__` is called only if tensor is the left operand, otherwise the operand must be handled by the right hand side Delayable.
+        Note: For operators like `+`, `-`, `*`, etc., the `__torch_function__` is called only if 
+        tensor is the left operand, otherwise the operand must be handled by the right hand side 
+        Delayable.
         """
         if kwargs is None:
             kwargs = {}
@@ -574,7 +795,8 @@ class _SymMeta(type):
 
 class Sym(metaclass=_SymMeta):
     """
-    dynamically create a symbol class, for example Sym.Y will create a new `Symbol` class called Y, and it will be addeed to the symbol registry.
+    Dynamically create a symbol class, for example Sym.Y will create a new `Symbol` class called Y, 
+    and it will be addeed to the symbol registry.
     """
     pass
 
@@ -612,6 +834,34 @@ class I(Symbol):
 class P(Symbol):
     """ A special symbol that represents a placeholder for a parameter."""
     pass
+
+
+class R(Symbol):
+    """
+    The recall symbol: `R["name"]` resolves to the output that the node named `% "name"`
+    produced earlier in the *current* evaluation. This turns names into long-range skip
+    connections (U-Net, FPN) without threading values through the pipeline by hand:
+
+        unet = (
+            enc_block(1, 64) % "e1" >> down(64)
+            >> bottleneck(64, 128)
+            >> up(128, 64) >> F(torch.cat, FList([X, R["e1"]]), dim=1) >> dec_block(...)
+        )
+
+    Semantics:
+    * Recorded outputs live in a per-evaluation table seeded by the outermost `Chain`
+      (or by `lower()`'s emitted forward); nothing leaks across calls.
+    * The named node must execute before the recall site — recalling a name that has
+      not produced a value yet raises a `KeyError` at evaluation time.
+    * Names are matched by their plain node name (the string given to `%`), not by
+      dotted path; recalled names should therefore be unique within one model.
+    """
+    @classmethod
+    def _resolve(cls, _default: Any = _NoValue, /, **kwargs: Any) -> Any:
+        # Unlike other symbols, R never falls back to `_default`: its only meaning is
+        # the recall table of the current evaluation. With no active table it stays
+        # unresolved (partial evaluation) instead of silently capturing the data.
+        return kwargs.get(_RECALL_KEY, cls)
     
 
 class _Unpack(Delayable):
@@ -635,6 +885,9 @@ class _Unpack(Delayable):
 class F(_OpActionMixin, Delayable):
     def __init__(self, op: Callable[..., Any], /, *args, **kwargs) -> None:
         super().__init__(op, *args, **kwargs)
+        self._fae_op = op
+        self._fae_args = args
+        self._fae_kwargs = kwargs
 
     def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
         resolved_args = []
@@ -671,8 +924,23 @@ class F(_OpActionMixin, Delayable):
         ):
             return F(self.fae.op, *resolved_args, **resolved_kwargs)
 
-        return self.fae.op(*resolved_args, **resolved_kwargs)
+        result = self.fae.op(*resolved_args, **resolved_kwargs)
+        self._record(result, kwargs)
+        return result
 
+    def _fae_walk(self) -> F:
+        new_args = []
+        for arg in self._fae_args:
+            new_arg = yield arg
+            new_args.append(new_arg)
+
+        new_kwargs = {}
+        for key, kwarg in self._fae_kwargs.items():
+            new_kwarg = yield kwarg
+            new_kwargs[key] = new_kwarg
+
+        return self.__class__(self._fae_op, *new_args, **new_kwargs)
+    
     def __str__(self):
         if isinstance(self.fae.op, OpInfo):
             return self.fae.op.to_string(*self.fae.args, **self.fae.kwargs)
@@ -722,17 +990,28 @@ class Chain(_OpActionMixin, Delayable):
           So if X is given as input, it will be replaced with the output of the 
           previous item in chain. If you have arguments needed downstream, use another symbol.
         """       
+        # Seed the recall table for `R` at the outermost chain of this evaluation;
+        # nested chains find the caller's table in kwargs and share it.
+        kwargs.setdefault(_RECALL_KEY, _RecallTable())
         x = self.fae.ops[0]._resolve(_default, **kwargs)
         kwargs.pop("X", None)
         for op in self.fae.ops[1:]:
             x = op._resolve(_default, X=x, **kwargs)
+        self._record(x, kwargs)
         return x
+
+    def _splice(self):
+        new_ops = []
+        for op in self.fae.ops:
+            new_op = yield op
+            new_ops.append(new_op)
+        return self.__class__(*new_ops)
 
     def __lshift__(self, other: Delayable) -> Chain:
         return Chain(*self.fae.ops[:-1], self.fae.ops[-1] << other)
 
     def __rshift__(self, other: Any) -> Any:
-        if self.fae.has_modifiers:
+        if self.fae.name is not None:
             return super().__rshift__(other)
 
         if isinstance(other, Chain):
@@ -775,7 +1054,8 @@ class DelayedModule(F):
             return super().__rrshift__(other)
 
     def _generate(self, I: int, P: Optional[Sequence[Any]] = None) -> F:
-        """ 
+        """
+        If  
         """
         if P is not None:
             return super()._resolve(_NoValue, P=P, I=I)
@@ -1154,7 +1434,9 @@ class FList(_OpActionMixin, Delayable):
         return FList(out)
 
     def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
-        return [item._resolve(_default, **kwargs) for item in self.fae.expressions]
+        result = [item._resolve(_default, **kwargs) for item in self.fae.expressions]
+        self._record(result, kwargs)
+        return result
 
     def __lshift__(self, other: Delayable) -> FList:       
         if isinstance(other, FList):
@@ -1225,10 +1507,12 @@ class FDict(_OpActionMixin, Delayable):
         return FDict(out)
 
     def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
-        return {
+        result = {
             key: item._resolve(_default, **kwargs) 
             for key, item in self.fae.expressions.items()
         }
+        self._record(result, kwargs)
+        return result
 
     def __lshift__(self, other: Delayable) -> FDict:
         if isinstance(other, FDict):

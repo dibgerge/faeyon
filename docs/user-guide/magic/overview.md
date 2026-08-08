@@ -41,10 +41,10 @@ class MyDelayable(Delayable):
 ```python
 from faeyon import faek
 
-# Faek is enabled by default, but you can control it:
+# Faek is opt-in (importing faeyon does not patch nn.Module).
+# Enable it explicitly, or scope it to a block:
 with faek:
-    # Your code here
-    pass
+    model = nn.Linear(10, 5) >> nn.ReLU()
 ```
 
 ## Learn More

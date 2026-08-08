@@ -4,7 +4,7 @@
 
 ## Overview
 
-By default, Faek is enabled when you import Faeyon. It adds the following capabilities to `nn.Module`:
+Faek is **opt-in**: importing Faeyon does not change PyTorch's behavior. When enabled, it adds the following capabilities to `nn.Module`:
 
 - Delayed operations with `X`
 - Arithmetic operations between modules
@@ -17,15 +17,19 @@ By default, Faek is enabled when you import Faeyon. It adds the following capabi
 ```python
 from faeyon import faek
 
-# Faek is enabled by default, but you can control it:
-faek.off()  # Disable
+# Enable explicitly (process-wide):
 faek.on()   # Enable
+faek.off()  # Disable
 
-# Or use as context manager
+# Or scope it to the code that builds expressions (reentrant,
+# restores the previous state on exit):
 with faek:
-    # Your code here
-    pass
+    model = nn.Linear(10, 5) >> nn.ReLU()
 ```
+
+Only *building* expressions from modules requires Faek to be on. Evaluating or
+materializing an already-built tree (`data | expr`, `FaeModule`, `lower`) works with it
+off, so you can build models inside `with faek:` and use them anywhere.
 
 ## What Faek Adds
 

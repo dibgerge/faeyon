@@ -467,7 +467,8 @@ def get_opinfo(
     name: Optional[str] = None
 ) -> OpInfo | list[OpInfo]:
     """
-    Get the OpInfo for a given attribute name, type, operator, or name. Only one of the arguments should be provided.
+    Get the OpInfo for a given attribute name, type, operator, or name. Only one of the arguments 
+    should be provided.
     """
     if sum(x is not None for x in [attr_name, type, operator, name]) != 1:
         raise ValueError("Exactly one of the arguments should be provided.")
