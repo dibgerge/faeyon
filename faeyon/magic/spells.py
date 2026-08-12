@@ -9,7 +9,7 @@ import itertools
 import re
 
 from abc import ABC, abstractmethod
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Callable, Iterator, Sequence
 from typing import Any, Optional, overload
 
@@ -42,6 +42,17 @@ class _MappingKey(str):
     pass
 
 
+class _Frame:
+    """One suspended `_fae_exchange` coroutine in an iterative traversal."""
+    __slots__ = ("node", "exchange", "path", "sent", "changed")
+    def __init__(self, node: Delayable, path: str) -> None:
+        self.node = node
+        self.exchange = node._fae_exchange()
+        self.path = path
+        self.sent: Any = None       # value to resume the coroutine with
+        self.changed = False        # did any item come back different?
+
+
 class _RecallTable(dict):
     """
     Per-evaluation storage of named-node outputs, read back by the `R` symbol.
@@ -60,213 +71,6 @@ class _RecallTable(dict):
 # The key under which the recall table travels through resolution kwargs. It must equal
 # the class name of the `R` symbol so that symbol resolution finds the table by name.
 _RECALL_KEY = "R"
-
-
-@dataclasses.dataclass(frozen=True)
-class DelayableNamespace:
-    expr: Delayable
-    arguments: Optional[inspect.BoundArguments] = None
-    name: Optional[str] = None
-
-    def _from_arguments(self, *args, **kwargs) -> Delayable:
-        """
-        Construct a new instance of the same Delayable type.
-
-        - No arguments: returns the original expression unchanged.
-        - Single `BoundArguments`: unpacks and forwards as positional/keyword args.
-        - Otherwise: forwards `*args` and `**kwargs` directly to the constructor.
-        """
-        if not args and not kwargs:
-            return self.expr
-        if len(args) == 1 and not kwargs and isinstance(args[0], inspect.BoundArguments):
-            return self.expr.__class__(*args[0].args, **args[0].kwargs)
-        return self.expr.__class__(*args, **kwargs)
-
-    def update(self, **kwargs: Any) -> Delayable:
-        """
-        Return a shallow copy of the expression, optionally with modified namespace fields.
-
-        Pass `arguments` (a `BoundArguments`) to rebind the constructor arguments of the copy.
-        Any additional keyword arguments are applied as replacements on the namespace (e.g.
-        `name`, `group`, `cache`).
-        """
-        if "expr" in kwargs:
-            raise ValueError("`expr` cannot be updated.")
-        arguments = kwargs.pop("arguments", self.arguments)
-        
-        if isinstance(arguments, inspect.BoundArguments):
-            clone = self._from_arguments(arguments)
-        elif arguments is None:
-            clone = self._from_arguments()
-        else:
-            raise ValueError(f"Invalid arguments type: {type(arguments)}")
-        
-        if kwargs:
-            clone.fae = dataclasses.replace(clone.fae, **kwargs)
-        
-        return clone
-
-    def clone(
-        self, 
-        recurse: bool = False, 
-        clone_modules: bool | int = False,
-        data: Optional[Sequence[Any]] = None,
-    ) -> Delayable:
-        """
-        Return a copy of the expression.
-
-        Args:
-            recurse: If False (default), returns a shallow copy via `update()`. If True,
-                walks the entire expression tree and copies every node.
-            clone_modules: When recursing, controls how `DelayedModule` nodes are handled.
-                Must be an integer index used to generate the module from `data`. If False,
-                `DelayedModule` nodes are copied without being resolved. `nn.Module` arguments
-                inside `F` nodes are deep-copied via `.clone()`.
-            data: Sequence passed as `P` when generating `DelayedModule` nodes.
-        """
-        if not recurse:
-            return self.update()
-
-        def callback(node: Delayable) -> Delayable:
-            if clone_modules is not False:
-                if isinstance(node, DelayedModule):
-                    if not isinstance(clone_modules, int):
-                        raise ValueError(
-                            "`clone_modules` must be an integer to resolve `DelayedModule` objects."
-                        )
-                    return node._generate(P=data, I=clone_modules)
-                elif isinstance(node, F) and node.fae.args and isinstance(node.fae.args[0], nn.Module):
-                    return node.fae._from_arguments(node.fae.op, node.fae.args[0].clone(), *node.fae.args[1:], **node.fae.kwargs)
-            return node.fae.update()
-
-        return self.find(Delayable, callback=callback) or self.expr
-
-    def find(
-        self, 
-        pattern: str | type[Delayable], 
-        callback: Optional[Callable[[Delayable], Delayable]]
-    ) -> Delayable:
-        """
-        Walk the expression tree and optionally replace matching nodes.
-
-        `pattern` is either a dotted path string (e.g. `"root.layer._"`) matched against
-        each node's accumulated name, or a `Delayable` subtype matched by `isinstance`.
-
-        For each matching node, `callback` is called with the node as its argument. If
-        `callback` returns a new node, that node replaces the original and all ancestor
-        nodes along the path are copied to reflect the change. If `callback` returns
-        `None`, the node is left unchanged.
-
-        Returns the (possibly updated) root expression, or `None` if no nodes were visited.
-
-        # TODO: update to properly handle regex (need to build path rather than split it...)
-        """
-        def _recurse_path(node: Delayable, current_path: str):
-            walker = node.fae.walk()
-            try:
-                child = next(walker)
-                while True:
-                    child_path = f"{current_path}.{child.fae.name or '_'}"
-                    new_child = callback(child) if re.fullmatch(pattern, child_path) else _recurse_path(child, child_path)
-                    child = walker.send(new_child)
-            except StopIteration as e:
-                return e.value
-            return node
-
-        def _recurse_type(node: Delayable):
-            walker = node.fae.walk()
-            try:
-                child = next(walker)
-                while True:
-                    res = _recurse_type(child)
-                    base = res if res is not None else child
-                    if isinstance(child, pattern):
-                        replaced = callback(base)
-                        new_child = replaced if replaced is not None else base
-                    else:
-                        new_child = res
-                    child = walker.send(new_child)
-            except StopIteration as e:
-                return e.value
-            return node
-
-        if isinstance(pattern, str):
-            return _recurse_path(self.expr, self.name)
-        return _recurse_type(self.expr)
-        
-    def walk(self) -> Iterator[Any]:
-        """
-        Coroutine-based iterator over the direct `Delayable` children of this expression.
-
-        Yields each child `Delayable` found in the bound arguments (including items inside
-        sequences and dict values). The caller may send back a replacement node via
-        `generator.send(new_node)`; sending `None` keeps the original child.
-
-        Returns (via `StopIteration.value`) the original expression if no arguments changed,
-        or a new expression reconstructed with the updated arguments if any child was replaced.
-        """
-        def check(arg: Any) -> bool:
-            if isinstance(arg, Delayable):
-                new_arg = yield arg
-                
-                if new_arg is None:
-                    return arg
-                else:  
-                    return new_arg
-            return arg
-
-        if self.arguments is None:
-            return
-
-        changed = False
-        all_args = [
-            *zip(itertools.repeat(None), self.arguments.args), 
-            *self.arguments.kwargs.items()
-        ]
-        args, kwargs = [], {}
-        for key, arg in all_args:
-            if isinstance(arg, Sequence):
-                new_arg = []
-                for item in arg:
-                    new_item = yield from check(item)
-                    changed = changed or (new_item is not item)
-                    new_arg.append(new_item)
-                
-            elif isinstance(arg, dict):
-                new_arg = {}
-                for k, v in arg.items():
-                    new_item = yield from check(v)
-                    changed = changed or (new_item is not v)
-                    new_arg[k] = new_item
-            else:
-                new_arg = yield from check(arg)
-                changed = changed or (new_arg is not arg)
-
-            if key is not None:
-                kwargs[key] = new_arg
-            else:
-                args.append(new_arg)
-
-        if not changed:
-            return self.expr
-
-        return self.update(arguments=self.arguments.signature.bind(*args, **kwargs))
-
-    def collect(self) -> Any:
-        """
-        Collect cached resolution results from this expression and all its children.
-        TODO:
-        """
-        pass
-
-    def __iter__(self) -> Iterator[Delayable]:
-        """Iterate over the direct Delayable children of this expression."""
-        yield from self.walk()
-
-    def __getattr__(self, name: str) -> Any:
-        """Look up a bound argument by parameter name (e.g. `expr.fae.op`, `expr.fae.args`)."""
-        out = self.arguments.arguments[name]
-        return out
 
 
 class Delayable:
@@ -288,119 +92,97 @@ class Delayable:
         Uses data to resolve the delayable. Must be implemented by subclasses.
         """
 
-    @abstractmethod
-    def _fae_splice(self) -> Delayable:
+    def _fae_exchange(self) -> Delayable:
         """ 
         This is a coroutine that yields the direct children of the delayable. This should be 
         implemented by subclasses, where the subclasses yield immediate children of the delayable,
         expect altered children, and return a new delayable instance.
         """
-
-    def fae_splice(
-        self,
-        callback: Optional[Callable[[Delayable], Any]] = None,
-        always_copy: bool = False
-    ) -> Delayable:
-        """
-        Loop over immediate children of the delayable, send to callback to obtain a 
-        replacement child.
-        """
-        walker = self._fae_splice()
-        try:
-            child = next(walker)
-            changed = False
-            while True:
-                if callback is not None:
-                    new_child = callback(child)
-                    changed = changed or (new_child is not child)
-                    child = walker.send(new_child)
-                else:
-                    child = walker.send(child)
-        except StopIteration as e:
-            copied = e.value
-            if changed or always_copy:
-                return copied
+        yield from ()
         return self
 
-    def fae_walk(self, callback: Optional[Callable[[Delayable], Any]] = None) -> Delayable:
-        """
-        Walk the expression tree and return a new expression with the updated children. This is the
-        recursive version of `fae_splice`.
-        """
-        stack = [(self, self._fae_splice(), None, False)]
-        result = None
+    def fae_children(self, items: bool = False) -> Iterator[Any]:
+        """Yield this node's direct children, echoing every item back unchanged."""
+        exchange = self._fae_exchange()
+        sent = None
+        while True:
+            try:
+                item = exchange.send(sent)
+            except StopIteration:
+                return
+            sent = item
+            if items or isinstance(item, Delayable):
+                yield item
 
-        while stack:
-            node, walker, parent_walker, done = stack.pop()
-
-            if node is None:
+    def _fae_traverse(self, visit, *, always_copy=False, visit_items=False) -> Any:
+        root_path = self.fae_name or "_"
+        replaced = visit(self, root_path)
+        if replaced is not None:
+            return replaced
+        stack = [_Frame(self, root_path)]
+        
+        while True:
+            frame = stack[-1]
+            try:
+                item = frame.exchange.send(frame.sent)
+            except StopIteration as stop:
+                node = stop.value if frame.changed or always_copy else frame.node
+                stack.pop()
+                if not stack:
+                    return node
+                parent = stack[-1]
+                parent.sent = node
+                parent.changed = parent.changed or node is not frame.node
                 continue
-
-            if not done:
-                try:
-                    child = next(walker)
-                except StopIteration as e:
-                    stack.append((node, None, parent_walker, True))
-                else:
-                    stack.append((node, walker, parent_walker, True))
-            else:
-                if walker is None:
-                    new_node = callback(node) if callback else node
-                    if parent_walker is not None:
-                        try:
-                            child = parent_walker.send(new_node)
-                        except StopIteration as e:
-                            # this should be the new child
-                            parent_walker.send(e.value)
-                else:
-                    try:
-                        child = walker.send(child)
-                    except StopIteration as e:
-                        if parent_walker is None:
-                            return e.value
-                        else:
-                            parent_walker.send(e.value)
             
-            if isinstance(child, Delayable):
-                stack.append((child, child._fae_splice(), walker, False))
-            else:
-                stack.append((child, None, walker, True))
-        return result
+            is_node = isinstance(item, Delayable)
+            path = f"{frame.path}.{item.fae_name or '_'}" if is_node else frame.path
+            if is_node or visit_items:
+                new_item = visit(item, path)
+                if new_item is not None:
+                    frame.sent = new_item      # replaced: prune, never open its coroutine
+                    frame.changed = True
+                    continue
+            frame.sent = item
+            if is_node:
+                stack.append(_Frame(item, path))
+
+    def _fae_apply(self, fn=None, *, always_copy: bool = False) -> Delayable:
+        """Exchange this node's own items; children are not traversed."""
+        exchange = self._fae_exchange()
+        changed, sent = False, None
+        while True:
+            try:
+                item = exchange.send(sent)
+            except StopIteration as stop:
+                return stop.value if changed or always_copy else self
+            new_item = fn(item) if fn is not None else None
+            changed = changed or (new_item is not None and new_item is not item)
+            sent = item if new_item is None else new_item
+
+    def fae_walk(self, *, breadth_first: bool = False) -> Iterator[Delayable]:
+        """Yield this node and every descendant. Nothing is rebuilt."""
+        pending = deque([self])
+        while pending:
+            node = pending.popleft() if breadth_first else pending.pop()
+            yield node
+            children = list(node.fae_children())
+            pending.extend(children if breadth_first else reversed(children))
 
     def fae_clone(
-        self: Delayable, 
-        recurse: bool = False, 
-        clone_modules: bool = False,
+        self,
+        recurse: bool = False,
+        clone_modules: bool = True
     ) -> Delayable:
-        """
-        Return a copy of the expression.
+        if not recurse:
+            return self._fae_apply(always_copy=True)
 
-        Args:
-            recurse: If False (default), returns a shallow copy via `update()`. If True,
-                walks the entire expression tree and copies every node.
-            clone_modules: When recursing, controls how `DelayedModule` nodes are handled.
-                Must be an integer index used to generate the module from `data`. If False,
-                `DelayedModule` nodes are copied without being resolved. `nn.Module` arguments
-                inside `F` nodes are deep-copied via `.clone()`.
-            data: Sequence passed as `P` when generating `DelayedModule` nodes.
-        """
-        if not recurse and not clone_modules:
-            return self.fae_splice(always_copy=True)
+        def visit(item: Any, path: str) -> Any:            
+            if clone_modules and isinstance(item, nn.Module):
+                return item.clone()
+            return None
 
-        def callback(node: Delayable) -> Delayable:
-
-            if clone_modules is not False:
-                # if isinstance(node, DelayedModule):
-                #     if not isinstance(clone_modules, int):
-                #         raise ValueError(
-                #             "`clone_modules` must be an integer to resolve `DelayedModule` objects."
-                #         )
-                #     return node._generate(P=data, I=clone_modules)
-                # elif isinstance(node, F) and node.fae.args and isinstance(node.fae.args[0], nn.Module):
-                #     return node.fae._from_arguments(node.fae.op, node.fae.args[0].clone(), *node.fae.args[1:], **node.fae.kwargs)
-            return node.fae.update()
-
-        return self.find(Delayable, callback=callback) or self.expr
+        return self._fae_traverse(visit, always_copy=True, visit_items=True)
 
     def _record(self, result: Any, kwargs: dict[str, Any]) -> None:
         """
@@ -415,7 +197,7 @@ class Delayable:
             return
         table = kwargs.get(_RECALL_KEY)
         if table is not None:
-            table[self.fae.name] = result
+            table[self.fae.name] = resultn
 
     def fae_find(
         self, 
@@ -928,7 +710,7 @@ class F(_OpActionMixin, Delayable):
         self._record(result, kwargs)
         return result
 
-    def _fae_walk(self) -> F:
+    def _fae_exchange(self) -> F:
         new_args = []
         for arg in self._fae_args:
             new_arg = yield arg
