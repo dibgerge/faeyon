@@ -20,6 +20,23 @@ from ._opinfo import get_opinfo, OpInfo
 modifierType = str
 
 
+def _new_instance(cls, *args, **kwargs):
+    instance = object.__new__(cls)
+    sig = inspect.signature(cls.__init__)
+
+    # Bypass Dynamo's GraphModule, which overrides __new__, but does not pass arguments to super...
+    # TODO: File a bug report/PR to PyTorch
+    try:
+        bound = sig.bind(instance, *args, **kwargs)
+        bound.apply_defaults()
+        del bound.arguments["self"]
+    except TypeError:
+        bound = None
+
+    super(cls, instance).__setattr__("_arguments", bound)
+    return instance
+
+
 class _NoValue:
     """A unique sentinel to represent empty."""
     __slots__ = ()
@@ -83,7 +100,7 @@ class Delayable:
         sig = inspect.signature(self.__init__)
         bound = sig.bind(*args, **kwargs)
         bound.apply_defaults()
-        # self.fae = DelayableNamespace(expr=self, arguments=bound)
+        self.fae_name = None
         self._fae_arguments = bound
 
     @abstractmethod
@@ -160,13 +177,13 @@ class Delayable:
             changed = changed or (new_item is not None and new_item is not item)
             sent = item if new_item is None else new_item
 
-    def fae_walk(self, *, breadth_first: bool = False) -> Iterator[Delayable]:
+    def fae_walk(self, *, breadth_first: bool = False, items: bool = False) -> Iterator[Delayable]:
         """Yield this node and every descendant. Nothing is rebuilt."""
         pending = deque([self])
         while pending:
             node = pending.popleft() if breadth_first else pending.pop()
             yield node
-            children = list(node.fae_children())
+            children = list(node.fae_children(items=items)) if isinstance(node, Delayable) else []
             pending.extend(children if breadth_first else reversed(children))
 
     def fae_clone(
@@ -184,6 +201,25 @@ class Delayable:
 
         return self._fae_traverse(visit, always_copy=True, visit_items=True)
 
+    def fae_find(
+        self,
+        pattern: str | type[Delayable],
+        callback: Optional[Callable[[Delayable], Delayable]] = None,
+    ) -> Delayable:
+        if isinstance(pattern, type):
+            def matches(node: Delayable, path: str) -> bool:
+                return isinstance(node, pattern)
+        else:
+            def matches(node: Delayable, path: str) -> bool:
+                return re.fullmatch(pattern, path) is not None
+        
+        def visit(node: Delayable, path: str) -> Optional[Delayable]:
+            if callback is None or not matches(node, path):
+                return None
+            return callback(node)
+        
+        return self._fae_traverse(visit)
+
     def _record(self, result: Any, kwargs: dict[str, Any]) -> None:
         """
         Store `result` in the current evaluation's recall table (if one is active) under
@@ -197,62 +233,8 @@ class Delayable:
             return
         table = kwargs.get(_RECALL_KEY)
         if table is not None:
-            table[self.fae.name] = resultn
-
-    def fae_find(
-        self, 
-        pattern: str | type[Delayable], 
-        callback: Optional[Callable[[Delayable], Delayable]]
-    ) -> Delayable:
-        """
-        Walk the expression tree and optionally replace matching nodes.
-
-        `pattern` is either a dotted path string (e.g. `"root.layer._"`) matched against
-        each node's accumulated name, or a `Delayable` subtype matched by `isinstance`.
-
-        For each matching node, `callback` is called with the node as its argument. If
-        `callback` returns a new node, that node replaces the original and all ancestor
-        nodes along the path are copied to reflect the change. If `callback` returns
-        `None`, the node is left unchanged.
-
-        Returns the (possibly updated) root expression, or `None` if no nodes were visited.
-        """
-        def _recurse(node: Delayable, current_path: Optional[str] = None):
-
-
-            # walker = node.fae_splice()
-            # try:
-            #     child = next(walker)
-            #     while True:
-            #         child_path = f"{current_path}.{child.fae.name or '_'}"
-            #         next_child = _recurse(child, current_path=child_path)
-            #         base = next_child if next_child is not None else child
-            #         new_child = callback(base) if callback is not None else base
-            #         child = walker.send(new_child)
-
-
-                    # if isinstance(pattern, str):
-
-
-                    #     if re.fullmatch(pattern, child_path):
-                    #         new_child = callback(child)
-                    #     else:
-                    #         new_child = _recurse(child, child_path)
-                    # else:
-                    #     res = _recurse(child)
-                    #     base = res if res is not None else child
-                    #     if isinstance(child, pattern):
-                    #         replaced = callback(base)
-                    #         new_child = replaced if replaced is not None else base
-                    #     else:
-                    #         new_child = res
-                    # child = walker.send(new_child)
-            except StopIteration as e:
-                return e.value
-            return node
-
-        return _recurse(self.expr, self.name)
-
+            table[self.fae.name] = result
+    
     def __or__(self, other: Any) -> Any:
         """ 
         The case of `Delayable | Any` is not defined.
@@ -359,43 +341,43 @@ class _OpActionMixin:
         return F(opinfo, self, *args, **kwargs)
         
     # --- Binary arithmetic operators ---
-    def __add__(self, other: Any) -> X:
+    def __add__(self, other: Any) -> Delayable:
         return self._op_action("__add__", other)
 
-    def __radd__(self, other: Any) -> X:
+    def __radd__(self, other: Any) -> Delayable:
         return self._op_action("__radd__", other)
 
-    def __sub__(self, other: Any) -> X:
+    def __sub__(self, other: Any) -> Delayable:
         return self._op_action("__sub__", other)
 
-    def __rsub__(self, other: Any) -> X:
+    def __rsub__(self, other: Any) -> Delayable:
         return self._op_action("__rsub__", other)
 
-    def __mul__(self, other: Any) -> X:
+    def __mul__(self, other: Any) -> Delayable:
         return self._op_action("__mul__", other)
 
-    def __rmul__(self, other: Any) -> X:
+    def __rmul__(self, other: Any) -> Delayable:
         return self._op_action("__rmul__", other)
 
-    def __matmul__(self, other: Any) -> X:
+    def __matmul__(self, other: Any) -> Delayable:
         return self._op_action("__matmul__", other)
 
-    def __rmatmul__(self, other: Any) -> X:
+    def __rmatmul__(self, other: Any) -> Delayable:
         return self._op_action("__rmatmul__", other)
 
-    def __truediv__(self, other: Any) -> X:
+    def __truediv__(self, other: Any) -> Delayable:
         return self._op_action("__truediv__", other)
 
-    def __rtruediv__(self, other: Any) -> X:
+    def __rtruediv__(self, other: Any) -> Delayable:
         return self._op_action("__rtruediv__", other)
 
-    def __floordiv__(self, other: Any) -> X:
+    def __floordiv__(self, other: Any) -> Delayable:
         return self._op_action("__floordiv__", other)
 
-    def __rfloordiv__(self, other: Any) -> X:
+    def __rfloordiv__(self, other: Any) -> Delayable:
         return self._op_action("__rfloordiv__", other)
 
-    def __mod__(self, other: Any) -> X:
+    def __mod__(self, other: Any) -> Delayable:
         """
         If `other` qualifies as a Faeyon modifier, use the parent class implementation, otherwise, 
         the modulus % operator is treated as a normal arithmetic operation.
@@ -405,84 +387,84 @@ class _OpActionMixin:
             return self._op_action("__mod__", other)
         return out
     
-    def __rmod__(self, other: Any) -> X:
+    def __rmod__(self, other: Any) -> Delayable:
         out = super().__rmod__(other)
         if out is NotImplemented:
             return self._op_action("__rmod__", other)
         return out
 
-    def __divmod__(self, other: Any) -> X:
+    def __divmod__(self, other: Any) -> Delayable:
         return self._op_action("__divmod__", other)
 
-    def __rdivmod__(self, other: Any) -> X:
+    def __rdivmod__(self, other: Any) -> Delayable:
         return self._op_action("__rdivmod__", other)
 
-    def __pow__(self, other: Any) -> X:
+    def __pow__(self, other: Any) -> Delayable:
         return self._op_action("__pow__", other)
 
-    def __rpow__(self, other: Any) -> X:
+    def __rpow__(self, other: Any) -> Delayable:
         return self._op_action("__rpow__", other)
 
-    def __and__(self, other: Any) -> X:
+    def __and__(self, other: Any) -> Delayable:
         return self._op_action("__and__", other)
 
-    def __rand__(self, other: Any) -> X:
+    def __rand__(self, other: Any) -> Delayable:
         return self._op_action("__rand__", other)
 
-    def __xor__(self, other: Any) -> X:
+    def __xor__(self, other: Any) -> Delayable:
         return self._op_action("__xor__", other)
 
-    def __rxor__(self, other: Any) -> X:
+    def __rxor__(self, other: Any) -> Delayable:
         return self._op_action("__rxor__", other)
 
     # --- Unary arithmetic operators ---
-    def __neg__(self) -> X:
+    def __neg__(self) -> Delayable:
         return self._op_action("__neg__")
 
-    def __pos__(self) -> X:
+    def __pos__(self) -> Delayable:
         return self._op_action("__pos__")
 
-    def __abs__(self) -> X:
+    def __abs__(self) -> Delayable:
         return self._op_action("__abs__")
 
-    def __invert__(self) -> X:
+    def __invert__(self) -> Delayable:
         return self._op_action("__invert__")
 
-    def __round__(self) -> X:
+    def __round__(self) -> Delayable:
         return self._op_action("__round__")
 
     # --- Comparison operators ---
-    def __lt__(self, other: Any) -> X:
+    def __lt__(self, other: Any) -> Delayable:
         return self._op_action("__lt__", other)
 
-    def __le__(self, other: Any) -> X:
+    def __le__(self, other: Any) -> Delayable:
         return self._op_action("__le__", other)
 
-    def __eq__(self, other: Any) -> X:
+    def __eq__(self, other: Any) -> Delayable:
         return self._op_action("__eq__", other)
 
-    def __ne__(self, other: Any) -> X:
+    def __ne__(self, other: Any) -> Delayable:
         return self._op_action("__ne__", other)
 
-    def __gt__(self, other: Any) -> X:
+    def __gt__(self, other: Any) -> Delayable:
         return self._op_action("__gt__", other)
 
-    def __ge__(self, other: Any) -> X:
+    def __ge__(self, other: Any) -> Delayable:
         return self._op_action("__ge__", other)
 
     #--- Other operators ---
-    def __getattr__(self, name: str) -> X:
+    def __getattr__(self, name: str) -> Delayable:
         if name == "__torch_function__":
             return type(self).__torch_function__
         
         return self._op_action("__getattr__", name)
 
-    def __getitem__(self, key: Any) -> X:
+    def __getitem__(self, key: Any) -> Delayable:
         if isinstance(key, _MappingKey):
             return _Unpack(self, is_map=True)
         return self._op_action("__getitem__", key)
 
-    def __call__(self, *args: Any, **kwargs: Any) -> X:
+    def __call__(self, *args: Any, **kwargs: Any) -> Delayable:
         return self._op_action("__call__", *args, **kwargs)
 
     def __reversed__(self) -> X:
@@ -533,8 +515,7 @@ class _SymbolMeta(_OpActionMixin, Delayable, abc.ABCMeta):
         return cls
 
     def __init__(cls, name, bases, namespace, **kwargs):
-        super().__init__(name, bases, namespace, **kwargs)
-        cls.fae = DelayableNamespace(expr=cls, name=cls.__name__)
+        super().__init__(name, bases, namespace, name=cls.__name__, **kwargs)
 
     def _resolve(self, _default: Any = _NoValue, /, **kwargs: Any) -> Any:
         """ 
@@ -652,16 +633,18 @@ class _Unpack(Delayable):
     """
     def __init__(self, target, is_map: bool = False) -> None:
         super().__init__(target=target, is_map=is_map)
+        self._fae_target = target
+        self._fae_is_map = is_map
     
     def _resolve(self, _default: Any, /, **kwargs: Any) -> Iterator[Any]:
         return self.fae.target._resolve(_default, **kwargs)
     
     def __repr__(self) -> str:
-        if self.fae.is_map:
+        if self._fae_is_map:
             prefix = "**"
         else:
             prefix = "*"
-        return f"{prefix}{self.fae.target!r}"
+        return f"{prefix}{self._fae_target!r}"
 
 
 class F(_OpActionMixin, Delayable):
@@ -724,13 +707,13 @@ class F(_OpActionMixin, Delayable):
         return self.__class__(self._fae_op, *new_args, **new_kwargs)
     
     def __str__(self):
-        if isinstance(self.fae.op, OpInfo):
-            return self.fae.op.to_string(*self.fae.args, **self.fae.kwargs)
+        if isinstance(self._fae_op, OpInfo):
+            return self._fae_op.to_string(*self._fae_args, **self._fae_kwargs)
         else:
             try:
-                name = self.fae.op.__name__
+                name = self._fae_op.__name__
             except AttributeError:
-                name = f"{self.fae.op!r}"
+                name = f"{self._fae_op!r}"
 
             # TODO: Might need special handling of module.__call__
             # if name == "Module.__call__" and len(self.args.args) > 0:
@@ -738,8 +721,8 @@ class F(_OpActionMixin, Delayable):
             # else:
             #     args = self.args  # .args
 
-            args = list(map(repr, self.fae.args))
-            args.extend(f"{k}={v!r}" for k, v in self.fae.kwargs.items())
+            args = list(map(repr, self._fae_args))
+            args.extend(f"{k}={v!r}" for k, v in self._fae_kwargs.items())
             args = ", ".join(args)
             return f"{name}({args})"
 
@@ -755,13 +738,13 @@ class Chain(_OpActionMixin, Delayable):
         if not ops:
             raise ValueError("Chain must have at least one operation.")
         
-        fae_ops = []
+        self._fae_ops = []
         for op in ops:
             if isinstance(op, Delayable):
-                fae_ops.append(op)
+                self._fae_ops.append(op)
             else:
                 raise ValueError("All arguments must be of subtype `Delayable` or `nn.Module`.")
-        super().__init__(*fae_ops)
+        super().__init__(*ops)
 
     def _resolve(self, _default: Any = _NoValue, /, **kwargs: Any) -> Any:
         """
@@ -775,40 +758,40 @@ class Chain(_OpActionMixin, Delayable):
         # Seed the recall table for `R` at the outermost chain of this evaluation;
         # nested chains find the caller's table in kwargs and share it.
         kwargs.setdefault(_RECALL_KEY, _RecallTable())
-        x = self.fae.ops[0]._resolve(_default, **kwargs)
+        x = self._fae_ops[0]._resolve(_default, **kwargs)
         kwargs.pop("X", None)
-        for op in self.fae.ops[1:]:
+        for op in self._fae_ops[1:]:
             x = op._resolve(_default, X=x, **kwargs)
         self._record(x, kwargs)
         return x
 
-    def _splice(self):
+    def _fae_exchange(self) -> Chain:
         new_ops = []
-        for op in self.fae.ops:
+        for op in self._fae_ops:
             new_op = yield op
             new_ops.append(new_op)
         return self.__class__(*new_ops)
 
     def __lshift__(self, other: Delayable) -> Chain:
-        return Chain(*self.fae.ops[:-1], self.fae.ops[-1] << other)
+        return Chain(*self._fae_ops[:-1], self._fae_ops[-1] << other)
 
     def __rshift__(self, other: Any) -> Any:
-        if self.fae.name is not None:
+        if self.fae_name is not None:
             return super().__rshift__(other)
 
         if isinstance(other, Chain):
-            return Chain(*self.fae.ops, *other.fae.ops)
+            return Chain(*self._fae_ops, *other._fae_ops)
         elif isinstance(other, Delayable):
-            return Chain(*self.fae.ops, other)
+            return Chain(*self._fae_ops, other)
         else:
             return super().__rshift__(other)
 
     def __len__(self) -> int:
-        return len(self.fae.ops)
+        return len(self._fae_ops)
 
     def __repr__(self) -> str:
         out = []
-        for item in self.fae.ops:
+        for item in self._fae_ops:
             out.append(repr(item))  
         return " >> ".join(out)
 
@@ -953,23 +936,6 @@ class Substitute:
 
     def __or__(self, other: Delayable) -> Any:
         return other._resolve(self._kwargs, symbols=[X])
-
-
-def _new_instance(cls, *args, **kwargs):
-    instance = object.__new__(cls)
-    sig = inspect.signature(cls.__init__)
-
-    # Bypass Dynamo's GraphModule, which overrides __new__, but does not pass arguments to super...
-    # TODO: File a bug report/PR to PyTorch
-    try:
-        bound = sig.bind(instance, *args, **kwargs)
-        bound.apply_defaults()
-        del bound.arguments["self"]
-    except TypeError:
-        bound = None
-
-    super(cls, instance).__setattr__("_arguments", bound)
-    return instance
 
 
 class Exportable:

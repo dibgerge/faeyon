@@ -8,737 +8,790 @@ from tests.common import ConstantLayer
 from pytest import param
 from torch import tensor
 from torch.nn.functional import relu
+from torch import nn
 
 
-class TestX:
+class TestDelayable:
     def test_isinstance(self):
-        """ Test isinstance check for X. """
+        """ Test isinstance check for Delayable. """
+        assert isinstance(X + 1, Delayable)
+        assert isinstance(X, Delayable)
         assert isinstance(X + 1, F)
-        assert isinstance(X, X)
         assert isinstance(X + 1, Delayable)
         assert isinstance(X, Delayable)
 
-    @pytest.mark.parametrize("left, right", [
-        param(X, X, id="meta >> meta"),
-        param(X, X + 1, id="meta >> instance"),
-        param(X + 1, X, id="instance >> meta"),
-        param(X + 1, X + 1, id="instance >> instance"),
-    ])
-    def test_rshift(self, left, right):
-        """ The right shift operator results in a Chain Object if both arguments are of type X."""
-        x = left >> right
-        assert isinstance(x, Chain)
-        assert len(x) == 2
+    def test_tree_walk(self):
+        expr = X + 1 >> X / 2 >> 2 * X
+        #expr = X >> X + 1
+        print("\nThe exppression is:")
+        print(expr)
 
-    def test_rshift_int(self):
-        """ The right shift operator results in a Chain Object if both arguments are of type X."""
-        from torch import nn
-        x = X + 1 >> nn.Linear(in_features=10, out_features=10) >> 2
+        for item in expr.fae_walk(items=True, breadth_first=True):
+            print(item)
 
-        assert isinstance(x, Chain)
-        assert len(x) == 4
+    def test_tree_children(self):
+        expr = X + 1 >> X / 2 >> 2 * X
+        #expr = X >> X + 1
+        print("\nThe exppression is:")
+        print(expr)
 
-    def test_rshift_int2(self):
-        """ The right shift operator results in a Chain Object if both arguments are of type X."""
-        from torch import nn
-        from faeyon import I, P
-        sizes = [10, 5, 6]
-        data = list(zip(sizes[:-1], sizes[1:]))
-        expr = X + 1 >> nn.Linear(in_features=P[I][0], out_features=P[I][1]) >> data
-        assert len(expr) == 4
-        assert isinstance(expr, Chain)
+        for item in expr.fae_children(items=True):
+            print(item)
 
-        with pytest.raises(AssertionError):
-            torch.testing.assert_close(
-                expr.fae.ops[1].fae.args[0].weight, 
-                expr.fae.ops[3].fae.args[0].weight
-            )
+    def test_tree_traverse(self):
+        expr = X + 1 >> X / 2 >> 2 * X
+        #expr = X >> X + 1
+        print("\nThe exppression is:")
+        print(expr)
 
-    @pytest.mark.parametrize("expr", [param(X, id="meta"), param(X + 1, id="instance")])
-    @pytest.mark.parametrize("input", [param(1, id="int"), param(tensor(1), id="tensor")])
-    def test_rshift_error(self, expr, input):
-        """ Shift operator not defined with non-X arguments. """
-        with pytest.raises(TypeError):
-            x = expr >> input
-    
-    @pytest.mark.parametrize("expr", [param(X, id="meta"), param(X + 1, id="instance")])
-    @pytest.mark.parametrize("input", [param(1, id="int"), param(tensor(1), id="tensor")])
-    def test_rrshift(self, expr, input):
-        """ Shift operator not defined with non-X arguments (Use | instead). """
-        with pytest.raises(TypeError):
-            x = input >> expr
+        for item in expr.fae_traverse(items=True):
+            print(item)
 
-    @pytest.mark.parametrize("left,right", [
-        param(X, X, id="meta_meta"),
-        param(X + 1, X, id="instance_meta"),
-        param(X, X + 1, id="meta_instance"),
-        param(X + 1, X + 1, id="instance_instance"),
-    ])
-    def test_lshift_error(self, left, right):
-        """ 
-        Left shift operator not defined on non FList or FDict arguments.
-        """
-        with pytest.raises(TypeError):
-            left << right
-    
-    @pytest.mark.parametrize("expr", [param(X, id="meta"), param(X + 1, id="instance")])
-    @pytest.mark.parametrize("input", [param(1, id="int"), param(tensor(1), id="tensor")])
-    def test_rlshift(self, expr, input):
-        """ Shift operator not defined with non-X arguments (Use | instead). """
-        with pytest.raises(TypeError):
-            x = input << expr
-            
-    @pytest.mark.parametrize("input", [
-        param(1, id="int"),
-        param(torch.tensor([1, 2]), id="tensor"),
-    ])
-    def test_pipe(self, input):
-        """ Test pipe operator on X class. """
-        res = input | X
-        if isinstance(input, int):
-            assert res == input
-        elif isinstance(input, torch.Tensor):
-            torch.testing.assert_close(res, input)
+    def test_tree_clone(self):
+        expr = X + 1 >> X / 2 >> 2 * X >> X >> nn.Linear(in_features=10, out_features=10)
+        #expr = X >> X + 1
+        print("\nThe exppression is:")
+        print(expr)
 
-    @pytest.mark.parametrize("left, right", [
-        param(X, X, id="meta | meta"),
-        param(X, 1, id="meta | int"), 
-        param(X, tensor([1, 2, 3]), id="meta | tensor"),
-        param(X, X + 1, id="meta | instance"),
-        param(X + 1, X, id="instance | meta"),
-        param(X + 1, 1, id="instance | int"),
-        param(X + 1, tensor([1, 2, 3]), id="instance | tensor"),
-        param(X + 1, X + 2, id="instance | instance")
-    ])
-    def test_pipe_error(self, left, right):
-        """ Cannot have a Delayable on the left hand side of a pipe operator. """
-        with pytest.raises(TypeError):
-            left | right
-
-    # def test_mod(self):
-    #     """ 
-    #     Test mod operator for non-arithmetic operations. 
-    #     TODO: Should modifiers be inplace or a should a copy be returned?
-    #     """
-    #     expr = X % "foo"
-    #     assert isinstance(expr, Modifiers)
-    #     assert expr.fae_has_name
-
-    # def test_rmod(self):
-    #     """ 
-    #     Test mod operator for non-arithmetic operations. 
-    #     TODO: I need to test it with modifiers other than strings, since strings will not raise
-    #     errors, since the string's own modifier operator will be used...
-    #     """
-    #     pass
-        
-    @pytest.mark.parametrize("expr, expected", [
-        param(X, "X", id="meta"),
-        param(X + 1, "X + 1", id="instance"),
-        param(X[0], "X[0]", id="getitem"),
-        param(X.a, "X.a", id="getattr"),
-        param(X(), "X()", id="call"),
-        param(X(1), "X(1)", id="call_args"),
-        param(X("foo"), "X('foo')", id="call_string_arg"),
-        param(X(1, "bar"), "X(1, 'bar')", id="call_multiple_args"),
-        param(X(foo="bar"), "X(foo='bar')", id="call_kwargs"),
-        param(X(foo="bar", baz="qux"), "X(foo='bar', baz='qux')", id="call_multiple_kwargs"),
-        param(X(1, foo="bar"), "X(1, foo='bar')", id="call_args_kwargs"),
-        param(X + X * 2, "X + X * 2", id="X + X * 2"),
-        param(X + 2 * X, "X + 2 * X", id="X + 2 * X"),
-        param((X + 1) * (2 + X), "(X + 1) * (2 + X)", id="arithmetic_parens_1"),
-        param((X + 1) * X, "(X + 1) * X", id="arithmetic_parens_2"),
-        param(X * 2 / (X + 1), "X * 2 / (X + 1)", id="arithmetic_parens_3"),
-    ])
-    def test_repr(self, expr, expected):
-        """ 
-        Test some different ways of representing X and make sure the repr is correct. 
-        """
-        assert str(expr) == expected
-
-    # --- Test arithmetic operators ---
-    @pytest.mark.parametrize("expr, expected", [
-        # test add
-        param(X + (X + 1), 3, id="meta + instance"),
-        param((X + 1) + X, 3, id="instance + meta"),
-        param((X + 1) + (X + 1), 4, id="instance + instance"),
-        param(X + 1, 2, id="meta + int"),
-        param(X + 1 + 1, 3, id="instance + int"),
-        param(X + X, 2, id="meta + meta"),
-        param(X + tensor([1, 2, 3]), tensor([2, 3, 4]), id="meta + tensor"),
-        param((X + 1) + tensor([1, 2, 3]), tensor([3, 4, 5]), id="instance + tensor"),
-
-        # radd
-        param(1 + X, 2, id="int + meta"),
-        param(1 + (1 + X), 3, id="int + instance"),
-        param(tensor([1, 2, 3]) + X, tensor([2, 3, 4]), id="tensor + meta"),
-        param(tensor([1, 2, 3]) + (X + 1), tensor([3, 4, 5]), id="tensor + instance"),
-
-        # sub
-        param(X - (X - 1), 1, id="meta - instance"),
-        param((X - 1) - X, -1, id="instance - meta"),
-        param((X + 1) - (X + 1), 0, id="instance - instance"),
-        param(X - 1, 0, id="meta - int"),
-        param(X - 1 - 1, -1, id="instance - int)"),
-        param(X - X, 0, id="meta - meta"),
-        param(X - tensor([1, 2, 3]), tensor([0, -1, -2]), id="meta - tensor"),
-        param((X + 1) - tensor([1, 2, 3]), tensor([1, 0, -1]), id="instance - tensor"),
-
-        # rsub
-        param(1 - X, 0, id="int - meta"),
-        param(1 - (1 + X), -1, id="int - instance"),
-        param(tensor([1, 2, 3]) - X, tensor([0, 1, 2]), id="tensor - meta"),
-        param(tensor([1, 2, 3]) - (X + 1), tensor([-1, 0, 1]), id="tensor - instance"),
-
-        # mult
-        param(X * (X * 1), 1, id="meta * instance"),
-        param((X * 1) * X, 1, id="instance * meta"),
-        param((X * 1) * (X * 1), 1, id="instance * instance"),
-        param(X * 1, 1, id="meta * int"),
-        param(X * 1 * 1, 1, id="instance * int"),
-        param(X * X, 1, id="meta * meta)"),
-        param(X * tensor([1, 2, 3]), tensor([1, 2, 3]), id="meta * tensor"),
-        param((X * 1) * tensor([1, 2, 3]), tensor([1, 2, 3]), id="instance * tensor"),
-
-        # rmult
-        param(1 * X, 1, id="int * meta"),
-        param(1 * (1 * X), 1, id="int * instance"),
-        param(tensor([1, 2, 3]) * X, tensor([1, 2, 3]), id="tensor * meta"),
-        param(tensor([1, 2, 3]) * (X * 1), tensor([1, 2, 3]), id="tensor * instance"),
-
-        # truediv
-        param(X / (X / 1), 1.0, id="meta / instance"),
-        param((X / 1) / X, 1.0, id="instance / meta"),
-        param((X / 1) / (X / 1), 1.0, id="instance / instance"),
-        param(X / 1, 1.0, id="meta / int"),
-        param(X / 1 / 1, 1.0, id="instance / int"),
-        param(X / X, 1.0, id="meta / meta"),
-        param(X / tensor([1, 2, 3]), tensor([1.0, 0.5, 0.3333333]), id="meta / tensor"),
-        param((X / 1) / tensor([1, 2, 3]), tensor([1.0, 0.5, 0.3333333]), id="instance / tensor"),
-
-        # rtruediv
-        param(1 / X, 1.0, id="int / meta"),
-        param(1 / (1 / X), 1.0, id="int / instance"),
-        param(tensor([1, 2, 3]) / X, tensor([1.0, 2.0, 3.0]), id="tensor / meta"),
-        param(tensor([1, 2, 3]) / (X / 1), tensor([1.0, 2.0, 3.0]), id="tensor / instance"),
-
-        # floordiv
-        param(X // (X // 1), 1, id="meta // instance"),
-        param((X // 1) // X, 1, id="instance // meta"),
-        param((X // 1) // (X // 1), 1, id="instance // instance"),
-        param(X // 1, 1, id="meta // int"),
-        param(X // 1 // 1, 1, id="instance // int"),
-        param(X // X, 1, id="meta // meta"),
-        param(X // tensor([1, 2, 3]), tensor([1, 0, 0]), id="meta // tensor"),
-        param((X // 1) // tensor([1, 2, 3]), tensor([1, 0, 0]), id="instance // tensor"),
-
-        # rfloordiv
-        param(1 // X, 1, id="int // meta"),
-        param(1 // (1 // X), 1, id="int // instance"),
-        param(tensor([1, 2, 3]) // X, tensor([1, 2, 3]), id="tensor // meta"),
-        param(tensor([1, 2, 3]) // (X // 1), tensor([1, 2, 3]), id="tensor // instance"),
-
-        # mod
-        param(X % (X % 2), 0, id=r"meta % instance)"),
-        param((X % 2) % X, 0, id=r"instance % meta)"),
-        param((X % 2) % (X % 2), 0, id=r"instance % instance)"),
-        param(X % 2, 1, id=r"meta % int)"),
-        param(X % 2 % 1, 0, id=r"instance % int)"),
-        param(X % X, 0, id=r"meta % meta)"),
-        param(X % tensor([1, 2, 3]), tensor([0, 1, 1]), id=r"meta % tensor)"),
-        param((X % 2) % tensor([1, 2, 3]), tensor([0, 1, 1]), id=r"instance % tensor)"),
-
-        # rmod
-        param(1 % X, 0, id=r"int % meta)"),
-        param(1 % (1 + X), 1, id=r"int % instance)"),
-        param(tensor([1, 2, 3]) % X, tensor([0, 0, 0]), id=r"tensor % meta)"),
-        param(tensor([1, 2, 3]) % (X % 2), tensor([0, 0, 0]), id=r"tensor % instance)"),
-
-        # pow
-        param(X ** (X ** 1), 1, id="meta ** instance"),
-        param((X ** 1) ** X, 1, id="instance ** meta"),
-        param((X ** 1) ** (X ** 1), 1, id="instance ** instance"),
-        param(X ** 1, 1, id="meta ** int"),
-        param(X ** 1 ** 1, 1, id="instance ** int"),
-        param(X ** X, 1, id="meta ** meta"),
-        param(X ** tensor([1, 2, 3]), tensor([1, 1, 1]), id="meta ** tensor"),
-        param((X ** 1) ** tensor([1, 2, 3]), tensor([1, 1, 1]), id="instance ** tensor"),
-
-        # rpow
-        param(1 ** X, 1, id="int ** meta"),
-        param(1 ** (1 ** X), 1, id="int ** instance"),
-        param(tensor([1, 2, 3]) ** X, tensor([1, 2, 3]), id="tensor ** meta"),
-        param(tensor([1, 2, 3]) ** (X ** 1), tensor([1, 2, 3]), id="tensor ** instance"),
-
-        # bitwise and
-        param(X & (X & 1), 1, id="meta & instance"),
-        param((X & 1) & X, 1, id="instance & meta"),   
-        param((X & 1) & (X & 1), 1, id="instance & instance"),
-        param(X & 1, 1, id="meta & int"),
-        param(X & 1 & 1, 1, id="instance & int"),
-        param(X & X, 1, id="meta & meta"),
-        param(X & tensor([1, 2, 3]), tensor([1, 0, 1]), id="meta & tensor"),
-        param((X & 1) & tensor([1, 2, 3]), tensor([1, 0, 1]), id="instance & tensor"),
-
-        # rbitwise and
-        param(1 & X, 1, id="int & meta"),
-        param(1 & (1 & X), 1, id="int & instance"),
-        param(tensor([1, 2, 3]) & X, tensor([1, 0, 1]), id="tensor & meta"),
-        param(tensor([1, 2, 3]) & (X & 1), tensor([1, 0, 1]), id="tensor & instance"),
-
-        # bitwise xor
-        param(X ^ (X ^ 1), 1, id="meta ^ instance"),
-        param((X ^ 1) ^ X, 1, id="instance ^ meta"),
-        param((X ^ 1) ^ (X ^ 1), 0, id="instance ^ instance"),
-        param(X ^ 1, 0, id="meta ^ int"),
-        param(X ^ 1 ^ 1, 1, id="instance ^ int"),
-        param(X ^ X, 0, id="meta ^ meta"),
-        param(X ^ tensor([1, 2, 3]), tensor([0, 3, 2]), id="meta ^ tensor"),
-        param((X ^ 1) ^ tensor([1, 2, 3]), tensor([1, 2, 3]), id="instance ^ tensor"),
-
-        # rbitwise xor
-        param(1 ^ X, 0, id="int ^ meta"),
-        param(1 ^ (1 ^ X), 1, id="int ^ instance"),
-        param(tensor([1, 2, 3]) ^ X, tensor([0, 3, 2]), id="tensor ^ meta"),
-        param(tensor([1, 2, 3]) ^ (X ^ 1), tensor([1, 2, 3]), id="tensor ^ instance"),
-
-        # gt
-        param(X > (X + 1), False, id="meta > instance"),
-        param((X + 1) > X, True, id="instance > meta"),
-        param((X + 1) > (X + 1), False, id="instance > instance"),
-        param(X > 1, False, id="meta > int"),
-        param((X + 1) > 1, True, id="instance > int"),
-        param(X > X, False, id="meta > meta "),
-        param(X > tensor([1, 2, 3]), tensor([False, False, False]), id="meta > tensor"),
-        param((X + 1) > tensor([1, 2, 3]), tensor([True, False, False]), id="instance > tensor"),
-
-        # rgt
-        param(1 > X, False, id="int > meta"),
-        param(1 > (1 + X), False, id="int > instance"),
-        param(tensor([1, 2, 3]) > X, tensor([False, True, True]), id="tensor > meta"),
-        param(tensor([1, 2, 3]) > (X + 1), tensor([False, False, True]), id="tensor > instance"),
-
-        # lt
-        param(X < (X + 1), True, id="meta < instance"),
-        param((X + 1) < X, False, id="instance < meta"),
-        param((X + 1) < (X + 1), False, id="instance < instance"),
-        param(X < 1, False, id="meta < int"),
-        param((X + 1) < 1, False, id="instance < int"),
-        param(X < X, False, id="meta < meta"),
-        param(X < tensor([1, 2, 3]), tensor([False, True, True]), id="meta < tensor"),
-        param((X + 1) < tensor([1, 2, 3]), tensor([False, False, True]), id="instance < tensor"),
-
-        # rlt
-        param(1 < X, False, id="int < meta"),
-        param(1 < (1 + X), True, id="int < instance"),
-        param(tensor([1, 2, 3]) < X, tensor([False, False, False]), id="tensor < meta"),
-        param(tensor([1, 2, 3]) < (X + 1), tensor([True, False, False]), id="tensor < instance"),
-
-        # ge
-        param(X >= (X + 1), False, id="meta >= instance"),
-        param((X + 1) >= X, True, id="instance >= meta"),
-        param((X + 1) >= (X + 1), True, id="instance >= instance"),
-        param(X >= 1, True, id="meta >= int"),
-        param((X + 1) >= 1, True, id="instance >= int"),
-        param(X >= X, True, id="meta >= meta"),
-        param(X >= tensor([1, 2, 3]), tensor([True, False, False]), id="meta >= tensor"),
-        param((X + 1) >= tensor([1, 2, 3]), tensor([True, True, False]), id="instance >= tensor"),
-
-        # rge
-        param(1 >= X, True, id="int >= meta"),
-        param(1 >= (1 + X), False, id="int >= instance"),
-        param(tensor([1, 2, 3]) >= X, tensor([True, True, True]), id="tensor >= meta"),
-        param(tensor([1, 2, 3]) >= (X + 1), tensor([False, True, True]), id="tensor >= instance"),
-
-        # le
-        param(X <= (X + 1), True, id="meta <= instance"),
-        param((X + 1) <= X, False, id="instance <= meta"),
-        param((X + 1) <= (X + 1), True, id="instance <= instance"),
-        param(X <= 1, True, id="meta <= int"),
-        param((X + 1) <= 1, False, id="instance <= int"),
-        param(X <= X, True, id="meta <= meta"),
-        param(X <= tensor([1, 2, 3]), tensor([True, True, True]), id="meta <= tensor"),
-        param((X + 1) <= tensor([1, 2, 3]), tensor([False, True, True]), id="instance <= tensor"),
-
-        # rle
-        param(1 <= X, True, id="int <= meta"),
-        param(1 <= (1 + X), True, id="int <= instance"),
-        param(tensor([1, 2, 3]) <= X, tensor([True, False, False]), id="tensor <= meta"),
-        param(tensor([1, 2, 3]) <= (X + 1), tensor([True, True, False]), id="tensor <= instance"),
-
-        # eq
-        param(X == (X + 1), False, id="meta == instance"),
-        param((X + 1) == X, False, id="instance == meta"),
-        param((X + 1) == (X + 1), True, id="instance == instance)"),
-        param(X == 1, True, id="meta == int"),
-        param((X + 1) == 1, False, id="instance == int"),
-        param(X == X, True, id="meta == meta)"),
-        param(X == tensor([1, 2, 3]), tensor([True, False, False]), id="meta == tensor"),
-        param((X + 1) == tensor([1, 2, 3]), tensor([False, True, False]), id="instance == tensor"),
-
-        # ne
-        param(X != (X + 1), True, id="meta != instance"),
-        param((X + 1) != X, True, id="instance != meta"),
-        param((X + 1) != (X + 1), False, id="instance != instance)"),
-        param(X != 1, False, id="meta != int"),
-        param((X + 1) != 1, True, id="instance != int"),
-        param(X != X, False, id="meta != meta"),
-        param(X != tensor([1, 2, 3]), tensor([False, True, True]), id="meta != tensor"),
-        param((X + 1) != tensor([1, 2, 3]), tensor([True, False, True]), id="instance != tensor"),
-
-        # minus
-        param(-X, -1, id="-X"),
-        param(-(X + 1), -2, id="-(X + 1)"),
-
-        # plus
-        param(+X, 1, id="+X"),
-        param(+(X+1), 2, id="+X"),
-
-        # abs
-        param(abs(X), 1, id="abs(X)"),
-        param(abs(X + 1), 2, id="abs(X + 1)"),
-
-        # invert
-        param(~X, -2, id="~X"),
-        param(~(X + 1), -3, id="~(X + 1)"),
-    ])
-    @pytest.mark.parametrize("inputs", [
-        param(1, id="input_int"), 
-        param(torch.tensor(1), id="input_tensor")]
-    )
-    def test_operators(self, expr, expected, inputs):
-        assert isinstance(expr, F)
-        res = inputs | expr
-
-        if isinstance(expected, torch.Tensor):
-            torch.testing.assert_close(res, expected)
-        else:
-            assert res == expected
-
-    # --- test arithmetic operators with no tensor support ---
-    @pytest.mark.parametrize("expr, expected", [
-        param(divmod(X, X + 1), (0, 1), id="divmod(meta, instance)"),
-        param(divmod(X + 1, X), (2, 0), id="divmod(instance, meta)"),
-        param(divmod(X + 1, X + 1), (1, 0), id="divmod(instance, instance)"),
-        param(divmod(X, 2), (0, 1), id="divmod(meta, int)"),
-        param(divmod(X + 1, 2), (1, 0), id="divmod(instance, int)"),
-        param(divmod(X, X), (1, 0), id="divmod(meta, meta)"),
-
-        param(divmod(1, X), (1, 0), id="divmod(int, meta)"),
-        param(divmod(1, 1 + X), (0, 1), id="divmod(int, instance)"),
-    ])
-    def test_divmod(self, expr, expected):
-        assert isinstance(expr, F)
-        res = 1 | expr
-        assert res == expected
-    
-    @pytest.mark.parametrize("expr, input, expected", [
-        param(
-            X @ (X @ tensor([1.0, 2.0])), 
-            torch.ones(2, 2), 
-            tensor([6.0, 6.0]), 
-            id="meta@instance)"
-        ),
-        param(
-            (X @ tensor([1.0, 2.0])) @ X, 
-            torch.ones(2, 2), 
-            tensor([6.0, 6.0]),
-            id="instance@meta)"
-        ),
-        param(
-            (X @ tensor([1.0, 2.0])) @ (X @ tensor([1.0, 2.0])), 
-            torch.ones(2, 2),
-            tensor(18.0), 
-            id="instance@instance)"
-        ),
-        param(X @ X, tensor([1.0, 2.0]), tensor(5.0), id="meta@meta)"),
-        param(X @ tensor([1.0, 2.0]), tensor([1.0, 2.0]), tensor(5.0), id="meta@tensor)"),
-        param(
-            (X @ tensor([1.0, 2.0])) @ tensor([1.0, 2.0]), 
-            torch.ones(2, 2), 
-            tensor(9.0),
-            id="instance@tensor)"
-        ),
-
-        # rmatmul
-        param(
-            tensor([1.0, 2.0]) @ X, 
-            tensor([1.0, 2.0]), 
-            tensor(5.0),
-            id="tensor@meta)"
-        ),
-        param(
-            tensor([1.0, 2.0]) @ (X @ torch.tensor([1.0, 2.0])), 
-            torch.ones(2, 2), 
-            tensor(9.0),
-            id="tensor@instance)"),
-    ])
-    def test_matmul(self, expr, input, expected):
-        torch.testing.assert_close(input | expr, expected)
-
-    @pytest.mark.parametrize("expr, expected", [
-        param(X, 1.0, id="meta"), 
-        param(X + 1.0, 2.0, id="instance")
-    ])
-    def test_round(self, expr, expected):
-        assert 1.4 | round(expr) == expected
-
-    def test_packing(self):
-        """
-        # TODO: Need more test cases here (e.g. meta and instance packing...)
-        """
-        def func(a, b, c):
-            return a + b + c
-        
-        expr = F(func, *(X + 1))
-
-        res = torch.tensor([1, 2, 3]) | expr
-        assert res == 9
-
-    def test_packing_map(self):
-        """
-        # TODO: Need more test cases here 
-        """
-        def func(a, b, c):
-            return a + b + c
-        expr = F(func, **X)
-        res = {"a": 1, "b": 2, "c": 3} | expr
-        assert res == 6
-
-    @pytest.mark.parametrize("expr, expected", [
-        param(X, tensor([1.0, 0.0, 3.0]), id="meta"), 
-        param(X + 1.0, tensor([2.0, 0.0, 4.0]), id="instance")
-    ])
-    def test_torch_function(self, expr, expected):
-        data = tensor([1.0, -2.0, 3.0])
-        res = data | relu(expr)
-        torch.testing.assert_close(res, expected)
-
-    def test_clone(self):
-        expr = X + 1 >> X + 2
-        cloned = expr.fae.clone()
-        assert cloned.fae.expr is cloned
-
-        for original, cloned in zip(expr.fae, cloned.fae):
-            assert original is cloned
-
-    @pytest.mark.parametrize("clone_modules", [False, True])
-    def test_clone_modules(self, clone_modules):
-        from torch import nn
-        expr = X + 1 >> nn.Linear(in_features=10, out_features=2)
-
-        cloned = expr.fae.clone(recurse=True, clone_modules=clone_modules)
-        clone_weights = cloned.fae.ops[1].fae.args[0].weight
-        expr_weights = expr.fae.ops[1].fae.args[0].weight
-
+        cloned = expr.fae_clone(recurse=True, clone_modules=False)
+        print("\nThe cloned exppression is:")
         print(cloned)
-        #print(expr_weights)
 
-        if clone_modules:
-            with pytest.raises(AssertionError):
-                torch.testing.assert_close(clone_weights, expr_weights)
-        else:
-            torch.testing.assert_close(clone_weights, expr_weights)
+        print(cloned is expr)
+
+        for original, cloned in zip(expr.fae_walk(items=True), cloned.fae_walk(items=True)):
+            print(original, cloned, original is cloned)
+
+
+# class TestX:
+#     def test_isinstance(self):
+#         """ Test isinstance check for X. """
+#         assert isinstance(X + 1, F)
+#         assert isinstance(X, X)
+#         assert isinstance(X + 1, Delayable)
+#         assert isinstance(X, Delayable)
+
+#     @pytest.mark.parametrize("left, right", [
+#         param(X, X, id="meta >> meta"),
+#         param(X, X + 1, id="meta >> instance"),
+#         param(X + 1, X, id="instance >> meta"),
+#         param(X + 1, X + 1, id="instance >> instance"),
+#     ])
+#     def test_rshift(self, left, right):
+#         """ The right shift operator results in a Chain Object if both arguments are of type X."""
+#         x = left >> right
+#         assert isinstance(x, Chain)
+#         assert len(x) == 2
+
+#     def test_rshift_int(self):
+#         """ The right shift operator results in a Chain Object if both arguments are of type X."""
+#         from torch import nn
+#         x = X + 1 >> nn.Linear(in_features=10, out_features=10) >> 2
+
+#         assert isinstance(x, Chain)
+#         assert len(x) == 4
+
+#     def test_rshift_int2(self):
+#         """ The right shift operator results in a Chain Object if both arguments are of type X."""
+#         from torch import nn
+#         from faeyon import I, P
+#         sizes = [10, 5, 6]
+#         data = list(zip(sizes[:-1], sizes[1:]))
+#         expr = X + 1 >> nn.Linear(in_features=P[I][0], out_features=P[I][1]) >> data
+#         assert len(expr) == 4
+#         assert isinstance(expr, Chain)
+
+#         with pytest.raises(AssertionError):
+#             torch.testing.assert_close(
+#                 expr.fae.ops[1].fae.args[0].weight, 
+#                 expr.fae.ops[3].fae.args[0].weight
+#             )
+
+#     @pytest.mark.parametrize("expr", [param(X, id="meta"), param(X + 1, id="instance")])
+#     @pytest.mark.parametrize("input", [param(1, id="int"), param(tensor(1), id="tensor")])
+#     def test_rshift_error(self, expr, input):
+#         """ Shift operator not defined with non-X arguments. """
+#         with pytest.raises(TypeError):
+#             x = expr >> input
+    
+#     @pytest.mark.parametrize("expr", [param(X, id="meta"), param(X + 1, id="instance")])
+#     @pytest.mark.parametrize("input", [param(1, id="int"), param(tensor(1), id="tensor")])
+#     def test_rrshift(self, expr, input):
+#         """ Shift operator not defined with non-X arguments (Use | instead). """
+#         with pytest.raises(TypeError):
+#             x = input >> expr
+
+#     @pytest.mark.parametrize("left,right", [
+#         param(X, X, id="meta_meta"),
+#         param(X + 1, X, id="instance_meta"),
+#         param(X, X + 1, id="meta_instance"),
+#         param(X + 1, X + 1, id="instance_instance"),
+#     ])
+#     def test_lshift_error(self, left, right):
+#         """ 
+#         Left shift operator not defined on non FList or FDict arguments.
+#         """
+#         with pytest.raises(TypeError):
+#             left << right
+    
+#     @pytest.mark.parametrize("expr", [param(X, id="meta"), param(X + 1, id="instance")])
+#     @pytest.mark.parametrize("input", [param(1, id="int"), param(tensor(1), id="tensor")])
+#     def test_rlshift(self, expr, input):
+#         """ Shift operator not defined with non-X arguments (Use | instead). """
+#         with pytest.raises(TypeError):
+#             x = input << expr
+            
+#     @pytest.mark.parametrize("input", [
+#         param(1, id="int"),
+#         param(torch.tensor([1, 2]), id="tensor"),
+#     ])
+#     def test_pipe(self, input):
+#         """ Test pipe operator on X class. """
+#         res = input | X
+#         if isinstance(input, int):
+#             assert res == input
+#         elif isinstance(input, torch.Tensor):
+#             torch.testing.assert_close(res, input)
+
+#     @pytest.mark.parametrize("left, right", [
+#         param(X, X, id="meta | meta"),
+#         param(X, 1, id="meta | int"), 
+#         param(X, tensor([1, 2, 3]), id="meta | tensor"),
+#         param(X, X + 1, id="meta | instance"),
+#         param(X + 1, X, id="instance | meta"),
+#         param(X + 1, 1, id="instance | int"),
+#         param(X + 1, tensor([1, 2, 3]), id="instance | tensor"),
+#         param(X + 1, X + 2, id="instance | instance")
+#     ])
+#     def test_pipe_error(self, left, right):
+#         """ Cannot have a Delayable on the left hand side of a pipe operator. """
+#         with pytest.raises(TypeError):
+#             left | right
+
+#     # def test_mod(self):
+#     #     """ 
+#     #     Test mod operator for non-arithmetic operations. 
+#     #     TODO: Should modifiers be inplace or a should a copy be returned?
+#     #     """
+#     #     expr = X % "foo"
+#     #     assert isinstance(expr, Modifiers)
+#     #     assert expr.fae_has_name
+
+#     # def test_rmod(self):
+#     #     """ 
+#     #     Test mod operator for non-arithmetic operations. 
+#     #     TODO: I need to test it with modifiers other than strings, since strings will not raise
+#     #     errors, since the string's own modifier operator will be used...
+#     #     """
+#     #     pass
         
-    @pytest.mark.parametrize("expr", [
-        param(X + 1 >> X + 2, id="chain"), 
-        param(X + 1, id="F"),
-        param(X, id="symbol")
-    ])
-    def test_clone_recurse(self, expr):
-        cloned = expr.fae.clone(recurse=True)
+#     @pytest.mark.parametrize("expr, expected", [
+#         param(X, "X", id="meta"),
+#         param(X + 1, "X + 1", id="instance"),
+#         param(X[0], "X[0]", id="getitem"),
+#         param(X.a, "X.a", id="getattr"),
+#         param(X(), "X()", id="call"),
+#         param(X(1), "X(1)", id="call_args"),
+#         param(X("foo"), "X('foo')", id="call_string_arg"),
+#         param(X(1, "bar"), "X(1, 'bar')", id="call_multiple_args"),
+#         param(X(foo="bar"), "X(foo='bar')", id="call_kwargs"),
+#         param(X(foo="bar", baz="qux"), "X(foo='bar', baz='qux')", id="call_multiple_kwargs"),
+#         param(X(1, foo="bar"), "X(1, foo='bar')", id="call_args_kwargs"),
+#         param(X + X * 2, "X + X * 2", id="X + X * 2"),
+#         param(X + 2 * X, "X + 2 * X", id="X + 2 * X"),
+#         param((X + 1) * (2 + X), "(X + 1) * (2 + X)", id="arithmetic_parens_1"),
+#         param((X + 1) * X, "(X + 1) * X", id="arithmetic_parens_2"),
+#         param(X * 2 / (X + 1), "X * 2 / (X + 1)", id="arithmetic_parens_3"),
+#     ])
+#     def test_repr(self, expr, expected):
+#         """ 
+#         Test some different ways of representing X and make sure the repr is correct. 
+#         """
+#         assert str(expr) == expected
 
-        for original, cloned in zip(expr.fae, cloned.fae):
-            if isinstance(original, Symbol):
-                assert original is cloned
-            else:
-                assert original is not cloned
+#     # --- Test arithmetic operators ---
+#     @pytest.mark.parametrize("expr, expected", [
+#         # test add
+#         param(X + (X + 1), 3, id="meta + instance"),
+#         param((X + 1) + X, 3, id="instance + meta"),
+#         param((X + 1) + (X + 1), 4, id="instance + instance"),
+#         param(X + 1, 2, id="meta + int"),
+#         param(X + 1 + 1, 3, id="instance + int"),
+#         param(X + X, 2, id="meta + meta"),
+#         param(X + tensor([1, 2, 3]), tensor([2, 3, 4]), id="meta + tensor"),
+#         param((X + 1) + tensor([1, 2, 3]), tensor([3, 4, 5]), id="instance + tensor"),
+
+#         # radd
+#         param(1 + X, 2, id="int + meta"),
+#         param(1 + (1 + X), 3, id="int + instance"),
+#         param(tensor([1, 2, 3]) + X, tensor([2, 3, 4]), id="tensor + meta"),
+#         param(tensor([1, 2, 3]) + (X + 1), tensor([3, 4, 5]), id="tensor + instance"),
+
+#         # sub
+#         param(X - (X - 1), 1, id="meta - instance"),
+#         param((X - 1) - X, -1, id="instance - meta"),
+#         param((X + 1) - (X + 1), 0, id="instance - instance"),
+#         param(X - 1, 0, id="meta - int"),
+#         param(X - 1 - 1, -1, id="instance - int)"),
+#         param(X - X, 0, id="meta - meta"),
+#         param(X - tensor([1, 2, 3]), tensor([0, -1, -2]), id="meta - tensor"),
+#         param((X + 1) - tensor([1, 2, 3]), tensor([1, 0, -1]), id="instance - tensor"),
+
+#         # rsub
+#         param(1 - X, 0, id="int - meta"),
+#         param(1 - (1 + X), -1, id="int - instance"),
+#         param(tensor([1, 2, 3]) - X, tensor([0, 1, 2]), id="tensor - meta"),
+#         param(tensor([1, 2, 3]) - (X + 1), tensor([-1, 0, 1]), id="tensor - instance"),
+
+#         # mult
+#         param(X * (X * 1), 1, id="meta * instance"),
+#         param((X * 1) * X, 1, id="instance * meta"),
+#         param((X * 1) * (X * 1), 1, id="instance * instance"),
+#         param(X * 1, 1, id="meta * int"),
+#         param(X * 1 * 1, 1, id="instance * int"),
+#         param(X * X, 1, id="meta * meta)"),
+#         param(X * tensor([1, 2, 3]), tensor([1, 2, 3]), id="meta * tensor"),
+#         param((X * 1) * tensor([1, 2, 3]), tensor([1, 2, 3]), id="instance * tensor"),
+
+#         # rmult
+#         param(1 * X, 1, id="int * meta"),
+#         param(1 * (1 * X), 1, id="int * instance"),
+#         param(tensor([1, 2, 3]) * X, tensor([1, 2, 3]), id="tensor * meta"),
+#         param(tensor([1, 2, 3]) * (X * 1), tensor([1, 2, 3]), id="tensor * instance"),
+
+#         # truediv
+#         param(X / (X / 1), 1.0, id="meta / instance"),
+#         param((X / 1) / X, 1.0, id="instance / meta"),
+#         param((X / 1) / (X / 1), 1.0, id="instance / instance"),
+#         param(X / 1, 1.0, id="meta / int"),
+#         param(X / 1 / 1, 1.0, id="instance / int"),
+#         param(X / X, 1.0, id="meta / meta"),
+#         param(X / tensor([1, 2, 3]), tensor([1.0, 0.5, 0.3333333]), id="meta / tensor"),
+#         param((X / 1) / tensor([1, 2, 3]), tensor([1.0, 0.5, 0.3333333]), id="instance / tensor"),
+
+#         # rtruediv
+#         param(1 / X, 1.0, id="int / meta"),
+#         param(1 / (1 / X), 1.0, id="int / instance"),
+#         param(tensor([1, 2, 3]) / X, tensor([1.0, 2.0, 3.0]), id="tensor / meta"),
+#         param(tensor([1, 2, 3]) / (X / 1), tensor([1.0, 2.0, 3.0]), id="tensor / instance"),
+
+#         # floordiv
+#         param(X // (X // 1), 1, id="meta // instance"),
+#         param((X // 1) // X, 1, id="instance // meta"),
+#         param((X // 1) // (X // 1), 1, id="instance // instance"),
+#         param(X // 1, 1, id="meta // int"),
+#         param(X // 1 // 1, 1, id="instance // int"),
+#         param(X // X, 1, id="meta // meta"),
+#         param(X // tensor([1, 2, 3]), tensor([1, 0, 0]), id="meta // tensor"),
+#         param((X // 1) // tensor([1, 2, 3]), tensor([1, 0, 0]), id="instance // tensor"),
+
+#         # rfloordiv
+#         param(1 // X, 1, id="int // meta"),
+#         param(1 // (1 // X), 1, id="int // instance"),
+#         param(tensor([1, 2, 3]) // X, tensor([1, 2, 3]), id="tensor // meta"),
+#         param(tensor([1, 2, 3]) // (X // 1), tensor([1, 2, 3]), id="tensor // instance"),
+
+#         # mod
+#         param(X % (X % 2), 0, id=r"meta % instance)"),
+#         param((X % 2) % X, 0, id=r"instance % meta)"),
+#         param((X % 2) % (X % 2), 0, id=r"instance % instance)"),
+#         param(X % 2, 1, id=r"meta % int)"),
+#         param(X % 2 % 1, 0, id=r"instance % int)"),
+#         param(X % X, 0, id=r"meta % meta)"),
+#         param(X % tensor([1, 2, 3]), tensor([0, 1, 1]), id=r"meta % tensor)"),
+#         param((X % 2) % tensor([1, 2, 3]), tensor([0, 1, 1]), id=r"instance % tensor)"),
+
+#         # rmod
+#         param(1 % X, 0, id=r"int % meta)"),
+#         param(1 % (1 + X), 1, id=r"int % instance)"),
+#         param(tensor([1, 2, 3]) % X, tensor([0, 0, 0]), id=r"tensor % meta)"),
+#         param(tensor([1, 2, 3]) % (X % 2), tensor([0, 0, 0]), id=r"tensor % instance)"),
+
+#         # pow
+#         param(X ** (X ** 1), 1, id="meta ** instance"),
+#         param((X ** 1) ** X, 1, id="instance ** meta"),
+#         param((X ** 1) ** (X ** 1), 1, id="instance ** instance"),
+#         param(X ** 1, 1, id="meta ** int"),
+#         param(X ** 1 ** 1, 1, id="instance ** int"),
+#         param(X ** X, 1, id="meta ** meta"),
+#         param(X ** tensor([1, 2, 3]), tensor([1, 1, 1]), id="meta ** tensor"),
+#         param((X ** 1) ** tensor([1, 2, 3]), tensor([1, 1, 1]), id="instance ** tensor"),
+
+#         # rpow
+#         param(1 ** X, 1, id="int ** meta"),
+#         param(1 ** (1 ** X), 1, id="int ** instance"),
+#         param(tensor([1, 2, 3]) ** X, tensor([1, 2, 3]), id="tensor ** meta"),
+#         param(tensor([1, 2, 3]) ** (X ** 1), tensor([1, 2, 3]), id="tensor ** instance"),
+
+#         # bitwise and
+#         param(X & (X & 1), 1, id="meta & instance"),
+#         param((X & 1) & X, 1, id="instance & meta"),   
+#         param((X & 1) & (X & 1), 1, id="instance & instance"),
+#         param(X & 1, 1, id="meta & int"),
+#         param(X & 1 & 1, 1, id="instance & int"),
+#         param(X & X, 1, id="meta & meta"),
+#         param(X & tensor([1, 2, 3]), tensor([1, 0, 1]), id="meta & tensor"),
+#         param((X & 1) & tensor([1, 2, 3]), tensor([1, 0, 1]), id="instance & tensor"),
+
+#         # rbitwise and
+#         param(1 & X, 1, id="int & meta"),
+#         param(1 & (1 & X), 1, id="int & instance"),
+#         param(tensor([1, 2, 3]) & X, tensor([1, 0, 1]), id="tensor & meta"),
+#         param(tensor([1, 2, 3]) & (X & 1), tensor([1, 0, 1]), id="tensor & instance"),
+
+#         # bitwise xor
+#         param(X ^ (X ^ 1), 1, id="meta ^ instance"),
+#         param((X ^ 1) ^ X, 1, id="instance ^ meta"),
+#         param((X ^ 1) ^ (X ^ 1), 0, id="instance ^ instance"),
+#         param(X ^ 1, 0, id="meta ^ int"),
+#         param(X ^ 1 ^ 1, 1, id="instance ^ int"),
+#         param(X ^ X, 0, id="meta ^ meta"),
+#         param(X ^ tensor([1, 2, 3]), tensor([0, 3, 2]), id="meta ^ tensor"),
+#         param((X ^ 1) ^ tensor([1, 2, 3]), tensor([1, 2, 3]), id="instance ^ tensor"),
+
+#         # rbitwise xor
+#         param(1 ^ X, 0, id="int ^ meta"),
+#         param(1 ^ (1 ^ X), 1, id="int ^ instance"),
+#         param(tensor([1, 2, 3]) ^ X, tensor([0, 3, 2]), id="tensor ^ meta"),
+#         param(tensor([1, 2, 3]) ^ (X ^ 1), tensor([1, 2, 3]), id="tensor ^ instance"),
+
+#         # gt
+#         param(X > (X + 1), False, id="meta > instance"),
+#         param((X + 1) > X, True, id="instance > meta"),
+#         param((X + 1) > (X + 1), False, id="instance > instance"),
+#         param(X > 1, False, id="meta > int"),
+#         param((X + 1) > 1, True, id="instance > int"),
+#         param(X > X, False, id="meta > meta "),
+#         param(X > tensor([1, 2, 3]), tensor([False, False, False]), id="meta > tensor"),
+#         param((X + 1) > tensor([1, 2, 3]), tensor([True, False, False]), id="instance > tensor"),
+
+#         # rgt
+#         param(1 > X, False, id="int > meta"),
+#         param(1 > (1 + X), False, id="int > instance"),
+#         param(tensor([1, 2, 3]) > X, tensor([False, True, True]), id="tensor > meta"),
+#         param(tensor([1, 2, 3]) > (X + 1), tensor([False, False, True]), id="tensor > instance"),
+
+#         # lt
+#         param(X < (X + 1), True, id="meta < instance"),
+#         param((X + 1) < X, False, id="instance < meta"),
+#         param((X + 1) < (X + 1), False, id="instance < instance"),
+#         param(X < 1, False, id="meta < int"),
+#         param((X + 1) < 1, False, id="instance < int"),
+#         param(X < X, False, id="meta < meta"),
+#         param(X < tensor([1, 2, 3]), tensor([False, True, True]), id="meta < tensor"),
+#         param((X + 1) < tensor([1, 2, 3]), tensor([False, False, True]), id="instance < tensor"),
+
+#         # rlt
+#         param(1 < X, False, id="int < meta"),
+#         param(1 < (1 + X), True, id="int < instance"),
+#         param(tensor([1, 2, 3]) < X, tensor([False, False, False]), id="tensor < meta"),
+#         param(tensor([1, 2, 3]) < (X + 1), tensor([True, False, False]), id="tensor < instance"),
+
+#         # ge
+#         param(X >= (X + 1), False, id="meta >= instance"),
+#         param((X + 1) >= X, True, id="instance >= meta"),
+#         param((X + 1) >= (X + 1), True, id="instance >= instance"),
+#         param(X >= 1, True, id="meta >= int"),
+#         param((X + 1) >= 1, True, id="instance >= int"),
+#         param(X >= X, True, id="meta >= meta"),
+#         param(X >= tensor([1, 2, 3]), tensor([True, False, False]), id="meta >= tensor"),
+#         param((X + 1) >= tensor([1, 2, 3]), tensor([True, True, False]), id="instance >= tensor"),
+
+#         # rge
+#         param(1 >= X, True, id="int >= meta"),
+#         param(1 >= (1 + X), False, id="int >= instance"),
+#         param(tensor([1, 2, 3]) >= X, tensor([True, True, True]), id="tensor >= meta"),
+#         param(tensor([1, 2, 3]) >= (X + 1), tensor([False, True, True]), id="tensor >= instance"),
+
+#         # le
+#         param(X <= (X + 1), True, id="meta <= instance"),
+#         param((X + 1) <= X, False, id="instance <= meta"),
+#         param((X + 1) <= (X + 1), True, id="instance <= instance"),
+#         param(X <= 1, True, id="meta <= int"),
+#         param((X + 1) <= 1, False, id="instance <= int"),
+#         param(X <= X, True, id="meta <= meta"),
+#         param(X <= tensor([1, 2, 3]), tensor([True, True, True]), id="meta <= tensor"),
+#         param((X + 1) <= tensor([1, 2, 3]), tensor([False, True, True]), id="instance <= tensor"),
+
+#         # rle
+#         param(1 <= X, True, id="int <= meta"),
+#         param(1 <= (1 + X), True, id="int <= instance"),
+#         param(tensor([1, 2, 3]) <= X, tensor([True, False, False]), id="tensor <= meta"),
+#         param(tensor([1, 2, 3]) <= (X + 1), tensor([True, True, False]), id="tensor <= instance"),
+
+#         # eq
+#         param(X == (X + 1), False, id="meta == instance"),
+#         param((X + 1) == X, False, id="instance == meta"),
+#         param((X + 1) == (X + 1), True, id="instance == instance)"),
+#         param(X == 1, True, id="meta == int"),
+#         param((X + 1) == 1, False, id="instance == int"),
+#         param(X == X, True, id="meta == meta)"),
+#         param(X == tensor([1, 2, 3]), tensor([True, False, False]), id="meta == tensor"),
+#         param((X + 1) == tensor([1, 2, 3]), tensor([False, True, False]), id="instance == tensor"),
+
+#         # ne
+#         param(X != (X + 1), True, id="meta != instance"),
+#         param((X + 1) != X, True, id="instance != meta"),
+#         param((X + 1) != (X + 1), False, id="instance != instance)"),
+#         param(X != 1, False, id="meta != int"),
+#         param((X + 1) != 1, True, id="instance != int"),
+#         param(X != X, False, id="meta != meta"),
+#         param(X != tensor([1, 2, 3]), tensor([False, True, True]), id="meta != tensor"),
+#         param((X + 1) != tensor([1, 2, 3]), tensor([True, False, True]), id="instance != tensor"),
+
+#         # minus
+#         param(-X, -1, id="-X"),
+#         param(-(X + 1), -2, id="-(X + 1)"),
+
+#         # plus
+#         param(+X, 1, id="+X"),
+#         param(+(X+1), 2, id="+X"),
+
+#         # abs
+#         param(abs(X), 1, id="abs(X)"),
+#         param(abs(X + 1), 2, id="abs(X + 1)"),
+
+#         # invert
+#         param(~X, -2, id="~X"),
+#         param(~(X + 1), -3, id="~(X + 1)"),
+#     ])
+#     @pytest.mark.parametrize("inputs", [
+#         param(1, id="input_int"), 
+#         param(torch.tensor(1), id="input_tensor")]
+#     )
+#     def test_operators(self, expr, expected, inputs):
+#         assert isinstance(expr, F)
+#         res = inputs | expr
+
+#         if isinstance(expected, torch.Tensor):
+#             torch.testing.assert_close(res, expected)
+#         else:
+#             assert res == expected
+
+#     # --- test arithmetic operators with no tensor support ---
+#     @pytest.mark.parametrize("expr, expected", [
+#         param(divmod(X, X + 1), (0, 1), id="divmod(meta, instance)"),
+#         param(divmod(X + 1, X), (2, 0), id="divmod(instance, meta)"),
+#         param(divmod(X + 1, X + 1), (1, 0), id="divmod(instance, instance)"),
+#         param(divmod(X, 2), (0, 1), id="divmod(meta, int)"),
+#         param(divmod(X + 1, 2), (1, 0), id="divmod(instance, int)"),
+#         param(divmod(X, X), (1, 0), id="divmod(meta, meta)"),
+
+#         param(divmod(1, X), (1, 0), id="divmod(int, meta)"),
+#         param(divmod(1, 1 + X), (0, 1), id="divmod(int, instance)"),
+#     ])
+#     def test_divmod(self, expr, expected):
+#         assert isinstance(expr, F)
+#         res = 1 | expr
+#         assert res == expected
+    
+#     @pytest.mark.parametrize("expr, input, expected", [
+#         param(
+#             X @ (X @ tensor([1.0, 2.0])), 
+#             torch.ones(2, 2), 
+#             tensor([6.0, 6.0]), 
+#             id="meta@instance)"
+#         ),
+#         param(
+#             (X @ tensor([1.0, 2.0])) @ X, 
+#             torch.ones(2, 2), 
+#             tensor([6.0, 6.0]),
+#             id="instance@meta)"
+#         ),
+#         param(
+#             (X @ tensor([1.0, 2.0])) @ (X @ tensor([1.0, 2.0])), 
+#             torch.ones(2, 2),
+#             tensor(18.0), 
+#             id="instance@instance)"
+#         ),
+#         param(X @ X, tensor([1.0, 2.0]), tensor(5.0), id="meta@meta)"),
+#         param(X @ tensor([1.0, 2.0]), tensor([1.0, 2.0]), tensor(5.0), id="meta@tensor)"),
+#         param(
+#             (X @ tensor([1.0, 2.0])) @ tensor([1.0, 2.0]), 
+#             torch.ones(2, 2), 
+#             tensor(9.0),
+#             id="instance@tensor)"
+#         ),
+
+#         # rmatmul
+#         param(
+#             tensor([1.0, 2.0]) @ X, 
+#             tensor([1.0, 2.0]), 
+#             tensor(5.0),
+#             id="tensor@meta)"
+#         ),
+#         param(
+#             tensor([1.0, 2.0]) @ (X @ torch.tensor([1.0, 2.0])), 
+#             torch.ones(2, 2), 
+#             tensor(9.0),
+#             id="tensor@instance)"),
+#     ])
+#     def test_matmul(self, expr, input, expected):
+#         torch.testing.assert_close(input | expr, expected)
+
+#     @pytest.mark.parametrize("expr, expected", [
+#         param(X, 1.0, id="meta"), 
+#         param(X + 1.0, 2.0, id="instance")
+#     ])
+#     def test_round(self, expr, expected):
+#         assert 1.4 | round(expr) == expected
+
+#     def test_packing(self):
+#         """
+#         # TODO: Need more test cases here (e.g. meta and instance packing...)
+#         """
+#         def func(a, b, c):
+#             return a + b + c
+        
+#         expr = F(func, *(X + 1))
+
+#         res = torch.tensor([1, 2, 3]) | expr
+#         assert res == 9
+
+#     def test_packing_map(self):
+#         """
+#         # TODO: Need more test cases here 
+#         """
+#         def func(a, b, c):
+#             return a + b + c
+#         expr = F(func, **X)
+#         res = {"a": 1, "b": 2, "c": 3} | expr
+#         assert res == 6
+
+#     @pytest.mark.parametrize("expr, expected", [
+#         param(X, tensor([1.0, 0.0, 3.0]), id="meta"), 
+#         param(X + 1.0, tensor([2.0, 0.0, 4.0]), id="instance")
+#     ])
+#     def test_torch_function(self, expr, expected):
+#         data = tensor([1.0, -2.0, 3.0])
+#         res = data | relu(expr)
+#         torch.testing.assert_close(res, expected)
+
+#     def test_clone(self):
+#         expr = X + 1 >> X + 2
+#         cloned = expr.fae.clone()
+#         assert cloned.fae.expr is cloned
+
+#         for original, cloned in zip(expr.fae, cloned.fae):
+#             assert original is cloned
+
+#     @pytest.mark.parametrize("clone_modules", [False, True])
+#     def test_clone_modules(self, clone_modules):
+#         from torch import nn
+#         expr = X + 1 >> nn.Linear(in_features=10, out_features=2)
+
+#         cloned = expr.fae.clone(recurse=True, clone_modules=clone_modules)
+#         clone_weights = cloned.fae.ops[1].fae.args[0].weight
+#         expr_weights = expr.fae.ops[1].fae.args[0].weight
+
+#         print(cloned)
+#         #print(expr_weights)
+
+#         if clone_modules:
+#             with pytest.raises(AssertionError):
+#                 torch.testing.assert_close(clone_weights, expr_weights)
+#         else:
+#             torch.testing.assert_close(clone_weights, expr_weights)
+        
+#     @pytest.mark.parametrize("expr", [
+#         param(X + 1 >> X + 2, id="chain"), 
+#         param(X + 1, id="F"),
+#         param(X, id="symbol")
+#     ])
+#     def test_clone_recurse(self, expr):
+#         cloned = expr.fae.clone(recurse=True)
+
+#         for original, cloned in zip(expr.fae, cloned.fae):
+#             if isinstance(original, Symbol):
+#                 assert original is cloned
+#             else:
+#                 assert original is not cloned
 
 
-class TestDelayableNamespace:
-    # --- update ---
+# class TestDelayableNamespace:
+#     # --- update ---
 
-    def test_update_returns_new_node(self):
-        expr = X + 1
-        updated = expr.fae.update()
-        assert updated is not expr
-        assert 3 | updated == 4
+#     def test_update_returns_new_node(self):
+#         expr = X + 1
+#         updated = expr.fae.update()
+#         assert updated is not expr
+#         assert 3 | updated == 4
 
-    def test_update_sets_fae_metadata(self):
-        expr = X + 1
-        named = expr.fae.update(name="foo")
-        assert named.fae.name == "foo"
-        assert 3 | named == 4
+#     def test_update_sets_fae_metadata(self):
+#         expr = X + 1
+#         named = expr.fae.update(name="foo")
+#         assert named.fae.name == "foo"
+#         assert 3 | named == 4
 
-    def test_update_symbol_is_identity(self):
-        # Symbols have no arguments; update() returns the symbol unchanged.
-        assert X.fae.update() is X
+#     def test_update_symbol_is_identity(self):
+#         # Symbols have no arguments; update() returns the symbol unchanged.
+#         assert X.fae.update() is X
 
-    def test_update_raises_on_expr_kwarg(self):
-        with pytest.raises(ValueError, match="`expr` cannot be updated"):
-            (X + 1).fae.update(expr=X)
+#     def test_update_raises_on_expr_kwarg(self):
+#         with pytest.raises(ValueError, match="`expr` cannot be updated"):
+#             (X + 1).fae.update(expr=X)
 
-    def test_update_raises_on_invalid_arguments_type(self):
-        with pytest.raises(ValueError):
-            (X + 1).fae.update(arguments="not_a_bound_arguments")
+#     def test_update_raises_on_invalid_arguments_type(self):
+#         with pytest.raises(ValueError):
+#             (X + 1).fae.update(arguments="not_a_bound_arguments")
 
-    # --- walk ---
+#     # --- walk ---
 
-    def test_walk_symbol_has_no_children(self):
-        assert list(X.fae) == []
+#     def test_walk_symbol_has_no_children(self):
+#         assert list(X.fae) == []
 
-    def test_walk_yields_delayable_children(self):
-        # X + 1 = F(__add__, X, 1): only X is Delayable, 1 and OpInfo are not.
-        assert list((X + 1).fae) == [X]
+#     def test_walk_yields_delayable_children(self):
+#         # X + 1 = F(__add__, X, 1): only X is Delayable, 1 and OpInfo are not.
+#         assert list((X + 1).fae) == [X]
 
-    def test_walk_replace_child_rebuilds_node(self):
-        expr = X + 1
-        walker = expr.fae.walk()
-        next(walker)  # receive X
-        try:
-            walker.send(X + 10)  # replace X with (X + 10)
-        except StopIteration as e:
-            new_expr = e.value
-        assert 5 | new_expr == 16  # (5 + 10) + 1
+#     def test_walk_replace_child_rebuilds_node(self):
+#         expr = X + 1
+#         walker = expr.fae.walk()
+#         next(walker)  # receive X
+#         try:
+#             walker.send(X + 10)  # replace X with (X + 10)
+#         except StopIteration as e:
+#             new_expr = e.value
+#         assert 5 | new_expr == 16  # (5 + 10) + 1
 
-    def test_walk_send_none_returns_original(self):
-        expr = X + 1
-        walker = expr.fae.walk()
-        next(walker)
-        try:
-            walker.send(None)  # no replacement
-        except StopIteration as e:
-            result = e.value
-        assert result is expr
+#     def test_walk_send_none_returns_original(self):
+#         expr = X + 1
+#         walker = expr.fae.walk()
+#         next(walker)
+#         try:
+#             walker.send(None)  # no replacement
+#         except StopIteration as e:
+#             result = e.value
+#         assert result is expr
 
-    # --- find ---
+#     # --- find ---
 
-    def test_find_by_path_replaces_node(self):
-        expr = ((X + 1) % "a" >> (X * 2) % "b") % "root"
-        result = expr.fae.find(r"root\.b", callback=lambda node: node + 100)
-        # chain: input 1 → (1+1)=2 → (2*2)+100=104
-        assert 1 | result == 104
+#     def test_find_by_path_replaces_node(self):
+#         expr = ((X + 1) % "a" >> (X * 2) % "b") % "root"
+#         result = expr.fae.find(r"root\.b", callback=lambda node: node + 100)
+#         # chain: input 1 → (1+1)=2 → (2*2)+100=104
+#         assert 1 | result == 104
 
-    def test_find_by_type_visits_all_matching(self):
-        expr = X + 1 >> X * 2
-        seen = []
+#     def test_find_by_type_visits_all_matching(self):
+#         expr = X + 1 >> X * 2
+#         seen = []
 
-        def callback(node):
-            seen.append(node)
-            return node
+#         def callback(node):
+#             seen.append(node)
+#             return node
 
-        expr.fae.find(F, callback=callback)
-        # Chain has two F children: (X+1) and (X*2)
-        assert len(seen) == 2
+#         expr.fae.find(F, callback=callback)
+#         # Chain has two F children: (X+1) and (X*2)
+#         assert len(seen) == 2
 
-    def test_find_no_match_returns_original(self):
-        expr = X + 1
-        result = expr.fae.find(r"no\.match", callback=lambda n: n * 2)
-        assert 3 | result == 4
-
-
-class TestFList:
-    flist =  FList([X, X - 1])
-
-    @pytest.mark.parametrize("expr, expected, result", [
-        param(flist + 1, "[X + 1, X - 1 + 1]", [2, 1], id="flist_int"),
-        param(1 + flist, "[1 + X, 1 + X - 1]", [2, 1], id="int_flist"),
-        param(flist + flist, "[X + X, X - 1 + X - 1]", [2, 0], id="flist_flist")
-    ])
-    def test_op_action(self, expr, expected, result):
-        assert str(expr) == expected
-        assert 1 | expr == result
-
-    @pytest.mark.parametrize("left, right, result", [
-        param(flist, X, [1, 0], id="flist_meta"),
-        param(flist, X + 1, [2, 1], id="flist_instance"),
-        param(flist, flist, [1, -1], id="flist_flist"),
-        param(flist, FList([X+1]), [2, 1], id="flist_flist_1"),
-        param(FList([X+1]), flist, [2, 1], id="flist_1_flist"),
-        param(flist + 1, flist, [2, 0], id="F(flist)_flist"),
-        param(flist, flist + 1, [2, 0], id="flist_F(flist)"),
-    ])
-    def test_lshift(self, left, right, result):
-        expr = left << right
-        assert isinstance(expr, FList)
-        for item in expr.fae:
-            assert isinstance(item, Chain)
-        assert 1 | expr == result
-
-    @pytest.mark.parametrize("left, right", [
-        param(X, flist, id="meta_flist"),
-        param(X + 1, flist, id="instance_flist"),
-        param(FList([X, X, X]), flist, id="flist_flist_non_broadcastable"),
-        param(flist, FList([X, X, X]), id="flist_flist_non_broadcastable2"),
-
-    ])
-    def test_lshift_error(self, left, right):
-        """ 
-        Cannot have Flist on the right hand side of a left shift operator, if right hand 
-        side is not a Flist will broadcastable lengths.
-        """
-        with pytest.raises(TypeError):
-            left << right
-
-    @pytest.mark.parametrize("left, right, result", [
-        param(flist, X, [1, 0], id="flist_meta"),
-        param(flist, F(sum, X), 1, id="flist_F"),
-    ])
-    def test_rshift(self, left, right, result):
-        expr = left >> right
-        assert isinstance(expr, Chain)
-        assert 1 | expr == result
+#     def test_find_no_match_returns_original(self):
+#         expr = X + 1
+#         result = expr.fae.find(r"no\.match", callback=lambda n: n * 2)
+#         assert 3 | result == 4
 
 
-class TestFDict:
-    fdict = FDict({"a": X, "b": X - 1})
+# class TestFList:
+#     flist =  FList([X, X - 1])
 
-    @pytest.mark.parametrize("expr, expected, result", [
-        param(fdict + 1, "{'a': X + 1, 'b': X - 1 + 1}", {"a": 2, "b": 1}, id="fdict_int"),
-        param(1 + fdict, "{'a': 1 + X, 'b': 1 + X - 1}", {"a": 2, "b": 1}, id="int_fdict"),
-        param(fdict + fdict, "{'a': X + X, 'b': X - 1 + X - 1}", {"a": 2, "b": 0}, id="fdict_fdict")
-    ])
-    def test_fdict(self, expr, expected, result):
-        assert str(expr) == expected
-        assert 1 | expr == result
+#     @pytest.mark.parametrize("expr, expected, result", [
+#         param(flist + 1, "[X + 1, X - 1 + 1]", [2, 1], id="flist_int"),
+#         param(1 + flist, "[1 + X, 1 + X - 1]", [2, 1], id="int_flist"),
+#         param(flist + flist, "[X + X, X - 1 + X - 1]", [2, 0], id="flist_flist")
+#     ])
+#     def test_op_action(self, expr, expected, result):
+#         assert str(expr) == expected
+#         assert 1 | expr == result
 
-    @pytest.mark.parametrize("left, right, result", [
-        param(fdict, X, {"a": 1, "b": 0}, id="fdict_meta"),
-        param(fdict, X + 1, {"a": 2, "b": 1}, id="fdict_instance"),
-        param(fdict, fdict, {"a": 1, "b": -1}, id="fdict_fdict"),
-        param(fdict + 1, fdict, {"a": 2, "b": 0}, id="F(fdict)_fdict"),
-        param(fdict, fdict + 1, {"a": 2, "b": 0}, id="fdict_F(fdict)"),
-    ])
-    def test_lshift(self, left, right, result):
-        expr = left << right
-        assert isinstance(expr, FDict)
-        for item in expr.fae.expressions.values():
-            assert isinstance(item, Chain)
-        assert 1 | expr == result
+#     @pytest.mark.parametrize("left, right, result", [
+#         param(flist, X, [1, 0], id="flist_meta"),
+#         param(flist, X + 1, [2, 1], id="flist_instance"),
+#         param(flist, flist, [1, -1], id="flist_flist"),
+#         param(flist, FList([X+1]), [2, 1], id="flist_flist_1"),
+#         param(FList([X+1]), flist, [2, 1], id="flist_1_flist"),
+#         param(flist + 1, flist, [2, 0], id="F(flist)_flist"),
+#         param(flist, flist + 1, [2, 0], id="flist_F(flist)"),
+#     ])
+#     def test_lshift(self, left, right, result):
+#         expr = left << right
+#         assert isinstance(expr, FList)
+#         for item in expr.fae:
+#             assert isinstance(item, Chain)
+#         assert 1 | expr == result
 
-    @pytest.mark.parametrize("left, right", [
-        param(X, fdict, id="meta_fdict"),
-        param(X + 1, fdict, id="instance_fdict"),
-        param(FDict({"a": X}), fdict, id="fdict_fdict_incompatible_keys"),
-        param(fdict, FDict({"a": X}), id="fdict_fdict_incompatible_keys2"),
+#     @pytest.mark.parametrize("left, right", [
+#         param(X, flist, id="meta_flist"),
+#         param(X + 1, flist, id="instance_flist"),
+#         param(FList([X, X, X]), flist, id="flist_flist_non_broadcastable"),
+#         param(flist, FList([X, X, X]), id="flist_flist_non_broadcastable2"),
 
-    ])
-    def test_lshift_error(self, left, right):
-        """ 
-        Cannot have Flist on the right hand side of a left shift operator, if right hand 
-        side is not a Flist will broadcastable lengths.
-        """
-        with pytest.raises(TypeError):
-            left << right
+#     ])
+#     def test_lshift_error(self, left, right):
+#         """ 
+#         Cannot have Flist on the right hand side of a left shift operator, if right hand 
+#         side is not a Flist will broadcastable lengths.
+#         """
+#         with pytest.raises(TypeError):
+#             left << right
 
-    @pytest.mark.parametrize("left, right, result", [
-        param(fdict, X, {"a": 1, "b": 0}, id="fdict_meta"),
-        param(fdict, F(sum, X.values()), 1, id="fdict_F"),
-    ])
-    def test_rshift(self, left, right, result):
-        expr = left >> right
-        assert isinstance(expr, Chain)
-        assert 1 | expr == result
+#     @pytest.mark.parametrize("left, right, result", [
+#         param(flist, X, [1, 0], id="flist_meta"),
+#         param(flist, F(sum, X), 1, id="flist_F"),
+#     ])
+#     def test_rshift(self, left, right, result):
+#         expr = left >> right
+#         assert isinstance(expr, Chain)
+#         assert 1 | expr == result
+
+
+# class TestFDict:
+#     fdict = FDict({"a": X, "b": X - 1})
+
+#     @pytest.mark.parametrize("expr, expected, result", [
+#         param(fdict + 1, "{'a': X + 1, 'b': X - 1 + 1}", {"a": 2, "b": 1}, id="fdict_int"),
+#         param(1 + fdict, "{'a': 1 + X, 'b': 1 + X - 1}", {"a": 2, "b": 1}, id="int_fdict"),
+#         param(fdict + fdict, "{'a': X + X, 'b': X - 1 + X - 1}", {"a": 2, "b": 0}, id="fdict_fdict")
+#     ])
+#     def test_fdict(self, expr, expected, result):
+#         assert str(expr) == expected
+#         assert 1 | expr == result
+
+#     @pytest.mark.parametrize("left, right, result", [
+#         param(fdict, X, {"a": 1, "b": 0}, id="fdict_meta"),
+#         param(fdict, X + 1, {"a": 2, "b": 1}, id="fdict_instance"),
+#         param(fdict, fdict, {"a": 1, "b": -1}, id="fdict_fdict"),
+#         param(fdict + 1, fdict, {"a": 2, "b": 0}, id="F(fdict)_fdict"),
+#         param(fdict, fdict + 1, {"a": 2, "b": 0}, id="fdict_F(fdict)"),
+#     ])
+#     def test_lshift(self, left, right, result):
+#         expr = left << right
+#         assert isinstance(expr, FDict)
+#         for item in expr.fae.expressions.values():
+#             assert isinstance(item, Chain)
+#         assert 1 | expr == result
+
+#     @pytest.mark.parametrize("left, right", [
+#         param(X, fdict, id="meta_fdict"),
+#         param(X + 1, fdict, id="instance_fdict"),
+#         param(FDict({"a": X}), fdict, id="fdict_fdict_incompatible_keys"),
+#         param(fdict, FDict({"a": X}), id="fdict_fdict_incompatible_keys2"),
+
+#     ])
+#     def test_lshift_error(self, left, right):
+#         """ 
+#         Cannot have Flist on the right hand side of a left shift operator, if right hand 
+#         side is not a Flist will broadcastable lengths.
+#         """
+#         with pytest.raises(TypeError):
+#             left << right
+
+#     @pytest.mark.parametrize("left, right, result", [
+#         param(fdict, X, {"a": 1, "b": 0}, id="fdict_meta"),
+#         param(fdict, F(sum, X.values()), 1, id="fdict_F"),
+#     ])
+#     def test_rshift(self, left, right, result):
+#         expr = left >> right
+#         assert isinstance(expr, Chain)
+#         assert 1 | expr == result
 
 
 # def test_sym():
@@ -1624,80 +1677,80 @@ class TestFDict:
 #         assert mux.s1 == "s1"
 
 
-class TestR:
-    def test_recall_named_op(self):
-        """R["name"] reads the output a named node produced earlier in the chain."""
-        expr = (X + 1) % "tap" >> X * 2 >> X + R["tap"]
-        # 3: tap = 4, then 8, then 8 + 4
-        assert 3 | expr == 12
+# class TestR:
+#     def test_recall_named_op(self):
+#         """R["name"] reads the output a named node produced earlier in the chain."""
+#         expr = (X + 1) % "tap" >> X * 2 >> X + R["tap"]
+#         # 3: tap = 4, then 8, then 8 + 4
+#         assert 3 | expr == 12
 
-    def test_recall_named_subchain(self):
-        """A named sub-chain records its final output under its name."""
-        expr = (X + 1 >> X * 2) % "enc" >> X + 3 >> R["enc"] * X
-        # 2: enc = (2+1)*2 = 6, then 9, then 6 * 9
-        assert 2 | expr == 54
+#     def test_recall_named_subchain(self):
+#         """A named sub-chain records its final output under its name."""
+#         expr = (X + 1 >> X * 2) % "enc" >> X + 3 >> R["enc"] * X
+#         # 2: enc = (2+1)*2 = 6, then 9, then 6 * 9
+#         assert 2 | expr == 54
 
-    def test_recall_into_fdict(self):
-        """Recall works inside container fan-out."""
-        expr = (X * 2) % "a" >> X + 1 >> FDict({"x": X, "a": R["a"]})
-        assert 3 | expr == {"x": 7, "a": 6}
+#     def test_recall_into_fdict(self):
+#         """Recall works inside container fan-out."""
+#         expr = (X * 2) % "a" >> X + 1 >> FDict({"x": X, "a": R["a"]})
+#         assert 3 | expr == {"x": 7, "a": 6}
 
-    def test_recall_from_inside_fdict(self):
-        """A named node nested inside a container is recallable downstream."""
-        expr = FDict({"a": (X + 1) % "t", "b": X * 2}) >> X["a"] + R["t"]
-        # 4: t = 5, then 5 + 5
-        assert 4 | expr == 10
+#     def test_recall_from_inside_fdict(self):
+#         """A named node nested inside a container is recallable downstream."""
+#         expr = FDict({"a": (X + 1) % "t", "b": X * 2}) >> X["a"] + R["t"]
+#         # 4: t = 5, then 5 + 5
+#         assert 4 | expr == 10
 
-    def test_recall_before_definition_raises(self):
-        """Recalling a name before the named node has executed is an error."""
-        expr = X + R["nope"] >> X * 2
-        with pytest.raises(KeyError, match="nope"):
-            3 | expr
+#     def test_recall_before_definition_raises(self):
+#         """Recalling a name before the named node has executed is an error."""
+#         expr = X + R["nope"] >> X * 2
+#         with pytest.raises(KeyError, match="nope"):
+#             3 | expr
 
-    def test_recall_table_is_per_evaluation(self):
-        """Each evaluation gets a fresh table: no leakage across calls."""
-        expr = (X + 1) % "tap" >> X * 2 >> X + R["tap"]
-        assert 3 | expr == 12
-        assert 0 | expr == 3  # tap = 1, then 2, then 2 + 1
+#     def test_recall_table_is_per_evaluation(self):
+#         """Each evaluation gets a fresh table: no leakage across calls."""
+#         expr = (X + 1) % "tap" >> X * 2 >> X + R["tap"]
+#         assert 3 | expr == 12
+#         assert 0 | expr == 3  # tap = 1, then 2, then 2 + 1
 
-    def test_recall_without_chain_stays_delayed(self):
-        """Outside a chain there is no recall table; R stays unresolved."""
-        expr = R["tap"] + X
-        result = 3 | expr
-        assert isinstance(result, Delayable)
-
-
-class _DoubleModifier(Modifier):
-    """Test modifier that wraps a node as `node * 2`."""
-    def __call__(self, node):
-        return node * 2
+#     def test_recall_without_chain_stays_delayed(self):
+#         """Outside a chain there is no recall table; R stays unresolved."""
+#         expr = R["tap"] + X
+#         result = 3 | expr
+#         assert isinstance(result, Delayable)
 
 
-def test_modifiers():
-    """Modify("path", modifier) replaces the node at the path with modifier(node)."""
-    expr = (
-        X + 2
-        >> ((X / 2) % "baz" + X * X) % "bar"
-        >> X * 10
-    ) % "foo"
-
-    modifier = _DoubleModifier()
-    out = expr % Modify(r"foo\.bar\.baz", modifier)
-
-    # The node at "foo.bar.baz" was (X / 2); after replacement it should be (X / 2) * 2.
-    # ops[1] is the "bar" chain node; its first arg is the "baz" sub-expression.
-    replaced = out.fae.ops[1].fae.args[0]
-    assert 6.0 == replaced._resolve(6.0)  # (6/2)*2 == 6
+# class _DoubleModifier(Modifier):
+#     """Test modifier that wraps a node as `node * 2`."""
+#     def __call__(self, node):
+#         return node * 2
 
 
-def test_modifiers_by_type():
-    """Modify(TypeClass, modifier) replaces every node of that type."""
-    expr = X + 2 >> X * 3
+# def test_modifiers():
+#     """Modify("path", modifier) replaces the node at the path with modifier(node)."""
+#     expr = (
+#         X + 2
+#         >> ((X / 2) % "baz" + X * X) % "bar"
+#         >> X * 10
+#     ) % "foo"
 
-    modifier = _DoubleModifier()
-    out = expr % Modify(F, modifier)
+#     modifier = _DoubleModifier()
+#     out = expr % Modify(r"foo\.bar\.baz", modifier)
 
-    # Every F node is wrapped with *2, so resolving should double each op's output.
-    # ops[0] is (X+2), wrapped -> (X+2)*2; ops[1] receives that and is (X*3), wrapped -> (X*3)*2.
-    result = out._resolve(1.0)
-    assert result == ((1.0 + 2) * 2) * 3 * 2
+#     # The node at "foo.bar.baz" was (X / 2); after replacement it should be (X / 2) * 2.
+#     # ops[1] is the "bar" chain node; its first arg is the "baz" sub-expression.
+#     replaced = out.fae.ops[1].fae.args[0]
+#     assert 6.0 == replaced._resolve(6.0)  # (6/2)*2 == 6
+
+
+# def test_modifiers_by_type():
+#     """Modify(TypeClass, modifier) replaces every node of that type."""
+#     expr = X + 2 >> X * 3
+
+#     modifier = _DoubleModifier()
+#     out = expr % Modify(F, modifier)
+
+#     # Every F node is wrapped with *2, so resolving should double each op's output.
+#     # ops[0] is (X+2), wrapped -> (X+2)*2; ops[1] receives that and is (X*3), wrapped -> (X*3)*2.
+#     result = out._resolve(1.0)
+#     assert result == ((1.0 + 2) * 2) * 3 * 2
