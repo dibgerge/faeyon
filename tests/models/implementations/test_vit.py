@@ -1,6 +1,6 @@
 import pytest
 import torch
-from faeyon import FList
+from faeyon import FaeList
 from faeyon.models import ViT
 from faeyon.models.tasks import ClassifyTask
 
@@ -33,7 +33,7 @@ class TestViT:
     def test_vit_forward_hidden_states(self, model, x):
         out = model(x, keep_hidden=True)
         hidden = +model.fstate.hidden
-        assert isinstance(model.fstate.hidden, FList)
+        assert isinstance(model.fstate.hidden, FaeList)
         assert len(hidden) == 3
 
         x2 = torch.randn(2, 3, 8, 8)

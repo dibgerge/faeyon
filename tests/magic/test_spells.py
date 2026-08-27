@@ -1,7 +1,7 @@
 import pytest
 import inspect
 import torch
-from faeyon import A, R, X, FVar, FList, FDict, F, Chain
+from faeyon import A, R, X, FVar, FaeList, FaeDict, F, Chain
 from faeyon.magic.spells import Delayable, Symbol
 from faeyon.modifiers import Modify, Modifier
 from tests.common import ConstantLayer

@@ -333,7 +333,7 @@ class _OpActionMixin:
         """
         opinfo = get_opinfo(attr_name=name)
         if any(
-            isinstance(arg, (FList, FDict)) 
+            isinstance(arg, (FaeList, FaeDict)) 
             for arg in itertools.chain(args, kwargs.values())
         ):
             # TODO: do i need this check?
@@ -584,11 +584,6 @@ class A(Symbol):
     pass
 
 
-# class _IndexMeta(_SymbolMeta):
-#     def __getitem__(self, data: Sequence[Any]) -> int:
-#         return F(_getitem, data, I)
-
-
 class I(Symbol):
     """ A special symbol that represents an index."""
     pass
@@ -606,9 +601,12 @@ class R(Symbol):
     connections (U-Net, FPN) without threading values through the pipeline by hand:
 
         unet = (
-            enc_block(1, 64) % "e1" >> down(64)
+            enc_block(1, 64) % "e1"
+            >> down(64)
             >> bottleneck(64, 128)
-            >> up(128, 64) >> F(torch.cat, FList([X, R["e1"]]), dim=1) >> dec_block(...)
+            >> up(128, 64) 
+            >> torch.cat(FaeList([X, R["e1"]]), dim=1)
+            >> dec_block(...)
         )
 
     Semantics:
@@ -1125,17 +1123,17 @@ class FVar(ContainerBase):
 
     def __getitem__(self, key: str):
         if not self.is_empty:
-            raise ValueError("Cannot promote FVar to FDict from non-empty FVar.")
+            raise ValueError("Cannot promote FVar to FaeDict from non-empty FVar.")
         self.value = {}
         self._key = None
-        self.morph(FDict)
+        self.morph(FaeDict)
         # self.__class__ = FDict  # type: ignore[assignment]
         return self[key]
 
     def _set(self, data: Any) -> None:
         if self.morphable and not self.is_empty:
             self.value = [self.value]
-            self.morph(FList)
+            self.morph(FaeList)
             self._set(data)
         else:
             self.value = data
@@ -1149,29 +1147,29 @@ class FVar(ContainerBase):
         return False
 
 
-class FList(_OpActionMixin, Delayable):
+class FaeList(_OpActionMixin, Delayable):
     """
     TODO: Make FList generic e.g. Flist[Delayable, etc..]
     """
     def __init__(self, expressions: list[Delayable]) -> None:
         super().__init__(expressions=expressions)
 
-    def _op_action(self, name: str, *args: Any, **kwargs: Any) -> FList:
+    def _op_action(self, name: str, *args: Any, **kwargs: Any) -> FaeList:
         opinfo = get_opinfo(attr_name=name)
 
         raveled = []
         n = 0
         for arg in itertools.chain(args, kwargs.values()):
-            if isinstance(arg, FList):
+            if isinstance(arg, FaeList):
                 n += 1
                 raveled.append(arg.fae.expressions)
-            elif isinstance(arg, FDict):
-                raise ValueError("Cannot mix `FList` and `FDict` arguments. Choose one.")
+            elif isinstance(arg, FaeDict):
+                raise ValueError("Cannot mix `FaeList` and `FaeDict` arguments. Choose one.")
             else:
                 raveled.append(itertools.repeat(arg))
 
         if n == 0:
-            return FList([F(opinfo, item, *args, **kwargs) for item in self.fae.expressions])
+            return FaeList([F(opinfo, item, *args, **kwargs) for item in self.fae.expressions])
 
         raveled = zip(*raveled)
         out = []
@@ -1179,15 +1177,15 @@ class FList(_OpActionMixin, Delayable):
             items_args = arg[:len(args)]
             items_kwargs = dict(zip(kwargs.keys(), arg[len(args):]))
             out.append(F(opinfo, item, *items_args, **items_kwargs))
-        return FList(out)
+        return FaeList(out)
 
     def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
         result = [item._resolve(_default, **kwargs) for item in self.fae.expressions]
         self._record(result, kwargs)
         return result
 
-    def __lshift__(self, other: Delayable) -> FList:       
-        if isinstance(other, FList):
+    def __lshift__(self, other: Delayable) -> FaeList:       
+        if isinstance(other, FaeList):
             out = []
             if len(other) == len(self):
                 out = [left >> right for left, right in zip(self.fae.expressions, other.fae.expressions)]
@@ -1200,9 +1198,9 @@ class FList(_OpActionMixin, Delayable):
             else:
                 return NotImplemented
 
-            return FList(out)
+            return FaeList(out)
         elif isinstance(other, (Symbol, F)):
-            return FList([expr >> other for expr in self.fae.expressions])
+            return FaeList([expr >> other for expr in self.fae.expressions])
         else:
             return NotImplemented
         
@@ -1216,32 +1214,32 @@ class FList(_OpActionMixin, Delayable):
         return str(self)
     
 
-class FDict(_OpActionMixin, Delayable):
+class FaeDict(_OpActionMixin, Delayable):
     def __init__(self, expressions: dict[str, Delayable]) -> None:
         super().__init__(expressions=expressions)
 
-    def _op_action(self, name: str, *args: Any, **kwargs: Any) -> FDict:
+    def _op_action(self, name: str, *args: Any, **kwargs: Any) -> FaeDict:
         opinfo = get_opinfo(attr_name=name)
 
         raveled = defaultdict(list)
         n = 0
         keys = set(self.fae.expressions)
         for arg in itertools.chain(args, kwargs.values()):
-            if isinstance(arg, FDict):
+            if isinstance(arg, FaeDict):
                 n += 1
                 if keys != set(arg.fae.expressions):
-                    raise ValueError("All arguments of type `FDict` must have the same keys.")
+                    raise ValueError("All arguments of type `FaeDict` must have the same keys.")
 
                 for key, item in arg.fae.expressions.items():
                     raveled[key].append(item)
-            elif isinstance(arg, FList):
-                raise ValueError("Cannot mix `FList` and `FDict` arguments. Choose one.")
+            elif isinstance(arg, FaeList):
+                raise ValueError("Cannot mix `FaeList` and `FaeDict` arguments. Choose one.")
             else:
                 for key in keys:
                     raveled[key].append(arg)
 
         if n == 0:
-            return FDict(
+            return FaeDict(
                 {key: F(opinfo, item, *args, **kwargs) 
                 for key, item in self.fae.expressions.items()}
             )
@@ -1252,7 +1250,7 @@ class FDict(_OpActionMixin, Delayable):
             items_args = raveled[key][:nargs]
             items_kwargs = dict(zip(kwargs, raveled[key][nargs:]))
             out[key] = F(opinfo, value, *items_args, **items_kwargs)
-        return FDict(out)
+        return FaeDict(out)
 
     def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
         result = {
@@ -1262,8 +1260,8 @@ class FDict(_OpActionMixin, Delayable):
         self._record(result, kwargs)
         return result
 
-    def __lshift__(self, other: Delayable) -> FDict:
-        if isinstance(other, FDict):
+    def __lshift__(self, other: Delayable) -> FaeDict:
+        if isinstance(other, FaeDict):
             out = {}
             other = other.fae.expressions
 
@@ -1272,9 +1270,9 @@ class FDict(_OpActionMixin, Delayable):
 
             for key, item in self.fae.expressions.items():
                 out[key] = item >> other[key]
-            return FDict(out)
+            return FaeDict(out)
         elif isinstance(other, (Symbol, F)):
-            return FDict({key: item >> other for key, item in self.fae.expressions.items()})
+            return FaeDict({key: item >> other for key, item in self.fae.expressions.items()})
         else:
             return NotImplemented
 

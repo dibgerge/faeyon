@@ -23,8 +23,8 @@ from .spells import (
     Delayable,
     F,
     Chain,
-    FList,
-    FDict,
+    FaeList,
+    FaeDict,
     Symbol,
     _RecallTable,
     X as X_sym,
@@ -133,12 +133,12 @@ def _compile_node(node: Any, recorded: set[str]) -> Callable[[Any, Any, Any], An
         return f_fn
 
     # --- Parallel list ---
-    if isinstance(node, FList):
+    if isinstance(node, FaeList):
         fns = [_compile(expr, recorded) for expr in node.fae.expressions]
         return lambda data, x, r, _f=fns: [f(data, x, r) for f in _f]
 
     # --- Parallel dict ---
-    if isinstance(node, FDict):
+    if isinstance(node, FaeDict):
         keys = list(node.fae.expressions.keys())
         fns = [_compile(expr, recorded) for expr in node.fae.expressions.values()]
         return lambda data, x, r, _k=keys, _f=fns: {k: f(data, x, r) for k, f in zip(_k, _f)}

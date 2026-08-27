@@ -7,7 +7,7 @@ import torch
 
 from pytest import param
 from torch import nn
-from faeyon import faek, A, FList, FDict, F, X, Chain
+from faeyon import faek, A, FaeList, FaeDict, F, X, Chain
 from tests.common import ConstantLayer
 
 
