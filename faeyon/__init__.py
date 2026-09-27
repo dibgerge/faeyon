@@ -5,8 +5,6 @@ from .magic import (
     Input,
     FaeDict,
     FaeList,
-    # FMMap,
-    FVar,
     F,
     Chain,
     I,

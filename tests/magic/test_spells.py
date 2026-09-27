@@ -1,7 +1,7 @@
 import pytest
 import inspect
 import torch
-from faeyon import A, R, X, FVar, FaeList, FaeDict, F, Chain
+from faeyon import A, R, X, FaeList, FaeDict, F, Chain
 from faeyon.magic.spells import Delayable, Symbol
 from faeyon.modifiers import Modify, Modifier
 from tests.common import ConstantLayer
@@ -61,6 +61,20 @@ class TestDelayable:
 
         for original, cloned in zip(expr.fae_walk(items=True), cloned.fae_walk(items=True)):
             print(original, cloned, original is cloned)
+
+    def test_resolve_F(self):
+        expr = X + 1
+        resolved = 11 | expr
+        assert resolved == 12
+
+    def test_resolve_Chain(self):
+        expr = X + 1 >> X / 2
+        resolved = 11 | expr
+        assert resolved == 6.0  # (11 + 1) / 2
+
+        expr = X + 1 >> X / 2 >> 2 * X
+        resolved = 11 | expr
+        assert resolved == 12.0  # ((11 + 1) / 2) * 2
 
 
 # class TestX:

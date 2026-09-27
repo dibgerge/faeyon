@@ -4,8 +4,6 @@ from .spells import (
     Input,
     FaeDict, 
     FaeList,
-    # FMMap,
-    FVar,
     F,
     Chain,
     DelayedModule,
