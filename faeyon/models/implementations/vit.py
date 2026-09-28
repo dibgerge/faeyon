@@ -9,7 +9,7 @@ from faeyon.nn import (
     head_to_attn_mask,
     Concat
 )
-from faeyon import X, F, A
+from faeyon import X, F, A, materialize
 
 
 def vit(
@@ -53,7 +53,7 @@ def vit(
         dropout=dropout,
     )
 
-    return FaeModule(
+    return materialize(
         nn.Conv2d(
             in_channels, embed_size, kernel_size=patch_size, stride=patch_size
         )(A.img)                                                        % "patch_embedding"

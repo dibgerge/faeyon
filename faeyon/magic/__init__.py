@@ -2,16 +2,15 @@ from .spells import (
     X,
     A,
     Input,
-    FaeDict, 
+    FaeDict,
     FaeList,
     F,
     Chain,
-    DelayedModule,
     I,
     P,
     R,
-    Substitute
+    Substitute,
+    DelayedModule,
 )
 from .faek import faek
-from .fae_module import FaeModule
-from .lower import lower
+from .materialize import materialize, to_module

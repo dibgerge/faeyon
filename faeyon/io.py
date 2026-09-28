@@ -422,3 +422,23 @@ def save(
         return output
 
 
+def from_file(
+    cls, 
+    name: str,
+    load_state: bool | str = True,
+    cache: bool = True,
+    trust_code: bool = False,
+    **kwargs: Any,
+) -> nn.Module:
+    from faeyon.io import load
+    return load(name, load_state, cls, cache=cache, trust_code=trust_code, **kwargs)
+
+
+def load_model(
+    self, 
+    load_state: str,
+    cache: bool = True,
+    trust_code: bool = False,
+    **kwargs: Any,
+) -> nn.Module:
+    return load(self, load_state, cache=cache, trust_code=trust_code, **kwargs)

@@ -13,4 +13,4 @@ with faek:  # or faek.on() to enable process-wide
 Importing faeyon does not change PyTorch's behavior. The `nn.Module` interception
 (`faek`) is opt-in: enable it explicitly with `faek.on()`, or scope it to the code that
 builds expressions with `with faek:`. Evaluating or materializing an already-built tree
-(`data | expr`, `FaeModule`, `lower`) does not require it.
+(`data | expr`, `materialize`) does not require it.

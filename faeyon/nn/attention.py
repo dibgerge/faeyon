@@ -216,7 +216,10 @@ class MultiHeadAttention(nn.Module):
         # k = key >> self.k_proj >> reshape >> Op(self.fk, X, mask=attn_mask)
         # v = value >> self.v_proj >> X.view(b, t, -1, self.vdim).transpose(1, 2) >> Op(self.fv)
         
-        v = self.v_proj(value).view(b, t, -1, self.vdim).transpose(1, 2) >> F(self.fv)
+        v = self.v_proj(value).view(b, t, -1, self.vdim).transpose(1, 2)
+        if self.fv is not None:
+            v = self.fv(v)
+
         q = self.q_proj(query).view(b, t, -1, self.kdim).transpose(1, 2)
         if self.fq is not None:
             q = self.fq(q, mask=attn_mask)
@@ -224,9 +227,6 @@ class MultiHeadAttention(nn.Module):
         k = self.k_proj(key).view(b, t, -1, self.kdim).transpose(1, 2)
         if self.fk is not None:
             k = self.fk(k, mask=attn_mask)
-        # v =  self.v_proj(value).view(b, t, -1, self.vdim).transpose(1, 2)
-        # if self.fv is not None:
-        #     v = self.fv(v)
 
         if self.fa is not None:
             # TODO: Adding dropout?

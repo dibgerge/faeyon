@@ -12,8 +12,8 @@ from .magic import (
     R,
     DelayedModule,
     Substitute,
-    FaeModule,
-    lower,
+    materialize,
+    to_module,
 )
 
 from . import models
@@ -28,5 +28,5 @@ from . import modifiers
 #     with faek:         # scoped: patch nn.Module only while building expressions
 #         expr = nn.Linear(10, 5) >> nn.ReLU()
 #
-# Evaluating / materializing an already-built tree (data | expr, FaeModule, lower)
+# Evaluating / materializing an already-built tree (data | expr, materialize)
 # does not require faek to be on -- only *building* expressions from nn.Module does.

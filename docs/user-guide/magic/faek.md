@@ -28,7 +28,7 @@ with faek:
 ```
 
 Only *building* expressions from modules requires Faek to be on. Evaluating or
-materializing an already-built tree (`data | expr`, `FaeModule`, `lower`) works with it
+materializing an already-built tree (`data | expr`, `materialize`) works with it
 off, so you can build models inside `with faek:` and use them anywhere.
 
 ## What Faek Adds

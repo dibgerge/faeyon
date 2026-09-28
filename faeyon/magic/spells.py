@@ -21,23 +21,6 @@ from .base import _NoValue, _MappingKey
 modifierType = str
 
 
-def _new_instance(cls, *args, **kwargs):
-    instance = object.__new__(cls)
-    sig = inspect.signature(cls.__init__)
-
-    # Bypass Dynamo's GraphModule, which overrides __new__, but does not pass arguments to super...
-    # TODO: File a bug report/PR to PyTorch
-    try:
-        bound = sig.bind(instance, *args, **kwargs)
-        bound.apply_defaults()
-        del bound.arguments["self"]
-    except TypeError:
-        bound = None
-
-    super(cls, instance).__setattr__("_arguments", bound)
-    return instance
-
-
 class _Frame:
     """One suspended `_fae_exchange` coroutine in an iterative traversal."""
     __slots__ = ("node", "exchange", "path", "sent", "changed")
@@ -83,9 +66,10 @@ class Delayable:
         self._fae_arguments = bound
 
     @abstractmethod
-    def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
+    def _resolve(self, /, **kwargs: Any) -> Any:
         """
-        Uses data to resolve the delayable. Must be implemented by subclasses.
+        Resolve this delayable using keyword-bound symbols (at least ``X`` for
+        the pipeline value). Must be implemented by subclasses.
         """
 
     def _fae_exchange(self) -> Delayable:
@@ -189,8 +173,20 @@ class Delayable:
             def matches(node: Delayable, path: str) -> bool:
                 return isinstance(node, pattern)
         else:
+            literal = re.escape(pattern) == pattern
+
             def matches(node: Delayable, path: str) -> bool:
-                return re.fullmatch(pattern, path) is not None
+                if re.fullmatch(pattern, path) is not None:
+                    return True
+                name = node.fae_name
+                if name is None:
+                    return False
+                if re.fullmatch(pattern, name) is not None:
+                    return True
+                # Bare name "layer" also matches auto-suffixed "layer.0", "layer.1", …
+                if literal and name.startswith(pattern + "."):
+                    return True
+                return False
         
         def visit(node: Delayable, path: str) -> Optional[Delayable]:
             if callback is None or not matches(node, path):
@@ -233,7 +229,7 @@ class Delayable:
         """
         if isinstance(other, Delayable):
             return NotImplemented
-        return self._resolve(other)
+        return self._resolve(X=other)
 
     def __mod__[T: Delayable](self: T, modifier: modifierType) -> T:
         """
@@ -259,6 +255,26 @@ class Delayable:
 
         return NotImplemented
         
+    def fae_bind(self, **symbols: Any) -> Any:
+        """
+        Substitute bound symbols structurally without requiring a pipeline ``X``.
+        Used during ``>> Sequence`` / clone expansion. When ``I`` is provided,
+        ``DelayedModule`` recipes in the subtree are materialized first.
+        """
+        node: Delayable = self
+        if "I" in symbols:
+            i_val = symbols["I"]
+            p_val = symbols.get("P")
+
+            def visit(item: Any, path: str) -> Any:
+                if isinstance(item, DelayedModule):
+                    return item._generate(I=i_val, P=p_val)
+                return None
+
+            node = node._fae_traverse(visit)
+
+        return node._resolve(**symbols)
+
     def __rshift__(self, other: Delayable | int | Sequence[Any]) -> Chain:
         """
         The right shift operator (>>) is used to chain Delayables together, like the layers in 
@@ -266,31 +282,43 @@ class Delayable:
 
         There are three possible cases:
         1. `Delayable >> Delayable` -> Chain(Delayable, Delayable)
-        2. `Delayable >> int` -> Chain(Delayable, Delayable, ..., Delayable) 
-        3. `Delayable >> Sequence[Any]` 
+        2. `Delayable >> int` -> Chain of N clones (named clones get `.0`, `.1`, … suffixes)
+        3. `Delayable >> Sequence` -> one clone per row, binding ``I`` (and ``P`` to the row)
         """
         if isinstance(other, Delayable):
             return Chain(self, other)
         elif isinstance(other, int):
-            out = None
-            for i in range(other):
-                cloned = self.fae_clone(recurse=True, clone_modules=True)
-                if out is None: 
-                    out = cloned
-                else:
-                    out = out >> cloned
-            return out
-        elif isinstance(other, Sequence):
-            out = None
-            for i in range(len(other)):
-                cloned = self.fae_clone(recurse=True, clone_modules=True)
-                if out is None: 
-                    out = cloned
-                else:
-                    out = out >> cloned
-            return out
+            return self._fae_expand(range(other), rows=None)
+        elif isinstance(other, Sequence) and not isinstance(other, (str, bytes)):
+            return self._fae_expand(range(len(other)), rows=other)
 
         return NotImplemented
+
+    def _fae_expand(
+        self,
+        indices: Sequence[int],
+        rows: Optional[Sequence[Any]],
+    ) -> Delayable:
+        """Clone this node once per index; bind I/P and suffix names when present."""
+        base_name = self.fae_name
+        out: Optional[Delayable] = None
+        for i in indices:
+            row = rows[i] if rows is not None else None
+            cloned = self.fae_clone(recurse=True, clone_modules=True)
+            if row is not None:
+                cloned = cloned.fae_bind(I=row, P=row)
+            else:
+                cloned = cloned.fae_bind(I=i)
+
+            if base_name is not None and isinstance(cloned, Delayable):
+                cloned.fae_name = f"{base_name}.{i}"
+
+            if not isinstance(cloned, Delayable):
+                raise TypeError(f"Expansion produced non-Delayable: {type(cloned)}")
+            out = cloned if out is None else (out >> cloned)
+        if out is None:
+            raise ValueError("Expansion produced an empty chain.")
+        return out
 
     def __rrshift__(self, other: Any) -> Any:
         """
@@ -316,11 +344,22 @@ class _OpActionMixin[T: Delayable]:
         """
         opinfo = get_opinfo(attr_name=name)
         if any(
-            isinstance(arg, (FaeList, FaeDict)) 
+            isinstance(arg, (FaeList, FaeDict))
             for arg in itertools.chain(args, kwargs.values())
         ):
             # TODO: do i need this check?
             return NotImplemented
+
+        def _wrap(arg: Any) -> Any:
+            # Embed modules as delayed calls so ``X + module`` resolves like ``module + X``.
+            if isinstance(arg, nn.Module):
+                from .faek import faek
+
+                return F(faek.module__call__, arg, X)
+            return arg
+
+        args = tuple(_wrap(a) for a in args)
+        kwargs = {k: _wrap(v) for k, v in kwargs.items()}
         return F(opinfo, self, *args, **kwargs)
         
     # --- Binary arithmetic operators ---
@@ -498,19 +537,17 @@ class _SymbolMeta(_OpActionMixin["F"], Delayable, abc.ABCMeta):
         return cls
 
     def __init__(cls, name, bases, namespace, **kwargs) -> None:
-        super().__init__(name, bases, namespace, name=cls.__name__, **kwargs)
+        super().__init__(name, bases, namespace, **kwargs)
+        # Delayable.__init__ (via metaclass MRO) leaves fae_name=None; symbols
+        # must resolve by class name so `X=...` / `A=...` kwargs match.
+        cls.fae_name = name
 
-    def _resolve(self, _default: Any = _NoValue, /, **kwargs: Any) -> Any:
-        """ 
-        If symbol is in kwargs, it will be replaced with the value of the key.
-        If symbol is not in kwargs, the default value will be used, if specified. 
-        If no default value is specified, and no value is provided in kwargs, the symbol will be 
-        returned as is.
+    def _resolve(self, /, **kwargs: Any) -> Any:
+        """
+        If symbol is in kwargs, replace with that value; otherwise leave unresolved.
         """
         if self.fae_name in kwargs:
             return kwargs[self.fae_name]
-        if _default is not _NoValue:
-            return _default
         return self
 
     def __instancecheck__(cls, instance):
@@ -596,17 +633,15 @@ class R(Symbol):
 
     Semantics:
     * Recorded outputs live in a per-evaluation table seeded by the outermost `Chain`
-    (or by `lower()`'s emitted forward); nothing leaks across calls.
+    (or by `materialize`'s emitted / bound forward); nothing leaks across calls.
     * The named node must execute before the recall site — recalling a name that has
     not produced a value yet raises a `KeyError` at evaluation time.
     * Names are matched by their plain node name (the string given to `%`), not by
     dotted path; recalled names should therefore be unique within one model.
     """
     @classmethod
-    def _resolve(cls, _default: Any = _NoValue, /, **kwargs: Any) -> Any:
-        # Unlike other symbols, R never falls back to `_default`: its only meaning is
-        # the recall table of the current evaluation. With no active table it stays
-        # unresolved (partial evaluation) instead of silently capturing the data.
+    def _resolve(cls, /, **kwargs: Any) -> Any:
+        # R only means the recall table for the current evaluation.
         return kwargs.get(_RECALL_KEY, cls)
     
 
@@ -619,8 +654,8 @@ class _Unpack(Delayable):
         self._fae_target = target
         self._fae_is_map = is_map
     
-    def _resolve(self, _default: Any, /, **kwargs: Any) -> Iterator[Any]:
-        return self._fae_target._resolve(_default, **kwargs)
+    def _resolve(self, /, **kwargs: Any) -> Iterator[Any]:
+        return self._fae_target._resolve(**kwargs)
     
     def __repr__(self) -> str:
         if self._fae_is_map:
@@ -637,11 +672,11 @@ class F(_OpActionMixin["F"], Delayable):
         self._fae_args = args
         self._fae_kwargs = kwargs
 
-    def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
+    def _resolve(self, /, **kwargs: Any) -> Any:
         resolved_args = []
         for arg in self._fae_args:
             if isinstance(arg, Delayable):
-                resolved = arg._resolve(_default, **kwargs)
+                resolved = arg._resolve(**kwargs)
             else:
                 resolved = arg
             
@@ -653,7 +688,7 @@ class F(_OpActionMixin["F"], Delayable):
         resolved_kwargs = {}
         for k, v in self._fae_kwargs.items():
             if isinstance(v, Delayable):
-                resolved = v._resolve(_default, **kwargs)
+                resolved = v._resolve(**kwargs)
             else:
                 resolved = v
         
@@ -713,6 +748,55 @@ class F(_OpActionMixin["F"], Delayable):
         return str(self)
 
 
+class DelayedModule(F):
+    """
+    Module constructor whose arguments still contain delayables (I/P holes).
+    Materialized via `_generate` during `>> Sequence` / clone expansion.
+    """
+
+    def _resolve(self, /, **kwargs: Any) -> Any:
+        raise ValueError("`DelayedModule` cannot be resolved directly.")
+
+    def __rshift__(self, other: Any) -> Any:
+        # Keep recipes as Chain nodes (do not wrap in OpInfo ``call``); materialize later.
+        from .faek import faek
+
+        if isinstance(other, nn.Module):
+            other = F(faek.module__call__, other, X)
+        if isinstance(other, Delayable):
+            return Chain(self, other)
+        return super().__rshift__(other)
+
+    def __rrshift__(self, other: Any) -> Any:
+        from .faek import faek
+
+        if isinstance(other, nn.Module):
+            other = F(faek.module__call__, other, X)
+        if isinstance(other, Delayable):
+            return Chain(other, self)
+        return super().__rrshift__(other)
+
+    def _generate(self, I: Any, P: Optional[Sequence[Any]] = None) -> F:
+        """Resolve ctor holes with clone index/row, then wrap as `module(X)`."""
+        from .faek import faek
+
+        resolve_kwargs: dict[str, Any] = {"I": I}
+        if P is not None:
+            resolve_kwargs["P"] = P
+
+        module_cls = self._fae_op
+        resolved_args = [
+            v._resolve(**resolve_kwargs) if isinstance(v, Delayable) else v
+            for v in self._fae_args
+        ]
+        resolved_kwargs = {
+            k: v._resolve(**resolve_kwargs) if isinstance(v, Delayable) else v
+            for k, v in self._fae_kwargs.items()
+        }
+        module = module_cls(*resolved_args, **resolved_kwargs)
+        return F(faek.module__call__, module, X)
+
+
 class Chain(_OpActionMixin[F], Delayable):
     """
     A Chain is a sequence of operations: `op0 >> op1 << op2 >> ... >> opn`.
@@ -729,25 +813,55 @@ class Chain(_OpActionMixin[F], Delayable):
                 raise ValueError("All arguments must be of subtype `Delayable` or `nn.Module`.")
         super().__init__(*ops)
 
-    def _resolve(self, _default: Any = _NoValue, /, **kwargs: Any) -> Any:
+    def _resolve(self, /, **kwargs: Any) -> Any:
         """
         data | chain. 
 
-        - The first item in chain will be resolved like any F, based on the data provided.
-        - X is a special symbol that represents the output of the previous item in chain.
-          So if X is given as input, it will be replaced with the output of the 
-          previous item in chain. If you have arguments needed downstream, use another symbol.
-        - Within a chain, `_default` and `X` both carry the previous op's result forward.
+        - The first item is resolved with the caller's ``X`` (and other symbols).
+        - Downstream items see ``X`` as the previous item's result. Use another
+          symbol (e.g. ``A``) for arguments that must not change along the chain.
         """       
         # Seed the recall table for `R` at the outermost chain of this evaluation;
         # nested chains find the caller's table in kwargs and share it.
+        kwargs = dict(kwargs)
         kwargs.setdefault(_RECALL_KEY, _RecallTable())
-        x = self._fae_ops[0]._resolve(_default, **kwargs)
-        kwargs.pop("X", None)
+        x = self._fae_ops[0]._resolve(**kwargs)
         for op in self._fae_ops[1:]:
-            x = op._resolve(x, X=x, **kwargs)
+            kwargs["X"] = x
+            x = op._resolve(**kwargs)
         self._record(x, kwargs)
         return x
+
+    def fae_bind(self, **symbols: Any) -> Chain:
+        # Materialize DelayedModules on the whole chain first, then bind each op.
+        node: Delayable = self
+        if "I" in symbols:
+            i_val = symbols["I"]
+            p_val = symbols.get("P")
+
+            def visit(item: Any, path: str) -> Any:
+                if isinstance(item, DelayedModule):
+                    return item._generate(I=i_val, P=p_val)
+                return None
+
+            node = node._fae_traverse(visit)
+
+        if not isinstance(node, Chain):
+            bound = node.fae_bind(**symbols) if isinstance(node, Delayable) else node
+            if isinstance(bound, Chain):
+                bound.fae_name = self.fae_name
+                return bound
+            out = Chain(bound) if isinstance(bound, Delayable) else node
+            if isinstance(out, Chain):
+                out.fae_name = self.fae_name
+            return out  # type: ignore[return-value]
+
+        bound = Chain(*(
+            op.fae_bind(**symbols) if isinstance(op, Delayable) else op
+            for op in node._fae_ops
+        ))
+        bound.fae_name = self.fae_name
+        return bound
 
     def _fae_exchange(self) -> Chain:
         new_ops = []
@@ -764,6 +878,9 @@ class Chain(_OpActionMixin[F], Delayable):
             return super().__rshift__(other)
 
         if isinstance(other, Chain):
+            # Named chains on the RHS stay opaque so their name is preserved.
+            if other.fae_name is not None:
+                return Chain(*self._fae_ops, other)
             return Chain(*self._fae_ops, *other._fae_ops)
         elif isinstance(other, Delayable):
             return Chain(*self._fae_ops, other)
@@ -785,28 +902,25 @@ class Input:
     A placeholder for providing arguments to resolve delayables. Examples:
 
         Substitute(A=Input(data, bias=bar)) | A[0] >> 2 * X + A["bias"]
-    
+
     This makes expressions act like functions, where the expression can resolve position arguments
-    by their index, e.g. A[0] will use the first argument in the provided `A` input to the 
-    expression. Similar, A["bias"] will use the value of the `bias` key    if isinstance(out, list) and len(out) == 1:
-        return out[0]
-    else:
-        return out
+    by their index, e.g. A[0] will use the first argument in the provided `A` input to the
+    expression. Similar, A["bias"] will use the value of the `bias` key.
 
     Some rules for using `A` to resolve delayables:
-    * `A` arguments should not be delayables themselves, only static data values. 
-    
+    * `A` arguments should not be delayables themselves, only static data values.
+
     * Calling e.g. like `A(data, bias=bar)` will create an instance intended to be used by
       expression resolution by the pipe operator `|`. On the other hand, indexing `A` (e.g. `A[0]`)
       is used inside expresssions so they can received outside inputs anywhere in the expression.
-    
+
     * `A` cannot be used by itself inside an expression. For example, the following is invalid:
       `2 * X >> A["bias"]`.
 
     * The first item in an expression chain can use `A` or `X` interchangeably.
 
-    The difference between `A` and `X`: 
-    * Each node in a chain has two sources of inputs: 
+    The difference between `A` and `X`:
+    * Each node in a chain has two sources of inputs:
     1. From the previous node in the chain.
     2. From the `A` instance.
 
@@ -820,10 +934,10 @@ class Input:
             tuple(zip(itertools.repeat(None), args))
             + tuple(kwargs.items())
         )
-        
+
     def __len__(self) -> int:
         return len(self._items)
-    
+
     @property
     def is_empty(self) -> bool:
         return len(self) == 0
@@ -831,11 +945,11 @@ class Input:
     @property
     def nargs(self) -> int:
         return len(self._args)
-    
+
     @property
     def nkwargs(self) -> int:
         return len(self._kwargs)
-    
+
     def __getitem__(self, key: int | str) -> Any:
         if isinstance(key, int):
             return self._items[key][1]
@@ -846,7 +960,7 @@ class Input:
 
     def __repr__(self) -> str:
         arguments = [
-            f"{val!r}" if key is None else f"{key}={val!r}" 
+            f"{val!r}" if key is None else f"{key}={val!r}"
             for key, val in self._items
         ]
         return f"Input({', '.join(arguments)})"
@@ -866,7 +980,7 @@ class Substitute:
         self._kwargs = kwargs
 
     def __or__(self, other: Delayable) -> Any:
-        return other._resolve(self._kwargs, symbols=[X])
+        return other._resolve(**self._kwargs)
 
 
 class FaeList(_OpActionMixin["FaeList"], Delayable):
@@ -875,6 +989,13 @@ class FaeList(_OpActionMixin["FaeList"], Delayable):
     """
     def __init__(self, expressions: list[Delayable]) -> None:
         super().__init__(expressions=expressions)
+        self._fae_expressions = list(expressions)
+
+    def _fae_exchange(self) -> FaeList:
+        new_exprs = []
+        for expr in self._fae_expressions:
+            new_exprs.append((yield expr))
+        return self.__class__(new_exprs)
 
     def _op_action(self, name: str, *args: Any, **kwargs: Any) -> FaeList:
         opinfo = get_opinfo(attr_name=name)
@@ -884,78 +1005,84 @@ class FaeList(_OpActionMixin["FaeList"], Delayable):
         for arg in itertools.chain(args, kwargs.values()):
             if isinstance(arg, FaeList):
                 n += 1
-                raveled.append(arg.fae.expressions)
+                raveled.append(arg._fae_expressions)
             elif isinstance(arg, FaeDict):
                 raise ValueError("Cannot mix `FaeList` and `FaeDict` arguments. Choose one.")
             else:
                 raveled.append(itertools.repeat(arg))
 
         if n == 0:
-            return FaeList([F(opinfo, item, *args, **kwargs) for item in self.fae.expressions])
+            return FaeList([F(opinfo, item, *args, **kwargs) for item in self._fae_expressions])
 
         raveled = zip(*raveled)
         out = []
-        for item, arg in zip(self.fae.expressions, raveled):
+        for item, arg in zip(self._fae_expressions, raveled):
             items_args = arg[:len(args)]
             items_kwargs = dict(zip(kwargs.keys(), arg[len(args):]))
             out.append(F(opinfo, item, *items_args, **items_kwargs))
         return FaeList(out)
 
-    def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
-        result = [item._resolve(_default, **kwargs) for item in self.fae.expressions]
+    def _resolve(self, /, **kwargs: Any) -> Any:
+        result = [item._resolve(**kwargs) for item in self._fae_expressions]
         self._record(result, kwargs)
         return result
 
-    def __lshift__(self, other: Delayable) -> FaeList:       
+    def __lshift__(self, other: Delayable) -> FaeList:
         if isinstance(other, FaeList):
-            out = []
             if len(other) == len(self):
                 out = [
-                    left >> right 
-                    for left, right in zip(self.fae.expressions, other.fae.expressions)
+                    left >> right
+                    for left, right in zip(self._fae_expressions, other._fae_expressions)
                 ]
             elif len(other) == 1:
-                right = other.fae.expressions[0]
-                out = [left >> right for left in self.fae.expressions]
+                right = other._fae_expressions[0]
+                out = [left >> right for left in self._fae_expressions]
             elif len(self) == 1:
-                left = self.fae.expressions[0]
-                out = [left >> right for right in other.fae.expressions]  
+                left = self._fae_expressions[0]
+                out = [left >> right for right in other._fae_expressions]
             else:
                 return NotImplemented
 
             return FaeList(out)
         elif isinstance(other, (Symbol, F)):
-            return FaeList([expr >> other for expr in self.fae.expressions])
+            return FaeList([expr >> other for expr in self._fae_expressions])
         else:
             return NotImplemented
-        
+
     def __str__(self) -> str:
-        return str(self.fae.expressions)
+        return str(self._fae_expressions)
 
     def __len__(self) -> int:
-        return len(self.fae.expressions)
+        return len(self._fae_expressions)
 
     def __repr__(self) -> str:
         return str(self)
-    
+
 
 class FaeDict(_OpActionMixin["FaeDict"], Delayable):
     def __init__(self, expressions: dict[str, Delayable]) -> None:
         super().__init__(expressions=expressions)
+        self._fae_expressions = dict(expressions)
+
+    def _fae_exchange(self) -> FaeDict:
+        new_exprs = {}
+        for key, expr in self._fae_expressions.items():
+            new_exprs[key] = yield expr
+        return self.__class__(new_exprs)
 
     def _op_action(self, name: str, *args: Any, **kwargs: Any) -> FaeDict:
         opinfo = get_opinfo(attr_name=name)
 
         raveled = defaultdict(list)
         n = 0
-        keys = set(self.fae.expressions)
+        keys = set(self._fae_expressions)
         for arg in itertools.chain(args, kwargs.values()):
             if isinstance(arg, FaeDict):
                 n += 1
-                if keys != set(arg.fae.expressions):
+                if keys != set(arg._fae_expressions):
                     raise ValueError("All arguments of type `FaeDict` must have the same keys.")
 
-                for key, item in arg.fae.expressions.items():
+                for key, item in arg._fae_expressions.items():
                     raveled[key].append(item)
             elif isinstance(arg, FaeList):
                 raise ValueError("Cannot mix `FaeList` and `FaeDict` arguments. Choose one.")
@@ -965,47 +1092,45 @@ class FaeDict(_OpActionMixin["FaeDict"], Delayable):
 
         if n == 0:
             return FaeDict(
-                {key: F(opinfo, item, *args, **kwargs) 
-                for key, item in self.fae.expressions.items()}
+                {key: F(opinfo, item, *args, **kwargs)
+                for key, item in self._fae_expressions.items()}
             )
 
         out = {}
         nargs = len(args)
-        for key, value in self.fae.expressions.items():
+        for key, value in self._fae_expressions.items():
             items_args = raveled[key][:nargs]
             items_kwargs = dict(zip(kwargs, raveled[key][nargs:]))
             out[key] = F(opinfo, value, *items_args, **items_kwargs)
         return FaeDict(out)
 
-    def _resolve(self, _default: Any, /, **kwargs: Any) -> Any:
+    def _resolve(self, /, **kwargs: Any) -> Any:
         result = {
-            key: item._resolve(_default, **kwargs) 
-            for key, item in self.fae.expressions.items()
+            key: item._resolve(**kwargs)
+            for key, item in self._fae_expressions.items()
         }
         self._record(result, kwargs)
         return result
 
     def __lshift__(self, other: Delayable) -> FaeDict:
         if isinstance(other, FaeDict):
-            out = {}
-            other = other.fae.expressions
-
-            if set(self.fae.expressions) != set(other):
+            other_exprs = other._fae_expressions
+            if set(self._fae_expressions) != set(other_exprs):
                 return NotImplemented
-
-            for key, item in self.fae.expressions.items():
-                out[key] = item >> other[key]
-            return FaeDict(out)
+            return FaeDict({
+                key: item >> other_exprs[key]
+                for key, item in self._fae_expressions.items()
+            })
         elif isinstance(other, (Symbol, F)):
-            return FaeDict({key: item >> other for key, item in self.fae.expressions.items()})
+            return FaeDict({key: item >> other for key, item in self._fae_expressions.items()})
         else:
             return NotImplemented
 
     def __str__(self) -> str:
-        return str(self.fae.expressions)
+        return str(self._fae_expressions)
 
     def __repr__(self) -> str:
         return str(self)
 
     def __len__(self) -> int:
-        return len(self.fae.expressions)
+        return len(self._fae_expressions)

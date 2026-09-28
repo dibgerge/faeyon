@@ -34,7 +34,7 @@ def get_precedence(item) -> Optional[int]:
     """
     from .spells import F
     if isinstance(item, F):
-        op = item.fae.op
+        op = item._fae_op
         return op.precedence if isinstance(op, OpInfo) else None
     elif isinstance(item, OpInfo):
         return item.precedence
@@ -371,17 +371,17 @@ ops = [
     ),
     OpInfo(
         name="abs", 
-        type=OperatorType.UTILITY, 
+        type=OperatorType.UNARY, 
         operator=operator.abs, 
         fmt="abs({X})",
-        precedence=0
+        precedence=20
     ),
     OpInfo(
         name="round", 
-        type=OperatorType.UTILITY, 
+        type=OperatorType.UNARY, 
         operator=round,
         fmt="round({X})",
-        precedence=0
+        precedence=20
     ),
     OpInfo(
         name="reversed", 

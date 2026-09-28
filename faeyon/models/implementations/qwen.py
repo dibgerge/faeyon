@@ -1,9 +1,14 @@
-import torch
+"""Qwen2-style decoder stack using ``>> num_layers`` cloning."""
+
+from __future__ import annotations
 
 from typing import Optional
+
+import torch
 from torch import nn
-from faeyon.nn import RotaryEmbedding, FaeBlock, MultiHeadAttention
-from faeyon import F, X
+
+from faeyon import A, F, materialize, X, faek
+from faeyon.nn import MultiHeadAttention, RotaryEmbedding, SwiGLU
 
 
 class QKTransform(nn.Module):
@@ -11,16 +16,71 @@ class QKTransform(nn.Module):
         super().__init__()
         self.rotary_embedding = rotary_embedding
         self.norm = nn.RMSNorm(head_dim, eps=eps)
-    
-    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        return x >> self.norm >> self.rotary_embedding(X, mask=mask)
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+        return self.rotary_embedding(self.norm(x), mask=mask)
+
+
+def decoder_block(
+    hidden: int,
+    heads: int,
+    group_size: int,
+    intermediate: int,
+    eps: float,
+    dropout: float = 0.0,
+):
+    head_dim = hidden // heads
+    rope = RotaryEmbedding(embed_dim=head_dim)
+    attn = MultiHeadAttention(
+        dm=hidden,
+        num_heads=heads,
+        group_size=group_size,
+        dropout=dropout,
+        bias=False,
+        fq=QKTransform(rope, head_dim, eps),
+        fk=QKTransform(rope, head_dim, eps),
+    )
+    with faek:
+        return (
+            X
+            + (
+                nn.RMSNorm(hidden, eps=eps)
+                >> attn(X, X, X, attn_mask=A["mask"], is_causal=True)
+            )
+            % "attn"
+            >> X + (nn.RMSNorm(hidden, eps=eps) >> SwiGLU(hidden, intermediate)) % "mlp"
+        )
+
+
+def build_qwen(
+    vocab_size: int,
+    hidden_size: int,
+    num_heads: int,
+    num_layers: int,
+    intermediate_size: int,
+    group_size: int = 1,
+    dropout: float = 0.0,
+    eps: float = 1e-6,
+    padding_idx: int = 0,
+) -> nn.Module:
+    with faek:
+        embedding = nn.Embedding(vocab_size, hidden_size, padding_idx)
+        block = decoder_block(
+            hidden_size, num_heads, group_size, intermediate_size, eps, dropout
+        )
+        return materialize(
+            embedding(A["ids"])
+            >> (block % "layer" >> num_layers)
+            >> nn.RMSNorm(hidden_size, eps=eps)
+            >> F(nn.functional.linear, X, embedding.weight) % "lm_head"
+        )
 
 
 class Qwen(nn.Module):
     def __init__(
-        self, 
+        self,
         vocab_size: int,
-        hidden_size: int, 
+        hidden_size: int,
         num_heads: int,
         num_layers: int,
         padding_idx: int,
@@ -28,60 +88,27 @@ class Qwen(nn.Module):
         group_size: int = 1,
         dropout: float = 0.1,
         bias: bool = False,
-        eps: float = 1e-6
+        eps: float = 1e-6,
     ) -> None:
         super().__init__()
-        self.embedding = nn.Embedding(vocab_size, hidden_size, padding_idx)
-
-        head_dim = hidden_size // num_heads
-        rotary_embedding = RotaryEmbedding(embed_dim=head_dim)
-
-        attention = [
-            MultiHeadAttention(
-                dm=hidden_size,
-                num_heads=num_heads,
-                group_size=group_size,
-                dropout=dropout,
-                bias=bias,
-                fq=QKTransform(rotary_embedding, head_dim, eps=eps),
-                fk=QKTransform(rotary_embedding, head_dim, eps=eps),
-            ) 
-            for _ in range(num_layers)
-        ]
-            
-        self.decoder = FaeBlock({
-            "attention": attention,
-            "norm_out": nn.RMSNorm(hidden_size, eps=eps),
-            "norm_in": nn.RMSNorm(hidden_size, eps=eps),
-            "gate_proj": nn.Linear(hidden_size, intermediate_size, bias=bias),
-            "up_proj": nn.Linear(hidden_size, intermediate_size, bias=bias),
-            "activation": nn.SiLU(),
-            "down_proj": nn.Linear(intermediate_size, hidden_size, bias=bias),
-        })
-
-        self.norm = nn.RMSNorm(hidden_size, eps=eps)
-        self.lm_head = nn.Linear(hidden_size, vocab_size, bias=bias)
+        self.model = build_qwen(
+            vocab_size=vocab_size,
+            hidden_size=hidden_size,
+            num_heads=num_heads,
+            num_layers=num_layers,
+            intermediate_size=intermediate_size,
+            group_size=group_size,
+            dropout=dropout,
+            eps=eps,
+            padding_idx=padding_idx,
+        )
 
     def forward(
-        self, 
-        x: torch.LongTensor, 
+        self,
+        ids: torch.LongTensor,
         attn_mask: Optional[torch.Tensor] = None,
-        is_causal: bool = True
+        is_causal: bool = True,
     ) -> torch.Tensor:
-         return (
-            x 
-            >> self.embedding
-            >> (
-                F(X) + (
-                    self.decoder.norm_in
-                    << self.decoder.attention(X, X, X, attn_mask=attn_mask, is_causal=is_causal)
-                )
-                << F(X) + (
-                    self.decoder.norm_out
-                    << self.decoder.up_proj * (self.decoder.gate_proj << self.decoder.activation)
-                    << self.decoder.down_proj
-                )
-            )
-            >> self.norm
-            >> self.lm_head
-        )
+        from faeyon import Input
+
+        return self.model(Input(ids=ids, mask=attn_mask))
