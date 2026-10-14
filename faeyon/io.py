@@ -12,7 +12,7 @@ from torch import nn
 from importlib import resources
 from pathlib import Path
 from typing import Optional, Generator, Any, IO
-from faeyon import A
+#from faeyon import A
 
 
 def cache_dir(mkdir: bool = True) -> Path:

@@ -1,6 +1,7 @@
 """
-Note: faek is NOT enabled on import; the session fixture in tests/conftest.py turns it
-on for the test suite. The on/off/context-manager tests below manage state themselves.
+Note: faek is NOT enabled on import; the function-scoped autouse fixture in
+tests/conftest.py turns it on before each test (and off after). Tests below may
+toggle faek freely without restoring for siblings.
 """
 import pytest
 import torch
@@ -22,6 +23,17 @@ def _is_faek_on():
     )
 
 
+def test_faek_is_on():
+    assert faek.is_on
+
+
+def test_faek_off_off():
+    faek.off()
+    assert not faek.is_on
+    faek.off()
+    assert not faek.is_on
+
+
 def test_faek_on_off():
     """Test that faek can be enabled and disabled."""
     assert _is_faek_on()
@@ -29,9 +41,6 @@ def test_faek_on_off():
     assert _is_faek_on()
     faek.off()
     assert not _is_faek_on()
-
-    # Restore session fixture state for other tests.
-    faek.on()
 
 
 def test_faek_as_context_manager():
@@ -43,7 +52,6 @@ def test_faek_as_context_manager():
         assert _is_faek_on()
 
     assert not _is_faek_on()
-    faek.on()
 
 
 def test_faek_context_manager_reentrant():
@@ -65,13 +73,16 @@ def test_faek_context_manager_reentrant():
         assert _is_faek_on()
     assert not _is_faek_on()
 
-    faek.on()
-
 
 def test_module_rshift():
     expr = X + 1 >> nn.Linear(in_features=10, out_features=2)
     assert isinstance(expr, Chain)
     assert len(expr) == 2
+
+
+def test_module_rshift_error():
+    with pytest.raises(TypeError):
+        nn.Linear(in_features=10, out_features=2) >> 1.0
 
 
 def test_module_rrshift():
@@ -80,24 +91,9 @@ def test_module_rrshift():
     assert len(expr) == 2
 
 
-def test_new_with_flist():
-    pytest.skip("FaeList ctor expansion via nn.Module.__new__ not implemented yet")
-
-
-def test_new_with_flist_error():
-    pytest.skip("FaeList ctor expansion via nn.Module.__new__ not implemented yet")
-
-
-def test_new_with_fdict():
-    pytest.skip("FaeDict ctor expansion via nn.Module.__new__ not implemented yet")
-
-
-def test_new_with_fdict_error():
-    pytest.skip("FaeDict ctor expansion via nn.Module.__new__ not implemented yet")
-
-
-def test_new_with_dict_list_error():
-    pytest.skip("FaeDict/FaeList ctor expansion via nn.Module.__new__ not implemented yet")
+def test_module_rrshift_error():
+    with pytest.raises(TypeError):
+        1.0 >> nn.Linear(in_features=10, out_features=2)
 
 
 @pytest.mark.parametrize("args,kwargs,expected_in_features,expected_out_features", [
@@ -117,22 +113,19 @@ def test_clone(args, kwargs, expected_in_features, expected_out_features):
 class TestModuleOperators:
     """Module arithmetic / shift paths patched by faek (left and right forms)."""
 
-    def test_mul_int(self):
-        """Multiplication with int creates a list of clones; commutative."""
-        model = nn.Linear(in_features=10, out_features=2)
-        for layers in (3 * model, model * 3):
-            assert len(layers) == 3
-            for layer in layers:
-                assert layer.in_features == model.in_features
-                assert layer.out_features == model.out_features
-                assert layer is not model
+    # def test_mul_int_is_arithmetic_not_clone(self):
+    #     """``module * n`` scales ``module(X)``; cloning is ``module >> n``."""
+    #     model = ConstantLayer(2, value=2.0)
+    #     delayed = model * 3
+    #     assert isinstance(delayed, F)
+    #     y = torch.tensor([1.0, 2.0]) | delayed
+    #     torch.testing.assert_close(y, torch.tensor([6.0, 12.0]))
 
-    def test_mul_int_error(self):
-        model = nn.Linear(in_features=10, out_features=2)
-        with pytest.raises(TypeError):
-            _ = model * 1.1
-        with pytest.raises(ValueError):
-            _ = model * -1
+    def test_rshift_int_clones(self):
+        model = nn.Linear(in_features=4, out_features=4)
+        chain = model >> 3
+        assert isinstance(chain, Chain)
+        assert len(chain) == 3
 
     def test_rshift_mm(self):
         """module >> module → Chain of module calls."""
@@ -153,13 +146,6 @@ class TestModuleOperators:
         y = torch.tensor([1.0, 2.0]) | delayed
         torch.testing.assert_close(y, torch.tensor([4.0, 8.0]))
 
-    def test_rrshift_data(self):
-        """data >> module evaluates (via Module.__rrshift__)."""
-        model = nn.Linear(in_features=10, out_features=2)
-        x = torch.randn(1, 10)
-        y = x >> model
-        assert y.shape == (1, 2)
-
     def test_rrshift_om(self):
         """F >> module → Chain."""
         delayed = (2 * X) >> ConstantLayer(2, value=2.0)
@@ -167,6 +153,24 @@ class TestModuleOperators:
         assert len(delayed) == 2
         y = torch.tensor([1.0, 2.0]) | delayed
         torch.testing.assert_close(y, torch.tensor([4.0, 8.0]))
+
+    def test_ror_data(self):
+        """data | module evaluates (via Module.__ror__)."""
+        model = nn.Linear(in_features=10, out_features=2)
+        x = torch.randn(1, 10)
+        y = x | model
+        assert y.shape == (1, 2)
+
+    def test_lshift_unsupported_like_f(self):
+        """Modules lift to ``F``; structural ``<<`` is FaeList/FaeDict-only."""
+        m1 = nn.Linear(in_features=10, out_features=2)
+        m2 = nn.Linear(in_features=2, out_features=3)
+        with pytest.raises(TypeError):
+            _ = m1 << m2
+        with pytest.raises(TypeError):
+            _ = m1 << (2 * X)
+        with pytest.raises(TypeError):
+            _ = (2 * X) << m2
 
     @pytest.mark.parametrize("op, expected", [
         ("add", [[2.0, 2.0]]),

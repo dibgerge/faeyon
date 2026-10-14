@@ -3,14 +3,17 @@ import pytest
 from faeyon import faek
 
 
-@pytest.fixture(autouse=True, scope="session")
+@pytest.fixture(autouse=True)
 def _faek_on():
     """
-    Importing faeyon no longer patches nn.Module automatically; the tests build
-    expressions from modules everywhere, so enable faek for the whole session.
-    Tests that exercise on/off/context-manager behavior manage the state
-    themselves (and restore it).
+    Importing faeyon no longer patches nn.Module automatically; most tests build
+    expressions from modules, so enable faek for every test.
+
+    Function-scoped (not session) so each test starts from a clean on-state —
+    including under pytest-xdist, where workers do not share process state and a
+    prior test's ``faek.off()`` must not leak.
     """
+    faek.off()
     faek.on()
     yield
     faek.off()

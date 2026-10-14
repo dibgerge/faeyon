@@ -2,10 +2,10 @@ import sys
 import inspect
 import itertools
 from torch import nn
-from typing import Any, overload
-from collections.abc import Callable
+from typing import Any
+from collections.abc import Callable, Sequence
 from ._opinfo import get_opinfo, OperatorType, OpInfo
-from .base import _NoValue, _new_instance
+from .base import _new_instance
 from .spells import (
     F,
     X,
@@ -13,6 +13,7 @@ from .spells import (
     DelayedModule,
 )
 
+from faeyon.io import save
 from faeyon.utils import Singleton
 
 
@@ -45,42 +46,15 @@ def __default_new__(cls, *args, **kwargs):
     return object.__new__(cls)
 
 
-@overload
-def __mul__[T: nn.Module](self: T, other: int) -> list[T]: ...
-
-
-@overload
-def __mul__[T: nn.Module](self: T, other: nn.Module | Delayable) -> F: ...
-
-
-def __mul__[T: nn.Module](self: T, other: int | nn.Module | Delayable) -> list[T] | F:
-    """Clone ``other`` times, or build a delayed ``self(X) * other`` expression."""
-    if isinstance(other, nn.Module):
-        return self(X) * other(X)
-    if isinstance(other, Delayable):
-        return self(X) * other
-    if not isinstance(other, int):
-        return NotImplemented
-    if other < 1:
-        raise ValueError("Number of modules must be greater than 0.")
-    return [self.clone() for _ in range(other)]
-
-
-@overload
-def __rmul__[T: nn.Module](self: T, other: int) -> list[T]: ...
-
-
-@overload
-def __rmul__[T: nn.Module](self: T, other: nn.Module | Delayable) -> F: ...
-
-
-def __rmul__[T: nn.Module](self: T, other: int | nn.Module | Delayable) -> list[T] | F:
-    """Multiplication is commutative for modules."""
-    return self.__mul__(other)  # type: ignore[misc]
-
-
 def __rshift__[T: nn.Module](self: T, other: Any) -> Any:
-    """``module >> delayable|module`` builds a Chain (needed when both sides share a type)."""
+    """
+    ``module >> delayable|module`` builds a Chain; ``module >> int|Sequence`` expands clones
+    (same as Delayable ``>>``). Needed when both sides share a type for ``module >> module``.
+    """
+    if isinstance(other, int) or (
+        isinstance(other, Sequence) and not isinstance(other, (str, bytes))
+    ):
+        return self(X) >> other
     if isinstance(other, Delayable):
         return self(X) >> other
     if isinstance(other, nn.Module):
@@ -90,13 +64,23 @@ def __rshift__[T: nn.Module](self: T, other: Any) -> Any:
 
 def __rrshift__[T: nn.Module](self: T, other: Any) -> Any:
     """
-    ``delayable >> module`` / ``module >> module`` build chains; ``data >> module`` evaluates.
+    ``delayable >> module`` / ``module >> module`` build chains;
     """
     if isinstance(other, Delayable):
         return other >> self(X)
+
     if isinstance(other, nn.Module):
+        # This will be handled by __rshift__ of the other module.
         return other(X) >> self(X)
-    return faek.module__call__(self, other)
+
+    return NotImplemented
+
+
+def __ror__[T: nn.Module](self: T, other: Any) -> Any:
+    """``data | module`` evaluates by lifting the module to ``module(X)``."""
+    if isinstance(other, Delayable):
+        return NotImplemented
+    return other | self(X)
 
 
 def clone[T: nn.Module](self: T, *args: Any, **kwargs: Any) -> T:
@@ -159,31 +143,6 @@ def delayed_method[T: nn.Module](op_info: OpInfo) -> Callable[..., F]:
     raise ValueError(f"Unsupported operator type: {op_info.type}.")
 
 
-def from_file(
-    cls,
-    name: str,
-    load_state: bool | str = True,
-    cache: bool = True,
-    trust_code: bool = False,
-    **kwargs: Any,
-) -> nn.Module:
-    from faeyon.io import load
-
-    return load(name, load_state, cls, cache=cache, trust_code=trust_code, **kwargs)
-
-
-def load(
-    self,
-    load_state: str,
-    cache: bool = True,
-    trust_code: bool = False,
-    **kwargs: Any,
-) -> nn.Module:
-    from faeyon.io import load as load_model
-
-    return load_model(self, load_state, cache=cache, trust_code=trust_code, **kwargs)
-
-
 class Faek(metaclass=Singleton):
     """
     This is a singleton class intended to be used as a context manager or as a general tool
@@ -200,6 +159,14 @@ class Faek(metaclass=Singleton):
     Only *building* expressions requires the patch; evaluating or materializing an
     existing tree (`data | expr`, `materialize`) works with the patch off.
     """
+    # Patched explicitly (not via generic arithmetic delayed_method).
+    _MODULE_EXPLICIT_OPS = (
+        "__rshift__",
+        "__rrshift__",
+        "__ror__",
+        "clone",
+        "save",
+    )
 
     def __init__(self):
         self._is_on = False
@@ -220,36 +187,20 @@ class Faek(metaclass=Singleton):
         if not was_on:
             self.off()
 
-    # Operators that must not be patched onto nn.Module: pipeline / pipe collide
-    # with bitwise shift and bitwise-or OpInfos of the same names.
-    _MODULE_SKIP_OPS = frozenset({
-        "mul", "rmul",  # specialised int-clone + arithmetic below
-        "rshift", "rrshift", "lshift", "rlshift",
-        "or", "ror",
-    })
-
     def on(self):
         if self._is_on:
             return
-
-        from faeyon.io import save
 
         nn.Module.__new__ = staticmethod(__new__)
         nn.Module.__call__ = __call__
         nn.Module.clone = clone
         nn.Module.save = save
-        nn.Module.from_file = classmethod(from_file)
-        nn.Module.load = load
-        nn.Module.__rrshift__ = __rrshift__
         nn.Module.__rshift__ = __rshift__
+        nn.Module.__rrshift__ = __rrshift__
+        nn.Module.__ror__ = __ror__
 
         for opinfo in get_opinfo(type=OperatorType.ARITHMETIC):
-            if opinfo.name in self._MODULE_SKIP_OPS:
-                continue
             setattr(nn.Module, opinfo.attr_name, delayed_method(opinfo))
-
-        nn.Module.__mul__ = __mul__
-        nn.Module.__rmul__ = __rmul__
 
         self._is_on = True
 
@@ -258,34 +209,16 @@ class Faek(metaclass=Singleton):
             return
 
         for opinfo in get_opinfo(type=OperatorType.ARITHMETIC):
-            if opinfo.name in self._MODULE_SKIP_OPS:
-                continue
-            if hasattr(nn.Module, opinfo.attr_name):
+            if opinfo.attr_name in nn.Module.__dict__:
                 delattr(nn.Module, opinfo.attr_name)
 
-        for name in (
-            "__mul__", "__rmul__", "__rrshift__", "__rshift__",
-            "clone", "save", "from_file", "load",
-        ):
-            if hasattr(nn.Module, name):
+        for name in self._MODULE_EXPLICIT_OPS:
+            if name in nn.Module.__dict__:
                 delattr(nn.Module, name)
 
         nn.Module.__new__ = staticmethod(__default_new__)
         nn.Module.__call__ = self.module__call__
         self._is_on = False
-
-
-class ModuleCall(F):
-    """
-    Wrapper around a delayed module call. Currently unused; kept for experiment hooks.
-    """
-
-    def __init__(self, module, /, *args, **kwargs):
-        Delayable.__init__(self, module, *args, **kwargs)
-        self._call = F(faek.module__call__, module, *args, **kwargs)
-
-    def _resolve(self, /, **kwargs: Any) -> Any:
-        return self._call._resolve(**kwargs)
 
 
 faek = Faek()

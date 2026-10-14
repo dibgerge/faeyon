@@ -18,8 +18,10 @@ def _assert_result(res, expected):
 
 class TestDelayable:
     def test_isinstance_f(self):
-        assert isinstance(X + 1, Delayable)
-        assert isinstance(X + 1, F)
+        expr = X + 1
+        assert isinstance(expr, Delayable)
+        assert isinstance(expr, F)
+        assert expr.fae_name is None
 
     def test_isinstance_symbol(self):
         assert isinstance(X, Delayable)
@@ -30,7 +32,7 @@ class TestDelayable:
         chain = block >> 3
         assert isinstance(chain, Chain)
         assert len(chain) == 3
-        assert [op.fae_name for op in chain._fae_ops] == ["layer.0", "layer.1", "layer.2"]
+        assert [op.fae_name for op in chain._fae_ops] == ["layer[0]", "layer[1]", "layer[2]"]
 
     def test_rshift_int_unnamed(self):
         chain = (X + 1) >> 2
@@ -58,7 +60,7 @@ class TestDelayable:
             return node
 
         chain.fae_find("layer", capture)
-        assert names == ["layer.0", "layer.1"]
+        assert names == ["layer[0]", "layer[1]"]
 
 
 class TestF:

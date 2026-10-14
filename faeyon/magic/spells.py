@@ -183,8 +183,8 @@ class Delayable:
                     return False
                 if re.fullmatch(pattern, name) is not None:
                     return True
-                # Bare name "layer" also matches auto-suffixed "layer.0", "layer.1", …
-                if literal and name.startswith(pattern + "."):
+                # Bare name "layer" also matches auto-suffixed "layer[0]", "layer[1]", …
+                if literal and name.startswith(pattern + "["):
                     return True
                 return False
         
@@ -282,7 +282,7 @@ class Delayable:
 
         There are three possible cases:
         1. `Delayable >> Delayable` -> Chain(Delayable, Delayable)
-        2. `Delayable >> int` -> Chain of N clones (named clones get `.0`, `.1`, … suffixes)
+        2. `Delayable >> int` -> Chain of N clones (named clones get `[0]`, `[1]`, … suffixes)
         3. `Delayable >> Sequence` -> one clone per row, binding ``I`` (and ``P`` to the row)
         """
         if isinstance(other, Delayable):
@@ -311,7 +311,7 @@ class Delayable:
                 cloned = cloned.fae_bind(I=i)
 
             if base_name is not None and isinstance(cloned, Delayable):
-                cloned.fae_name = f"{base_name}.{i}"
+                cloned.fae_name = f"{base_name}[{i}]"
 
             if not isinstance(cloned, Delayable):
                 raise TypeError(f"Expansion produced non-Delayable: {type(cloned)}")
@@ -746,6 +746,22 @@ class F(_OpActionMixin["F"], Delayable):
 
     def __repr__(self) -> str:
         return str(self)
+
+
+
+class ModuleCall(F):
+    """
+    Wrapper around a delayed module call. Currently unused; kept for experiment hooks.
+    """
+
+    def __init__(self, module, /, *args, **kwargs):
+        from .faek import faek
+
+        Delayable.__init__(self, module, *args, **kwargs)
+        self._call = F(faek.module__call__, module, *args, **kwargs)
+
+    def _resolve(self, /, **kwargs: Any) -> Any:
+        return self._call._resolve(**kwargs)
 
 
 class DelayedModule(F):

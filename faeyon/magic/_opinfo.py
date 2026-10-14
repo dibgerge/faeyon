@@ -13,6 +13,7 @@ class OperatorType(enum.Flag):
     COMPARISON = enum.auto()
     UNARY = enum.auto()
     UTILITY = enum.auto()
+    RESERVED = enum.auto()
     ARITHMETIC = BINARY | RBINARY | UNARY
 
 
@@ -243,28 +244,28 @@ ops = [
 
     OpInfo(
         name="rshift", 
-        type=OperatorType.BINARY, 
+        type=OperatorType.RESERVED, 
         operator=operator.rshift, 
         fmt="{X} >> {arg}",
         precedence=50
     ),
     OpInfo(
         name="rrshift", 
-        type=OperatorType.RBINARY, 
+        type=OperatorType.RESERVED, 
         operator=operator.rshift, 
         fmt="{arg} >> {X}",
         precedence=50
     ),
     OpInfo(
         name="lshift", 
-        type=OperatorType.BINARY, 
+        type=OperatorType.RESERVED, 
         operator=operator.lshift, 
         fmt="{X} << {arg}",
         precedence=50
     ),
     OpInfo(
         name="rlshift", 
-        type=OperatorType.RBINARY, 
+        type=OperatorType.RESERVED, 
         operator=operator.lshift, 
         fmt="{arg} << {X}",
         precedence=50
