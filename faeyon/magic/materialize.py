@@ -345,21 +345,16 @@ class _BoundModule(nn.Module):
         seen: set[int] = set()
         counter = [0]
 
-        def visit(node: Delayable) -> Delayable | None:
-            if not isinstance(node, F):
-                return None
+        for node in self._chain.fae_find(F):
             if node._fae_op is not faek.module__call__:
-                return None
+                continue
             module = node._fae_args[0]
             if not isinstance(module, nn.Module) or id(module) in seen:
-                return None
+                continue
             seen.add(id(module))
             name = node.fae_name or f"_{counter[0]}"
             counter[0] += 1
             self.add_module(name, module)
-            return None
-
-        self._chain.fae_find(F, visit)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         from .faek import faek
@@ -378,21 +373,16 @@ class _BoundModule(nn.Module):
 
 def _ast_supported(expr: Delayable) -> bool:
     """Heuristic: MVP AST only handles ``Chain`` / ``F`` / ``Symbol`` leaves."""
-    ok = True
-
-    def visit(node: Delayable) -> None:
-        nonlocal ok
-        if isinstance(node, (Chain, F)):
-            return
-        if isinstance(node, type) and issubclass(node, Symbol):
-            return
-        ok = False
-
     try:
-        expr.fae_find(Delayable, visit)
+        for node in expr.fae_find(Delayable):
+            if isinstance(node, (Chain, F)):
+                continue
+            if isinstance(node, type) and issubclass(node, Symbol):
+                continue
+            return False
     except Exception:
         return False
-    return ok
+    return True
 
 
 def _ast_materialize(

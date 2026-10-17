@@ -1,9 +1,8 @@
-import sys
 import inspect
 import itertools
 from torch import nn
 from typing import Any
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from ._opinfo import get_opinfo, OperatorType, OpInfo
 from .base import _new_instance
 from .spells import (
@@ -46,43 +45,6 @@ def __default_new__(cls, *args, **kwargs):
     return object.__new__(cls)
 
 
-def __rshift__[T: nn.Module](self: T, other: Any) -> Any:
-    """
-    ``module >> delayable|module`` builds a Chain; ``module >> int|Sequence`` expands clones
-    (same as Delayable ``>>``). Needed when both sides share a type for ``module >> module``.
-    """
-    if isinstance(other, int) or (
-        isinstance(other, Sequence) and not isinstance(other, (str, bytes))
-    ):
-        return self(X) >> other
-    if isinstance(other, Delayable):
-        return self(X) >> other
-    if isinstance(other, nn.Module):
-        return self(X) >> other(X)
-    return NotImplemented
-
-
-def __rrshift__[T: nn.Module](self: T, other: Any) -> Any:
-    """
-    ``delayable >> module`` / ``module >> module`` build chains;
-    """
-    if isinstance(other, Delayable):
-        return other >> self(X)
-
-    if isinstance(other, nn.Module):
-        # This will be handled by __rshift__ of the other module.
-        return other(X) >> self(X)
-
-    return NotImplemented
-
-
-def __ror__[T: nn.Module](self: T, other: Any) -> Any:
-    """``data | module`` evaluates by lifting the module to ``module(X)``."""
-    if isinstance(other, Delayable):
-        return NotImplemented
-    return other | self(X)
-
-
 def clone[T: nn.Module](self: T, *args: Any, **kwargs: Any) -> T:
     """
     Create a new instance of the same module with the same arguments. This method should be used
@@ -115,23 +77,24 @@ def delayed_method[T: nn.Module](op_info: OpInfo) -> Callable[..., F]:
     Arithmetic on modules: ``module1 + module2``, ``module + delayable``, unary ``-module``, etc.
     Left forms only; right forms fall through to the other operand when needed.
     """
-    if op_info.type == OperatorType.UNARY:
+    if OperatorType.UNARY in op_info.type:
 
         def unary(self: T) -> F:
             return op_info.operator(self(X))
 
         return unary
 
-    if op_info.type == OperatorType.RBINARY:
+    if OperatorType.RBINARY in op_info.type:
 
         def rbinary(self: T, other: nn.Module | Delayable) -> F:
             if isinstance(other, nn.Module):
+                # Unreachable since will be handled by operator of the other module.
                 return op_info.operator(other(X), self(X))
             return op_info.operator(other, self(X))
 
         return rbinary
 
-    if op_info.type == OperatorType.BINARY:
+    if OperatorType.BINARY in op_info.type:
 
         def binary(self: T, other: nn.Module | Delayable) -> F:
             if isinstance(other, nn.Module):
@@ -159,15 +122,6 @@ class Faek(metaclass=Singleton):
     Only *building* expressions requires the patch; evaluating or materializing an
     existing tree (`data | expr`, `materialize`) works with the patch off.
     """
-    # Patched explicitly (not via generic arithmetic delayed_method).
-    _MODULE_EXPLICIT_OPS = (
-        "__rshift__",
-        "__rrshift__",
-        "__ror__",
-        "clone",
-        "save",
-    )
-
     def __init__(self):
         self._is_on = False
         self._entered: list[bool] = []
@@ -195,11 +149,8 @@ class Faek(metaclass=Singleton):
         nn.Module.__call__ = __call__
         nn.Module.clone = clone
         nn.Module.save = save
-        nn.Module.__rshift__ = __rshift__
-        nn.Module.__rrshift__ = __rrshift__
-        nn.Module.__ror__ = __ror__
 
-        for opinfo in get_opinfo(type=OperatorType.ARITHMETIC):
+        for opinfo in get_opinfo(type=OperatorType.ARITHMETIC | OperatorType.RESERVED):
             setattr(nn.Module, opinfo.attr_name, delayed_method(opinfo))
 
         self._is_on = True
@@ -208,14 +159,12 @@ class Faek(metaclass=Singleton):
         if not self._is_on:
             return
 
-        for opinfo in get_opinfo(type=OperatorType.ARITHMETIC):
+        for opinfo in get_opinfo(type=OperatorType.ARITHMETIC | OperatorType.RESERVED):
             if opinfo.attr_name in nn.Module.__dict__:
                 delattr(nn.Module, opinfo.attr_name)
 
-        for name in self._MODULE_EXPLICIT_OPS:
-            if name in nn.Module.__dict__:
-                delattr(nn.Module, name)
-
+        delattr(nn.Module, "clone")
+        delattr(nn.Module, "save")
         nn.Module.__new__ = staticmethod(__default_new__)
         nn.Module.__call__ = self.module__call__
         self._is_on = False

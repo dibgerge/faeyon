@@ -95,13 +95,14 @@ class OpInfo:
         return self.fmt.format(X=self._add_parens(X), arg=", ".join(out_args))
 
     def __call__(self, data: Any, *args: Any, **kwargs: Any) -> Any:
-        if self.type == OperatorType.UNARY:
+        # Use ``in`` so combined Flags (e.g. ``RBINARY | RESERVED``) still match.
+        if OperatorType.UNARY in self.type:
             return self.operator(data)
-        elif self.type == OperatorType.BINARY:
-            return self.operator(data, args[0])
-        elif self.type == OperatorType.RBINARY:
+        elif OperatorType.RBINARY in self.type:
             return self.operator(args[0], data)
-        elif self.type == OperatorType.COMPARISON:
+        elif OperatorType.BINARY in self.type:
+            return self.operator(data, args[0])
+        elif OperatorType.COMPARISON in self.type:
             return self.operator(data, args[0])
         else:
             return self.operator(data, *args, **kwargs)
@@ -187,14 +188,14 @@ ops = [
     ),
     OpInfo(
         name="mod", 
-        type=OperatorType.BINARY, 
+        type=OperatorType.BINARY | OperatorType.RESERVED, 
         operator=operator.mod, 
         fmt="{X} % {arg}",
         precedence=30
     ),
     OpInfo(
         name="rmod", 
-        type=OperatorType.RBINARY, 
+        type=OperatorType.RBINARY | OperatorType.RESERVED, 
         operator=operator.mod, 
         fmt="{arg} % {X}",
         precedence=30
@@ -244,28 +245,28 @@ ops = [
 
     OpInfo(
         name="rshift", 
-        type=OperatorType.RESERVED, 
-        operator=operator.rshift, 
+        type=OperatorType.BINARY | OperatorType.RESERVED, 
+        operator=operator.rshift,
         fmt="{X} >> {arg}",
         precedence=50
     ),
     OpInfo(
         name="rrshift", 
-        type=OperatorType.RESERVED, 
+        type=OperatorType.RBINARY | OperatorType.RESERVED, 
         operator=operator.rshift, 
         fmt="{arg} >> {X}",
         precedence=50
     ),
     OpInfo(
         name="lshift", 
-        type=OperatorType.RESERVED, 
+        type=OperatorType.BINARY | OperatorType.RESERVED, 
         operator=operator.lshift, 
         fmt="{X} << {arg}",
         precedence=50
     ),
     OpInfo(
         name="rlshift", 
-        type=OperatorType.RESERVED, 
+        type=OperatorType.RBINARY | OperatorType.RESERVED,
         operator=operator.lshift, 
         fmt="{arg} << {X}",
         precedence=50
@@ -302,14 +303,14 @@ ops = [
 
     OpInfo(
         name="or", 
-        type=OperatorType.BINARY, 
+        type=OperatorType.BINARY | OperatorType.RESERVED, 
         operator=operator.or_, 
         fmt="{X} | {arg}",
         precedence=80
     ),
     OpInfo(
         name="ror", 
-        type=OperatorType.RBINARY, 
+        type=OperatorType.RBINARY | OperatorType.RESERVED, 
         operator=operator.or_, 
         fmt="{arg} | {X}",
         precedence=80

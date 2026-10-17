@@ -51,19 +51,109 @@ class TestDelayable:
         with pytest.raises(ValueError):
             (X + 1) % "a.b"
 
+    def test_fae_children_delayables_only(self):
+        expr = (X + 1) % "add"
+        children = list(expr.fae_children())
+        assert children == [X]
+
+    def test_fae_children_items_includes_non_delayables(self):
+        expr = X + 1
+        assert list(expr.fae_children(items=True)) == [X, 1]
+
+    def test_fae_children_chain(self):
+        chain = ((X + 1) % "a") >> ((X * 2) % "b")
+        assert [c.fae_name for c in chain.fae_children()] == ["a", "b"]
+
+    def test_fae_walk_depth_first(self):
+        chain = ((X + 1) % "a") >> ((X * 2) % "b")
+        assert [n.fae_name for n in chain.fae_walk()] == [None, "a", "X", "b", "X"]
+
+    def test_fae_walk_breadth_first(self):
+        chain = ((X + 1) % "a") >> ((X * 2) % "b")
+        assert [n.fae_name for n in chain.fae_walk(breadth_first=True)] == [
+            None, "a", "b", "X", "X",
+        ]
+
     def test_fae_find_stem_matches_suffixes(self):
         chain = ((X + 1) % "layer") >> 2
-        names = []
+        assert [n.fae_name for n in chain.fae_find("layer")] == ["layer[0]", "layer[1]"]
 
-        def capture(node):
-            names.append(node.fae_name)
-            return node
+    def test_fae_find_exact_name(self):
+        chain = ((X + 1) % "a") >> ((X * 2) % "b")
+        assert [n.fae_name for n in chain.fae_find("b")] == ["b"]
 
-        chain.fae_find("layer", capture)
-        assert names == ["layer[0]", "layer[1]"]
+    def test_fae_find_by_type(self):
+        chain = ((X + 1) % "a") >> ((X * 2) % "b")
+        assert [n.fae_name for n in chain.fae_find(F)] == ["a", "b"]
+
+    def test_fae_find_path_regex(self):
+        chain = ((X + 1) % "a") >> ((X * 2) % "b")
+        assert [n.fae_name for n in chain.fae_find(r".*\.a")] == ["a"]
+
+    def test_fae_find_regex_suffixed_names(self):
+        chain = ((X + 1) % "layer") >> 2
+        assert [n.fae_name for n in chain.fae_find(r"layer\[\d+\]")] == [
+            "layer[0]", "layer[1]",
+        ]
+
+    def test_fae_find_callback_replaces_node(self):
+        chain = ((X + 1) % "a") >> ((X * 2) % "b")
+        out = chain.fae_find("a", lambda n: (X * 9) % "replaced")
+        assert [op.fae_name for op in out._fae_ops] == ["replaced", "b"]
+        assert 2 | out == 36  # (2 * 9) * 2
+
+    def test_fae_find_callback_replaces_root_early(self):
+        """Matching the root returns immediately from ``_fae_traverse`` (no child walk)."""
+        root = (((X + 1) % "a") >> ((X * 2) % "b")) % "block"
+        out = root.fae_find("block", lambda n: (X * 7) % "replaced")
+        assert out is not root
+        assert not isinstance(out, Chain)
+        assert out.fae_name == "replaced"
+        assert 3 | out == 21
+
+    def test_fae_clone_shallow(self):
+        chain = ((X + 1) % "a") >> ((X * 2) % "b")
+        cloned = chain.fae_clone()
+        assert cloned is not chain
+        assert isinstance(cloned, Chain)
+        assert [op.fae_name for op in cloned._fae_ops] == ["a", "b"]
+        assert 3 | cloned == 8  # (3+1)*2
+
+    def test_fae_clone_recurse(self):
+        chain = ((X + 1) % "a") >> ((X * 2) % "b")
+        cloned = chain.fae_clone(recurse=True)
+        assert cloned is not chain
+        assert cloned._fae_ops[0] is not chain._fae_ops[0]
+        assert 3 | cloned == 8
+
+    def test_fae_clone_recurse_clones_modules(self):
+        layer = nn.Linear(2, 2)
+        expr = layer(X)
+        cloned = expr.fae_clone(recurse=True, clone_modules=True)
+        orig_mod = next(m for m in expr.fae_children(items=True) if isinstance(m, nn.Module))
+        cloned_mod = next(m for m in cloned.fae_children(items=True) if isinstance(m, nn.Module))
+        assert cloned is not expr
+        assert cloned_mod is not orig_mod
+        assert isinstance(cloned_mod, nn.Linear)
+
+    def test_fae_clone_recurse_shares_modules_when_disabled(self):
+        layer = nn.Linear(2, 2)
+        expr = layer(X)
+        cloned = expr.fae_clone(recurse=True, clone_modules=False)
+        orig_mod = next(m for m in expr.fae_children(items=True) if isinstance(m, nn.Module))
+        cloned_mod = next(m for m in cloned.fae_children(items=True) if isinstance(m, nn.Module))
+        assert cloned_mod is orig_mod
 
 
 class TestF:
+    def test_module_call_str_omits_wrapped_call_impl(self):
+        layer = nn.Linear(2, 2)
+        expr = layer(X)
+        text = str(expr)
+        assert "_wrapped_call_impl" not in text
+        assert text.startswith("Linear(")
+        assert text.endswith("(X)")
+
     def test_resolve_add(self):
         assert 11 | (X + 1) == 12
 
@@ -255,6 +345,14 @@ class TestOpActionMixin:
         param(1 ^ (1 ^ X), 1, id="int^instance"),
         param(tensor([1, 2, 3]) ^ X, tensor([0, 3, 2]), id="tensor^meta"),
         param(tensor([1, 2, 3]) ^ (X ^ 1), tensor([1, 2, 3]), id="tensor^instance"),
+        # bitwise or (Delayable | Delayable / int). ``Delayable | tensor`` stays
+        # rejected so ``tensor | expr`` remains resolve, not torch bitwise.
+        param(X | (X | 1), 1, id="meta|instance"),
+        param((X | 1) | X, 1, id="instance|meta"),
+        param((X | 1) | (X | 1), 1, id="instance|instance"),
+        param(X | 1, 1, id="meta|int"),
+        param(X | 1 | 1, 1, id="instance|int"),
+        param(X | X, 1, id="meta|meta"),
         # gt
         param(X > (X + 1), False, id="meta>instance"),
         param((X + 1) > X, True, id="instance>meta"),

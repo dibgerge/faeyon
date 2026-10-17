@@ -18,9 +18,6 @@ from ._opinfo import get_opinfo, OpInfo
 from .base import _NoValue, _MappingKey
 
 
-modifierType = str
-
-
 class _Frame:
     """One suspended `_fae_exchange` coroutine in an iterative traversal."""
     __slots__ = ("node", "exchange", "path", "sent", "changed")
@@ -52,11 +49,11 @@ class _RecallTable(dict):
 _RECALL_KEY = "R"
 
 
-class Delayable:
+class _DelayableBase:
     """
-    Delayable is the base class for all delayable objects. It provides the base functionality for
-    conditional evaluation, chaining, and resolving with data.
-    # TODO: Delayable should be an abstract base class.
+    Shared Delayable behavior used by both ``Delayable`` instances and the symbol
+    metaclass. Kept separate from ``ABC`` so ``_SymbolMeta`` can subclass ``type``
+    without also subclassing an ``ABCMeta``-created ABC (which breaks isinstance).
     """
     def __init__(self, *args, **kwargs) -> None:
         sig = inspect.signature(self.__init__)
@@ -64,13 +61,6 @@ class Delayable:
         bound.apply_defaults()
         self.fae_name = None
         self._fae_arguments = bound
-
-    @abstractmethod
-    def _resolve(self, /, **kwargs: Any) -> Any:
-        """
-        Resolve this delayable using keyword-bound symbols (at least ``X`` for
-        the pipeline value). Must be implemented by subclasses.
-        """
 
     def _fae_exchange(self) -> Delayable:
         """ 
@@ -90,6 +80,7 @@ class Delayable:
                 item = exchange.send(sent)
             except StopIteration:
                 return
+            
             sent = item
             if items or isinstance(item, Delayable):
                 yield item
@@ -97,8 +88,10 @@ class Delayable:
     def _fae_traverse(self, visit, *, always_copy=False, visit_items=False) -> Any:
         root_path = self.fae_name or "_"
         replaced = visit(self, root_path)
+        
         if replaced is not None:
             return replaced
+        
         stack = [_Frame(self, root_path)]
         
         while True:
@@ -108,8 +101,10 @@ class Delayable:
             except StopIteration as stop:
                 node = stop.value if frame.changed or always_copy else frame.node
                 stack.pop()
+                
                 if not stack:
                     return node
+                
                 parent = stack[-1]
                 parent.sent = node
                 parent.changed = parent.changed or node is not frame.node
@@ -117,12 +112,14 @@ class Delayable:
             
             is_node = isinstance(item, Delayable)
             path = f"{frame.path}.{item.fae_name or '_'}" if is_node else frame.path
+            
             if is_node or visit_items:
                 new_item = visit(item, path)
                 if new_item is not None:
                     frame.sent = new_item      # replaced: prune, never open its coroutine
                     frame.changed = True
                     continue
+            
             frame.sent = item
             if is_node:
                 stack.append(_Frame(item, path))
@@ -131,11 +128,13 @@ class Delayable:
         """Exchange this node's own items; children are not traversed."""
         exchange = self._fae_exchange()
         changed, sent = False, None
+
         while True:
             try:
                 item = exchange.send(sent)
             except StopIteration as stop:
                 return stop.value if changed or always_copy else self
+
             new_item = fn(item) if fn is not None else None
             changed = changed or (new_item is not None and new_item is not item)
             sent = item if new_item is None else new_item
@@ -149,11 +148,7 @@ class Delayable:
             children = list(node.fae_children(items=items)) if isinstance(node, Delayable) else []
             pending.extend(children if breadth_first else reversed(children))
 
-    def fae_clone(
-        self,
-        recurse: bool = False,
-        clone_modules: bool = True
-    ) -> Delayable:
+    def fae_clone(self, recurse: bool = False, clone_modules: bool = True) -> Delayable:
         if not recurse:
             return self._fae_apply(always_copy=True)
 
@@ -164,35 +159,76 @@ class Delayable:
 
         return self._fae_traverse(visit, always_copy=True, visit_items=True)
 
+    def _fae_match(
+        self,
+        pattern: str | type[Delayable],
+    ) -> Callable[[Delayable, str], bool]:
+        if isinstance(pattern, type):
+            def matches(node: Delayable, path: str) -> bool:
+                return isinstance(node, pattern)
+
+            return matches
+
+        literal = re.escape(pattern) == pattern
+
+        def matches(node: Delayable, path: str) -> bool:
+            if re.fullmatch(pattern, path) is not None:
+                return True
+            name = node.fae_name
+            if name is None:
+                return False
+            if re.fullmatch(pattern, name) is not None:
+                return True
+            # Bare name "layer" also matches auto-suffixed "layer[0]", "layer[1]", …
+            if literal and name.startswith(pattern + "["):
+                return True
+            return False
+
+        return matches
+
+    @overload
+    def fae_find(
+        self,
+        pattern: str | type[Delayable],
+        callback: None = None,
+    ) -> Iterator[Delayable]: ...
+
+    @overload
+    def fae_find(
+        self,
+        pattern: str | type[Delayable],
+        callback: Callable[[Delayable], Delayable],
+    ) -> Delayable: ...
+
     def fae_find(
         self,
         pattern: str | type[Delayable],
         callback: Optional[Callable[[Delayable], Delayable]] = None,
-    ) -> Delayable:
-        if isinstance(pattern, type):
-            def matches(node: Delayable, path: str) -> bool:
-                return isinstance(node, pattern)
-        else:
-            literal = re.escape(pattern) == pattern
+    ) -> Iterator[Delayable] | Delayable:
+        """
+        Find nodes matching ``pattern`` (name / path regex, or Delayable type).
 
-            def matches(node: Delayable, path: str) -> bool:
-                if re.fullmatch(pattern, path) is not None:
-                    return True
-                name = node.fae_name
-                if name is None:
-                    return False
-                if re.fullmatch(pattern, name) is not None:
-                    return True
-                # Bare name "layer" also matches auto-suffixed "layer[0]", "layer[1]", …
-                if literal and name.startswith(pattern + "["):
-                    return True
-                return False
-        
+        Without ``callback``, yields matching nodes. With ``callback``, rebuilds the
+        tree replacing each match with ``callback(node)``.
+        """
+        matches = self._fae_match(pattern)
+
+        if callback is None:
+            found: list[Delayable] = []
+
+            def collect(node: Delayable, path: str) -> None:
+                if matches(node, path):
+                    found.append(node)
+                return None
+
+            self._fae_traverse(collect)
+            return iter(found)
+
         def visit(node: Delayable, path: str) -> Optional[Delayable]:
-            if callback is None or not matches(node, path):
+            if not matches(node, path):
                 return None
             return callback(node)
-        
+
         return self._fae_traverse(visit)
 
     def _record(self, result: Any, kwargs: dict[str, Any]) -> None:
@@ -212,30 +248,33 @@ class Delayable:
             table[self.fae_name] = result
     
     def __or__(self, other: Any) -> Any:
-        """ 
-        The case of `Delayable | Any` is not defined.
+        """
+        ``Delayable | Delayable`` (and other non-tensor RHS) is bitwise or via
+        ``_OpActionMixin``. ``Delayable | tensor`` is rejected so ``tensor | expr``
+        stays resolve (``__ror__``), not torch bitwise.
         """
         if isinstance(other, torch.Tensor):
             # Prevent __torch_function__ from being called for `X | tensor`.
-            # Because torch_function __ror__ uses bitwise_or instead, which we don't want to 
-            # handle there since it might be called by the function name, and not the operator 
+            # Because torch_function __ror__ uses bitwise_or instead, which we don't want to
+            # handle there since it might be called by the function name, and not the operator
             # magic.
             raise TypeError("Cannot pipe a tensor to a Delayable.")
         return NotImplemented
 
     def __ror__(self, other: Any) -> Any:
-        """ 
-        `data | Delayable` results in evaluating the delayed operations.
+        """
+        ``data | Delayable`` evaluates the delayed expression. Delayable on the
+        left uses ``__or__`` (bitwise) instead.
         """
         if isinstance(other, Delayable):
             return NotImplemented
         return self._resolve(X=other)
 
-    def __mod__[T: Delayable](self: T, modifier: modifierType) -> T:
+    def __mod__[T: Delayable](self: T, modifier: Any) -> T:
         """
-        The modulate operator `%` is used to name the operation. It can also be used to modify 
-        Delayables, for example, set Optimizer to parameters in delayable modules, etc...
-        (TODO: How to handle general modifiers, e.g. optimizer.)
+        The modulate operator `%` names the operation (string RHS) or applies a
+        modifier (``Modify`` / objects with ``__rmod__``). Arithmetic ``%`` is
+        handled by ``_OpActionMixin`` when this returns ``NotImplemented``.
         """
         if isinstance(modifier, str):
             if "." in modifier:
@@ -243,15 +282,20 @@ class Delayable:
 
             self.fae_name = modifier
             return self
-        else:
-            return modifier.__rmod__(self) 
+
+        rmod = getattr(modifier, "__rmod__", None)
+        if callable(rmod):
+            out = rmod(self)
+            if out is not NotImplemented:
+                return out
+        return NotImplemented
         
-    def __rmod__[T: Delayable](self: T, other: str) -> T:
+    def __rmod__[T: Delayable](self: T, other: Any) -> T:
         """
         Modifiers should always be to the right of the Delayable.
         """
-        if isinstance(other, modifierType):
-            raise TypeError(f"Modifier should be to the right of the Delayable, not the left.")
+        if isinstance(other, str):
+            raise TypeError("Modifier should be to the right of the Delayable, not the left.")
 
         return NotImplemented
         
@@ -326,6 +370,20 @@ class Delayable:
         In this case `other` cannot be of type `Delayable` (`__rshift__` is called instead).
         """
         return NotImplemented
+
+
+class Delayable(_DelayableBase, ABC):
+    """
+    Delayable is the base class for all delayable objects. It provides the base functionality for
+    conditional evaluation, chaining, and resolving with data.
+    """
+
+    @abstractmethod
+    def _resolve(self, /, **kwargs: Any) -> Any:
+        """
+        Resolve this delayable using keyword-bound symbols (at least ``X`` for
+        the pipeline value). Must be implemented by subclasses.
+        """
 
 
 class _OpActionMixin[T: Delayable]:
@@ -439,6 +497,16 @@ class _OpActionMixin[T: Delayable]:
     def __rxor__(self, other: Any) -> T:
         return self._op_action("__rxor__", other)
 
+    def __or__(self, other: Any) -> T:
+        """
+        Bitwise ``|`` when both sides are expressions. ``data | expr`` resolve is
+        ``Delayable.__ror__`` (left is never a Delayable in that case).
+        """
+        out = super().__or__(other)
+        if out is NotImplemented:
+            return self._op_action("__or__", other)
+        return out
+
     # --- Unary arithmetic operators ---
     def __neg__(self) -> T:
         return self._op_action("__neg__")
@@ -521,10 +589,13 @@ class _OpActionMixin[T: Delayable]:
         return F(func, *args, **kwargs)
 
 
-class _SymbolMeta(_OpActionMixin["F"], Delayable, abc.ABCMeta):
+class _SymbolMeta(_OpActionMixin["F"], _DelayableBase, abc.ABCMeta):
     """
     TODO: I should disable applying modifiers or names to symbols.... because they apply globally
     on class instances.
+
+    Inherits ``_DelayableBase`` (not ``Delayable``) so this metaclass can subclass
+    ``ABCMeta`` / ``type``. Virtual subclass registration keeps ``isinstance(X, Delayable)``.
     """
     _registry: dict[str, type[Symbol]] = {}
     
@@ -538,7 +609,7 @@ class _SymbolMeta(_OpActionMixin["F"], Delayable, abc.ABCMeta):
 
     def __init__(cls, name, bases, namespace, **kwargs) -> None:
         super().__init__(name, bases, namespace, **kwargs)
-        # Delayable.__init__ (via metaclass MRO) leaves fae_name=None; symbols
+        # _DelayableBase.__init__ (via metaclass MRO) leaves fae_name=None; symbols
         # must resolve by class name so `X=...` / `A=...` kwargs match.
         cls.fae_name = name
 
@@ -565,6 +636,9 @@ class _SymbolMeta(_OpActionMixin["F"], Delayable, abc.ABCMeta):
 
     def __repr__(cls) -> str:
         return cls.__name__
+
+
+Delayable.register(_SymbolMeta)
 
 
 class _SymMeta(type):
@@ -727,22 +801,35 @@ class F(_OpActionMixin["F"], Delayable):
     def __str__(self) -> str:
         if isinstance(self._fae_op, OpInfo):
             return self._fae_op.to_string(*self._fae_args, **self._fae_kwargs)
-        else:
-            try:
-                name = self._fae_op.__name__
-            except AttributeError:
-                name = f"{self._fae_op!r}"
 
-            # TODO: Might need special handling of module.__call__
-            # if name == "Module.__call__" and len(self.args.args) > 0:
-            #     name, *args = self.args  # .args
-            # else:
-            #     args = self.args  # .args
+        # ``module(X)`` is stored as ``F(Module.__call__, module, X)``; PyTorch
+        # aliases ``__call__`` to ``_wrapped_call_impl``, so pretty-print as
+        # ``Linear(...)(X)`` instead of ``_wrapped_call_impl(Linear(...), X)``.
+        from .faek import faek
 
-            args = list(map(repr, self._fae_args))
+        op = self._fae_op
+        op_name = getattr(op, "__name__", "")
+        if (
+            self._fae_args
+            and isinstance(self._fae_args[0], nn.Module)
+            and (
+                op is faek.module__call__ 
+                or op_name in {"_wrapped_call_impl", "__call__", "_call_impl"}
+            )
+        ):
+            module, *call_args = self._fae_args
+            args = list(map(repr, call_args))
             args.extend(f"{k}={v!r}" for k, v in self._fae_kwargs.items())
-            args = ", ".join(args)
-            return f"{name}({args})"
+            return f"{module!r}({', '.join(args)})"
+
+        try:
+            name = op.__name__
+        except AttributeError:
+            name = f"{op!r}"
+
+        args = list(map(repr, self._fae_args))
+        args.extend(f"{k}={v!r}" for k, v in self._fae_kwargs.items())
+        return f"{name}({', '.join(args)})"
 
     def __repr__(self) -> str:
         return str(self)
