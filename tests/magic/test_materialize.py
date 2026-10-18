@@ -30,7 +30,7 @@ class TestMaterialize:
 
     def test_named_module_attr(self):
         with faek:
-            expr = (nn.Linear(4, 4) % "proj") >> nn.ReLU()
+            expr = (nn.Linear(4, 4) @ "proj") >> nn.ReLU()
         model = materialize(expr)
         assert "proj" in dict(model.named_children())
 

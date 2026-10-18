@@ -56,8 +56,8 @@ def vit(
     return materialize(
         nn.Conv2d(
             in_channels, embed_size, kernel_size=patch_size, stride=patch_size
-        )(A.img)                                                        % "patch_embedding"
-        >> pos_embeddings(X.shape[2:]) + mask_token(X, mask=patch_mask) % "pos_embedding"
+        )(A.img)                                                        @ "patch_embedding"
+        >> pos_embeddings(X.shape[2:]) + mask_token(X, mask=patch_mask) @ "pos_embedding"
         >> X.flatten(-2).mT
         >> torch.concat(cls_token, X, dim=1)
         >> nn.Dropout(dropout)
@@ -70,7 +70,7 @@ def vit(
                     #attn_mask=W.Fanout(attn_mask), 
                     need_weights=keep_attn_weights
                 )
-                    % "attention"
+                    @ "attention"
                 >> X[0]
             )
             >> X + (
@@ -81,7 +81,7 @@ def vit(
                 >> nn.Dropout(dropout)
             )
             >> num_layers
-        )                                                               % "block"
+        )                                                               @ "block"
         >> nn.LayerNorm(embed_size, eps=lnorm_eps)
     )
 

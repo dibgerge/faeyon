@@ -18,9 +18,9 @@ def build_yolo(
         return materialize(
             stem_(in_channels, 32)
             >> csp_stage(32, 64, n=1)
-            >> csp_stage(64, 128, n=3) % "c3"
-            >> csp_stage(128, 256, n=3) % "c4"
-            >> csp_stage(256, 512, n=1) % "c5"
+            >> csp_stage(64, 128, n=3) @ "c3"
+            >> csp_stage(128, 256, n=3) @ "c4"
+            >> csp_stage(256, 512, n=1) @ "c5"
             >> FaeDict(
                 {
                     "p5": X,

@@ -87,13 +87,13 @@ def deepseek_block(
     )
     with faek:
         return (
-            X + (nn.RMSNorm(hidden, eps=eps) >> attn(X)) % "attn"
+            X + (nn.RMSNorm(hidden, eps=eps) >> attn(X)) @ "attn"
             >> X
             + (
                 nn.RMSNorm(hidden, eps=eps)
                 >> MoE(hidden, intermediate, n_experts, top_k=top_k)
             )
-            % "moe"
+            @ "moe"
         )
 
 
@@ -126,9 +126,9 @@ def build_deepseek(
         )
         return materialize(
             embedding(A["ids"])
-            >> (block % "layer" >> num_layers)
+            >> (block @ "layer" >> num_layers)
             >> nn.RMSNorm(hidden_size, eps=eps)
-            >> F(nn.functional.linear, X, embedding.weight) % "lm_head"
+            >> F(nn.functional.linear, X, embedding.weight) @ "lm_head"
         )
 
 

@@ -6,6 +6,8 @@ from collections.abc import Callable
 from typing import Any, Optional, overload
 from functools import lru_cache
 
+import torch
+
 
 class OperatorType(enum.Flag):
     BINARY = enum.auto()
@@ -27,6 +29,17 @@ def _getattr(data: Any, name: str) -> Any:
 
 def _getitem(data: Any, key: Any) -> Any:
     return data[key]
+
+
+def _divmod(a: Any, b: Any) -> tuple[Any, Any]:
+    """``divmod`` that also accepts tensors (Python's does not)."""
+    if isinstance(a, torch.Tensor) or isinstance(b, torch.Tensor):
+        a, b = torch.as_tensor(a), torch.as_tensor(b)
+        return (
+            torch.div(a, b, rounding_mode="floor"),
+            torch.remainder(a, b),
+        )
+    return divmod(a, b)
 
 
 def get_precedence(item) -> Optional[int]:
@@ -303,18 +316,19 @@ ops = [
 
     OpInfo(
         name="or", 
-        type=OperatorType.BINARY | OperatorType.RESERVED, 
+        type=OperatorType.BINARY | OperatorType.RESERVED,
         operator=operator.or_, 
         fmt="{X} | {arg}",
-        precedence=80
+        precedence=70
     ),
     OpInfo(
         name="ror", 
         type=OperatorType.RBINARY | OperatorType.RESERVED, 
         operator=operator.or_, 
         fmt="{arg} | {X}",
-        precedence=80
+        precedence=70
     ),
+
     OpInfo(
         name="lt", 
         type=OperatorType.COMPARISON, 
@@ -360,14 +374,14 @@ ops = [
     OpInfo(
         name="divmod", 
         type=OperatorType.BINARY, 
-        operator=divmod,
+        operator=_divmod,
         fmt="divmod({X}, {arg})",
         precedence=0
     ),
     OpInfo(
         name="rdivmod", 
         type=OperatorType.RBINARY, 
-        operator=divmod,
+        operator=_divmod,
         fmt="divmod({arg}, {X})",
         precedence=0
     ),

@@ -47,8 +47,8 @@ def decoder_block(
                 nn.RMSNorm(hidden, eps=eps)
                 >> attn(X, X, X, attn_mask=A["mask"], is_causal=True)
             )
-            % "attn"
-            >> X + (nn.RMSNorm(hidden, eps=eps) >> SwiGLU(hidden, intermediate)) % "mlp"
+            @ "attn"
+            >> X + (nn.RMSNorm(hidden, eps=eps) >> SwiGLU(hidden, intermediate)) @ "mlp"
         )
 
 
@@ -70,9 +70,9 @@ def build_qwen(
         )
         return materialize(
             embedding(A["ids"])
-            >> (block % "layer" >> num_layers)
+            >> (block @ "layer" >> num_layers)
             >> nn.RMSNorm(hidden_size, eps=eps)
-            >> F(nn.functional.linear, X, embedding.weight) % "lm_head"
+            >> F(nn.functional.linear, X, embedding.weight) @ "lm_head"
         )
 
 

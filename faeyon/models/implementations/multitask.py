@@ -34,21 +34,21 @@ def build_multitask(
         return materialize(
             FaeDict(
                 {
-                    "img": A["image"] >> image_encoder(embed) % "image_encoder",
-                    "txt": A["text"] >> text_encoder(vocab_size, embed) % "text_encoder",
+                    "img": A["image"] >> image_encoder(embed) @ "image_encoder",
+                    "txt": A["text"] >> text_encoder(vocab_size, embed) @ "text_encoder",
                 }
             )
             >> F(torch.cat, FaeList([X["img"], X["txt"]]), dim=-1)
-            >> (nn.Linear(2 * embed, embed) >> nn.ReLU()) % "trunk"
+            >> (nn.Linear(2 * embed, embed) >> nn.ReLU()) @ "trunk"
             >> FaeDict(
                 {
-                    "category": X >> nn.Linear(embed, n_categories) % "category_head",
+                    "category": X >> nn.Linear(embed, n_categories) @ "category_head",
                     "price": (
                         F(torch.cat, FaeList([X, A["meta"]]), dim=-1)
                         >> nn.Linear(embed + n_meta, 1)
                     )
-                    % "price_head",
-                    "quality": (nn.Dropout(0.1) >> nn.Linear(embed, 1)) % "quality_head",
+                    @ "price_head",
+                    "quality": (nn.Dropout(0.1) >> nn.Linear(embed, 1)) @ "quality_head",
                 }
             )
         )

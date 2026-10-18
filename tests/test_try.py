@@ -1,7 +1,7 @@
 from faeyon import F, X, A
 
 
-# @pytest.mark.parametrize("expr", [X % "foo", "foo" % X])
+# @pytest.mark.parametrize("expr", [X @ "foo", "foo" % X])
 def test_mod():
     expr = X + 1 >> X + 2
 

@@ -51,7 +51,7 @@ def build_resnet50(num_classes: int = 1000) -> nn.Module:
                 ),
             )
             >> nn.ReLU()
-        ) % "layer"
+        ) @ "layer"
 
         return materialize(
             nn.Conv2d(3, 64, 7, stride=2, padding=3, bias=False)
@@ -61,7 +61,7 @@ def build_resnet50(num_classes: int = 1000) -> nn.Module:
             >> (bottleneck >> blocks)
             >> nn.AdaptiveAvgPool2d(1)
             >> X.flatten(1)
-            >> nn.Linear(2048, num_classes) % "fc"
+            >> nn.Linear(2048, num_classes) @ "fc"
         )
 
 

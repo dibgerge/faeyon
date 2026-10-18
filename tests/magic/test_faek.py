@@ -116,12 +116,12 @@ class TestModuleOperators:
         expr = nn.Linear(in_features=X, out_features=2)
         assert isinstance(expr, DelayedModule)
 
-    def test_or_bitwise_delayable(self):
-        """``Delayable | Delayable`` is bitwise or; ``data | expr`` remains resolve."""
-        delayed = (X | 1) | (X | 2)
-        assert isinstance(delayed, F)
-        out = torch.tensor([1, 2, 4], dtype=torch.int64) | delayed
-        torch.testing.assert_close(out, torch.tensor([3, 3, 7], dtype=torch.int64))
+    def test_or_reserved_for_resolve(self):
+        """``|`` is resolve-only; Delayable on the left is rejected."""
+        with pytest.raises(TypeError, match="reserved for resolve"):
+            _ = (X + 1) | (X + 2)
+        with pytest.raises(TypeError, match="tensor on the right"):
+            _ = X | torch.tensor([1, 2])
 
     def test_ror_data(self):
         """ Data | Module evaluates (via Module.__ror__). """
@@ -211,7 +211,7 @@ class TestModuleOperators:
         cases = [
             (layer1 & layer2, [[0, 0]]),
             (layer1 ^ layer2, [[3, 3]]),
-            (layer1 | layer2, [[3, 3]]),
+            (torch.bitwise_or(layer1(X), layer2(X)), [[3, 3]]),
         ]
         for delayed, expected in cases:
             assert isinstance(delayed, F)
@@ -262,7 +262,7 @@ class TestModuleOperators:
         cases = [
             (layer & X, [0, 0, 0]),
             (layer ^ X, [3, 3, 3]),
-            (layer | X, [3, 3, 3]),
+            (torch.bitwise_or(layer(X), X), [3, 3, 3]),
         ]
         for delayed, expected in cases:
             assert isinstance(delayed, F)
@@ -299,7 +299,7 @@ class TestModuleOperators:
         cases = [
             (X & layer, [0, 0, 0]),
             (X ^ layer, [3, 3, 3]),
-            (X | layer, [3, 3, 3]),
+            (torch.bitwise_or(X, layer(X)), [3, 3, 3]),
         ]
         for delayed, expected in cases:
             assert isinstance(delayed, F)

@@ -1,10 +1,7 @@
 from __future__ import annotations
 import torch
 import abc
-import dataclasses
-import sys
 import inspect
-import enum
 import itertools
 import re
 
@@ -15,7 +12,60 @@ from typing import Any, Optional, overload
 
 from torch import nn
 from ._opinfo import get_opinfo, OpInfo
-from .base import _NoValue, _MappingKey
+from .base import _MappingKey
+
+
+def _auto_fae_name(
+    op: Any,
+    args: tuple[Any, ...] = (),
+    kwargs: Optional[dict] = None
+) -> Optional[str]:
+    """Derive a default node name from an op (OpInfo name, module class, or ``__name__``)."""
+    if isinstance(op, OpInfo):
+        return op.name
+
+    from .faek import faek
+
+    if args and isinstance(args[0], nn.Module):
+        op_name = getattr(op, "__name__", "")
+        if op is faek.module__call__ or op_name in {
+            "_wrapped_call_impl", "__call__", "_call_impl",
+        }:
+            return type(args[0]).__name__
+
+    if isinstance(op, type):
+        return op.__name__
+
+    name = getattr(op, "__name__", None)
+    if isinstance(name, str) and name and not name.startswith("<"):
+        return name
+    return None
+
+
+def _suffix_duplicate_sibling_names(children: Sequence[Any]) -> None:
+    """
+    Among direct children that still have auto-assigned names, suffix duplicates
+    under this parent: ``add``, ``add`` → ``add[0]``, ``add[1]``. User names
+    set via ``@`` are left alone.
+    """
+    nodes = [
+        c for c in children
+        if isinstance(c, Delayable)
+        and c.fae_name is not None
+        and not getattr(c, "_fae_user_named", False)
+    ]
+    counts: dict[str, int] = {}
+    for c in nodes:
+        counts[c.fae_name] = counts.get(c.fae_name, 0) + 1
+
+    seen: dict[str, int] = {}
+    for c in nodes:
+        name = c.fae_name
+        if counts.get(name, 0) <= 1:
+            continue
+        i = seen.get(name, 0)
+        c.fae_name = f"{name}[{i}]"
+        seen[name] = i + 1
 
 
 class _Frame:
@@ -60,6 +110,7 @@ class _DelayableBase:
         bound = sig.bind(*args, **kwargs)
         bound.apply_defaults()
         self.fae_name = None
+        self._fae_user_named = False
         self._fae_arguments = bound
 
     def _fae_exchange(self) -> Delayable:
@@ -249,40 +300,54 @@ class _DelayableBase:
     
     def __or__(self, other: Any) -> Any:
         """
-        ``Delayable | Delayable`` (and other non-tensor RHS) is bitwise or via
-        ``_OpActionMixin``. ``Delayable | tensor`` is rejected so ``tensor | expr``
-        stays resolve (``__ror__``), not torch bitwise.
+        ``|`` is reserved for resolve (``data | expr`` via ``__ror__``), not
+        bitwise or. Reject left-hand Delayable uses so they cannot be confused
+        with piping; use ``torch.bitwise_or`` for bitwise OR.
         """
         if isinstance(other, torch.Tensor):
-            # Prevent __torch_function__ from being called for `X | tensor`.
-            # Because torch_function __ror__ uses bitwise_or instead, which we don't want to
-            # handle there since it might be called by the function name, and not the operator
-            # magic.
-            raise TypeError("Cannot pipe a tensor to a Delayable.")
-        return NotImplemented
+            # Prevent ``X | tensor`` from becoming torch bitwise via __torch_function__.
+            raise TypeError(
+                "Cannot use `|` with a tensor on the right; use `tensor | expr` to resolve."
+            )
+        raise TypeError(
+            "`|` is reserved for resolve (`data | expr`). "
+            "For bitwise or, use `torch.bitwise_or`."
+        )
 
     def __ror__(self, other: Any) -> Any:
-        """
-        ``data | Delayable`` evaluates the delayed expression. Delayable on the
-        left uses ``__or__`` (bitwise) instead.
-        """
+        """``data | Delayable`` evaluates the delayed expression."""
         if isinstance(other, Delayable):
             return NotImplemented
         return self._resolve(X=other)
 
+    def __matmul__[T: Delayable](self: T, other: Any) -> T:
+        """
+        ``expr @ "name"`` sets ``fae_name`` (overrides auto-names). Matmul with a
+        non-string RHS is handled by ``_OpActionMixin``.
+        """
+        if isinstance(other, str):
+            if isinstance(self, type):
+                raise TypeError("Cannot rename a Symbol with `@`.")
+            
+            if "." in other:
+                raise ValueError("Name cannot contain a period.")
+            
+            self.fae_name = other
+            self._fae_user_named = True
+            return self
+        return NotImplemented
+
+    def __rmatmul__[T: Delayable](self: T, other: Any) -> T:
+        if isinstance(other, str):
+            raise TypeError('Name must be on the right: expr @ "name".')
+        return NotImplemented
+
     def __mod__[T: Delayable](self: T, modifier: Any) -> T:
         """
-        The modulate operator `%` names the operation (string RHS) or applies a
-        modifier (``Modify`` / objects with ``__rmod__``). Arithmetic ``%`` is
-        handled by ``_OpActionMixin`` when this returns ``NotImplemented``.
+        ``%`` applies a modifier (``Modify`` / objects with ``__rmod__``).
+        Arithmetic ``%`` is handled by ``_OpActionMixin`` when this returns
+        ``NotImplemented``. Naming uses ``@``, not ``%``.
         """
-        if isinstance(modifier, str):
-            if "." in modifier:
-                raise ValueError("Name cannot contain a period.")
-
-            self.fae_name = modifier
-            return self
-
         rmod = getattr(modifier, "__rmod__", None)
         if callable(rmod):
             out = rmod(self)
@@ -291,12 +356,7 @@ class _DelayableBase:
         return NotImplemented
         
     def __rmod__[T: Delayable](self: T, other: Any) -> T:
-        """
-        Modifiers should always be to the right of the Delayable.
-        """
-        if isinstance(other, str):
-            raise TypeError("Modifier should be to the right of the Delayable, not the left.")
-
+        """Modifiers should always be to the right of the Delayable."""
         return NotImplemented
         
     def fae_bind(self, **symbols: Any) -> Any:
@@ -356,6 +416,7 @@ class _DelayableBase:
 
             if base_name is not None and isinstance(cloned, Delayable):
                 cloned.fae_name = f"{base_name}[{i}]"
+                cloned._fae_user_named = self._fae_user_named
 
             if not isinstance(cloned, Delayable):
                 raise TypeError(f"Expansion produced non-Delayable: {type(cloned)}")
@@ -405,7 +466,7 @@ class _OpActionMixin[T: Delayable]:
             isinstance(arg, (FaeList, FaeDict))
             for arg in itertools.chain(args, kwargs.values())
         ):
-            # TODO: do i need this check?
+            # Defer when the right argument is a FaeList or FaeDict.
             return NotImplemented
 
         def _wrap(arg: Any) -> Any:
@@ -440,9 +501,15 @@ class _OpActionMixin[T: Delayable]:
         return self._op_action("__rmul__", other)
 
     def __matmul__(self, other: Any) -> T:
+        out = super().__matmul__(other)
+        if out is not NotImplemented:
+            return out
         return self._op_action("__matmul__", other)
 
     def __rmatmul__(self, other: Any) -> T:
+        out = super().__rmatmul__(other)
+        if out is not NotImplemented:
+            return out
         return self._op_action("__rmatmul__", other)
 
     def __truediv__(self, other: Any) -> T:
@@ -496,16 +563,6 @@ class _OpActionMixin[T: Delayable]:
 
     def __rxor__(self, other: Any) -> T:
         return self._op_action("__rxor__", other)
-
-    def __or__(self, other: Any) -> T:
-        """
-        Bitwise ``|`` when both sides are expressions. ``data | expr`` resolve is
-        ``Delayable.__ror__`` (left is never a Delayable in that case).
-        """
-        out = super().__or__(other)
-        if out is NotImplemented:
-            return self._op_action("__or__", other)
-        return out
 
     # --- Unary arithmetic operators ---
     def __neg__(self) -> T:
@@ -612,6 +669,7 @@ class _SymbolMeta(_OpActionMixin["F"], _DelayableBase, abc.ABCMeta):
         # _DelayableBase.__init__ (via metaclass MRO) leaves fae_name=None; symbols
         # must resolve by class name so `X=...` / `A=...` kwargs match.
         cls.fae_name = name
+        cls._fae_user_named = True
 
     def _resolve(self, /, **kwargs: Any) -> Any:
         """
@@ -692,12 +750,13 @@ class P(Symbol):
 
 class R(Symbol):
     """
-    The recall symbol: `R["name"]` resolves to the output that the node named `% "name"`
-    produced earlier in the *current* evaluation. This turns names into long-range skip
-    connections (U-Net, FPN) without threading values through the pipeline by hand:
+    The recall symbol: `R["name"]` resolves to the output that the node named
+    ``@ "name"`` produced earlier in the *current* evaluation. This turns names
+    into long-range skip connections (U-Net, FPN) without threading values through
+    the pipeline by hand:
 
         unet = (
-            enc_block(1, 64) % "e1"
+            enc_block(1, 64) @ "e1"
             >> down(64)
             >> bottleneck(64, 128)
             >> up(128, 64) 
@@ -710,7 +769,7 @@ class R(Symbol):
     (or by `materialize`'s emitted / bound forward); nothing leaks across calls.
     * The named node must execute before the recall site — recalling a name that has
     not produced a value yet raises a `KeyError` at evaluation time.
-    * Names are matched by their plain node name (the string given to `%`), not by
+    * Names are matched by their plain node name (the string given to ``@``), not by
     dotted path; recalled names should therefore be unique within one model.
     """
     @classmethod
@@ -745,6 +804,11 @@ class F(_OpActionMixin["F"], Delayable):
         self._fae_op = op
         self._fae_args = args
         self._fae_kwargs = kwargs
+        if self.fae_name is None and not self._fae_user_named:
+            self.fae_name = _auto_fae_name(op, args, kwargs)
+        _suffix_duplicate_sibling_names(
+            itertools.chain(args, kwargs.values())
+        )
 
     def _resolve(self, /, **kwargs: Any) -> Any:
         resolved_args = []
@@ -796,7 +860,10 @@ class F(_OpActionMixin["F"], Delayable):
             new_kwarg = yield kwarg
             new_kwargs[key] = new_kwarg
 
-        return self.__class__(self._fae_op, *new_args, **new_kwargs)
+        out = self.__class__(self._fae_op, *new_args, **new_kwargs)
+        out.fae_name = self.fae_name
+        out._fae_user_named = self._fae_user_named
+        return out
     
     def __str__(self) -> str:
         if isinstance(self._fae_op, OpInfo):
@@ -915,6 +982,8 @@ class Chain(_OpActionMixin[F], Delayable):
             else:
                 raise ValueError("All arguments must be of subtype `Delayable` or `nn.Module`.")
         super().__init__(*ops)
+        # Chains stay unnamed unless the user sets ``@ "name"``.
+        _suffix_duplicate_sibling_names(self._fae_ops)
 
     def _resolve(self, /, **kwargs: Any) -> Any:
         """
@@ -971,7 +1040,10 @@ class Chain(_OpActionMixin[F], Delayable):
         for op in self._fae_ops:
             new_op = yield op
             new_ops.append(new_op)
-        return self.__class__(*new_ops)
+        out = self.__class__(*new_ops)
+        out.fae_name = self.fae_name
+        out._fae_user_named = self._fae_user_named
+        return out
 
     def __lshift__(self, other: Delayable) -> Chain:
         return Chain(*self._fae_ops[:-1], self._fae_ops[-1] << other)
@@ -1093,12 +1165,18 @@ class FaeList(_OpActionMixin["FaeList"], Delayable):
     def __init__(self, expressions: list[Delayable]) -> None:
         super().__init__(expressions=expressions)
         self._fae_expressions = list(expressions)
+        if self.fae_name is None and not self._fae_user_named:
+            self.fae_name = "FaeList"
+        _suffix_duplicate_sibling_names(self._fae_expressions)
 
     def _fae_exchange(self) -> FaeList:
         new_exprs = []
         for expr in self._fae_expressions:
             new_exprs.append((yield expr))
-        return self.__class__(new_exprs)
+        out = self.__class__(new_exprs)
+        out.fae_name = self.fae_name
+        out._fae_user_named = self._fae_user_named
+        return out
 
     def _op_action(self, name: str, *args: Any, **kwargs: Any) -> FaeList:
         opinfo = get_opinfo(attr_name=name)
@@ -1166,12 +1244,18 @@ class FaeDict(_OpActionMixin["FaeDict"], Delayable):
     def __init__(self, expressions: dict[str, Delayable]) -> None:
         super().__init__(expressions=expressions)
         self._fae_expressions = dict(expressions)
+        if self.fae_name is None and not self._fae_user_named:
+            self.fae_name = "FaeDict"
+        _suffix_duplicate_sibling_names(self._fae_expressions.values())
 
     def _fae_exchange(self) -> FaeDict:
         new_exprs = {}
         for key, expr in self._fae_expressions.items():
             new_exprs[key] = yield expr
-        return self.__class__(new_exprs)
+        out = self.__class__(new_exprs)
+        out.fae_name = self.fae_name
+        out._fae_user_named = self._fae_user_named
+        return out
 
     def _op_action(self, name: str, *args: Any, **kwargs: Any) -> FaeDict:
         opinfo = get_opinfo(attr_name=name)

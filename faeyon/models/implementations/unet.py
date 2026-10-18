@@ -30,9 +30,9 @@ def up(c_in: int, c_out: int) -> nn.Module:
 def build_unet(in_channels: int = 1, out_channels: int = 1, base: int = 64) -> nn.Module:
     with faek:
         return materialize(
-            conv_block(in_channels, base) % "e1"
+            conv_block(in_channels, base) @ "e1"
             >> down(base)
-            >> conv_block(base, base * 2) % "e2"
+            >> conv_block(base, base * 2) @ "e2"
             >> down(base * 2)
             >> conv_block(base * 2, base * 4)
             >> up(base * 4, base * 2)
