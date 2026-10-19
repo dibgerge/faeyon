@@ -3,7 +3,7 @@
 Prefers AST codegen (``ast`` → ``compile`` / ``exec``; debug dumps via
 ``ast.unparse``). MVP AST coverage: ``Chain``, module calls, ``X``, binary
 ``+`` / ``*``. Trees with other nodes fall back to a thin runtime binder that
-``_resolve``s on each forward (same role the old ``FaeModule`` wrapper had).
+``fae_resolve``s on each forward (same role the old ``FaeModule`` wrapper had).
 """
 
 from __future__ import annotations
@@ -328,10 +328,10 @@ def _build_module_ast(
 
 
 class _BoundModule(nn.Module):
-    """Runtime binder: register leaf modules and ``_resolve`` on each forward."""
+    """Runtime binder: register leaf modules and ``fae_resolve`` on each forward."""
 
     def __new__(cls, chain: Delayable) -> "_BoundModule":
-        # Bypass faek's nn.Module.__new__ patch (Delayable ctor arg → DelayedModule).
+        # Bypass faek's nn.Module.__new__ patch (Delayable ctor arg → F recipe).
         return object.__new__(cls)
 
     def __init__(self, chain: Delayable) -> None:
@@ -365,10 +365,10 @@ class _BoundModule(nn.Module):
         if len(args) == 1 and not kwargs:
             data = args[0]
             if isinstance(data, Input):
-                return self._chain._resolve(X=data, A=data)
-            return self._chain._resolve(X=data)
+                return self._chain.fae_resolve(X=data, A=data)
+            return self._chain.fae_resolve(X=data)
         inp = Input(*args, **kwargs)
-        return self._chain._resolve(X=inp, A=inp)
+        return self._chain.fae_resolve(X=inp, A=inp)
 
 
 def _ast_supported(expr: Delayable) -> bool:
@@ -415,12 +415,12 @@ def materialize(
     Turn a Delayable tree into a normal ``nn.Module``.
 
     Uses AST codegen when the tree is within MVP coverage; otherwise binds via
-    runtime ``_resolve``.
+    runtime ``fae_resolve``.
 
     Parameters
     ----------
     expr :
-        Fully bound expression (no unresolved ``I`` / ``DelayedModule`` recipes).
+        Fully bound expression (no unresolved ``N`` / module-ctor ``F`` recipes).
     class_name :
         Generated class name (AST path only).
     debug_source :

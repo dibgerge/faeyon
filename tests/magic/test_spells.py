@@ -4,9 +4,9 @@ import operator
 import pytest
 import torch
 from pytest import param
-from torch import nn, tensor
+from torch import nn
 
-from faeyon import A, R, X, FaeList, FaeDict, F, Chain, I, Substitute, Input, faek
+from faeyon import A, R, X, FaeList, FaeDict, F, Chain, N, Substitute, Input, faek
 from faeyon.magic._opinfo import OpInfo, _divmod
 from faeyon.magic.spells import Delayable, Symbol, Sym, _Unpack
 
@@ -35,13 +35,20 @@ class TestDelayable:
         assert [op.fae_name for op in chain._fae_ops] == ["add[0]", "add[1]"]
 
     def test_rshift_sequence_binds_i(self):
-        expr = (X + I) >> [10, 20]
+        expr = (X + N) >> [10, 20]
         assert 1 | expr == 31  # (1+10)=11, then 11+20
+
+    def test_rshift_rejects_fully_bound_root(self):
+        with pytest.raises(TypeError, match="non-Delayable"):
+            _ = (N + 1) >> 2
+
+    def test_rshift_rejects_fully_bound_chain_op(self):
+        with pytest.raises(TypeError, match="not a Delayable"):
+            _ = (X >> (N + 1)) >> 2
 
     def test_at_sets_name(self):
         expr = (X + 1) @ "add"
         assert expr.fae_name == "add"
-        assert expr._fae_user_named
 
     def test_at_rejects_symbol(self):
         with pytest.raises(TypeError, match="Cannot rename a Symbol"):
@@ -60,6 +67,26 @@ class TestDelayable:
         left, right = [c for c in expr.fae_children() if isinstance(c, F)]
         assert expr.fae_name == "add"
         assert {left.fae_name, right.fae_name} == {"add[0]", "add[1]"}
+
+    def test_user_name_sibling_suffix(self):
+        """Duplicate ``@`` names among siblings are suffixed like auto-names."""
+        expr = ((X + 1) @ "layer") + ((X + 2) @ "layer")
+        left, right = [c for c in expr.fae_children() if isinstance(c, F)]
+        assert {left.fae_name, right.fae_name} == {"layer[0]", "layer[1]"}
+
+    def test_chain_user_name_sibling_suffix(self):
+        chain = ((X + 1) @ "block") >> ((X * 2) @ "block")
+        assert [op.fae_name for op in chain._fae_ops] == ["block[0]", "block[1]"]
+
+    def test_at_updates_parent_child_cache(self):
+        """Late ``@`` renames maintain the parent's child-name cache and re-suffix."""
+        expr = (X + 1) + (X + 2)
+        left, right = [c for c in expr.fae_children() if isinstance(c, F)]
+        left @ "layer"
+        right @ "layer"
+        assert {left.fae_name, right.fae_name} == {"layer[0]", "layer[1]"}
+        assert set(expr._fae_child_names) == {"layer[0]", "layer[1]"}
+        assert all(len(v) == 1 for v in expr._fae_child_names.values())
 
     def test_chain_stays_unnamed_until_at(self):
         chain = (X + 1) >> (X * 2)
@@ -118,7 +145,7 @@ class TestDelayable:
         assert 2 | out == 36  # (2 * 9) * 2
 
     def test_fae_find_callback_replaces_root_early(self):
-        """Matching the root returns immediately from ``_fae_traverse`` (no child walk)."""
+        """Matching the root returns immediately from ``fae_traverse`` (no child walk)."""
         root = (((X + 1) @ "a") >> ((X * 2) @ "b")) @ "block"
         out = root.fae_find("block", lambda n: (X * 7) @ "replaced")
         assert out is not root
@@ -173,7 +200,7 @@ class TestF:
         assert 11 | (X + 1) == 12
 
     def test_resolve_partial_leaves_symbol(self):
-        out = (X + I)._resolve(I=3)
+        out = (X + N).fae_resolve(N=3)
         assert isinstance(out, F)
         assert 10 | out == 13
 
@@ -204,10 +231,10 @@ class TestChain:
 
 class TestX:
     def test_resolve_from_kwargs(self):
-        assert X._resolve(X=99) == 99
+        assert X.fae_resolve(X=99) == 99
 
     def test_resolve_unbound(self):
-        assert X._resolve() is X
+        assert X.fae_resolve() is X
 
     def test_fae_name(self):
         assert X.fae_name == "X"
@@ -499,7 +526,7 @@ class TestA:
 
 class TestI:
     def test_bind_in_expr(self):
-        assert (X + I)._resolve(X=1, I=5) == 6
+        assert (X + N).fae_resolve(X=1, N=5) == 6
 
 
 class TestR:
@@ -514,6 +541,10 @@ class TestR:
 
 
 class TestFaeList:
+    def test_bind_rejects_concrete_item(self):
+        with pytest.raises(TypeError, match="FaeList item"):
+            _ = FaeList([X, N]).fae_bind(1)
+
     def test_resolve_list(self):
         assert 2 | FaeList([X + 1, X * 3]) == [3, 6]
 
@@ -565,7 +596,7 @@ class TestSym:
     def test_dynamic_symbol(self):
         Y = Sym.Y
         assert Y.fae_name == "Y"
-        assert Y._resolve(Y=7) == 7
+        assert Y.fae_resolve(Y=7) == 7
 
 
 class TestIF:
@@ -579,7 +610,7 @@ class TestIF:
 
     def test_fae_bind_drops_arm(self):
         from faeyon.modifiers import IF
-        bound = IF(I > 0, X + 1, else_=X * 10).fae_bind(I=2)
+        bound = IF(N > 0, X + 1, else_=X * 10).fae_bind(2)
         assert isinstance(bound, F)
         assert 3 | bound == 4
 

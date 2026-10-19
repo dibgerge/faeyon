@@ -10,7 +10,7 @@ Delayable objects can be resolved with data using the `using()` method or the `>
 from faeyon.magic.spells import Delayable
 
 class MyDelayable(Delayable):
-    def _resolve(self, data):
+    def fae_resolve(self, data):
         # Process data and return result
         return processed_data
 

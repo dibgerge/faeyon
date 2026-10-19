@@ -26,7 +26,10 @@ def __new__(cls, *args, **kwargs):
     """
     for arg in itertools.chain(args, kwargs.values()):
         if isinstance(arg, Delayable):
-            return DelayedModule(cls, *args, **kwargs)
+            # Recipe only — ``>>`` / ``recipe(...)`` promote to ``module(X)``.
+            out = DelayedModule(cls, *args, **kwargs)
+            out.fae_name = cls.__name__
+            return out
 
     out = _new_instance(cls, *args, **kwargs)
     return out

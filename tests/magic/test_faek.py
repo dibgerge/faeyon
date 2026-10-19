@@ -8,7 +8,7 @@ import torch
 
 from torch import nn
 from faeyon import faek, F, X, Chain
-from faeyon.magic.spells import DelayedModule
+from faeyon.magic.spells import DelayedModule, F
 from tests.common import ConstantLayer
 
 
@@ -112,9 +112,19 @@ def test_clone(args, kwargs, expected_in_features, expected_out_features):
 
 class TestModuleOperators:
     """Module arithmetic / shift paths patched by faek (left and right forms)."""
-    def test_delayed_module(self):
+    def test_module_ctor_recipe(self):
+        """Delayable ctor args → ``DelayedModule``; ``>>`` promotes to ``module(X)``."""
+        from faeyon import faek
+
         expr = nn.Linear(in_features=X, out_features=2)
-        assert isinstance(expr, DelayedModule)
+        assert isinstance(expr, DelayedModule) and expr._fae_op is nn.Linear
+        assert expr.fae_name == "Linear"
+
+        chained = expr >> nn.ReLU()
+        assert isinstance(chained, Chain)
+        left = chained._fae_ops[0]
+        assert left._fae_op is faek.module__call__
+        assert isinstance(left._fae_args[0], DelayedModule)
 
     def test_or_reserved_for_resolve(self):
         """``|`` is resolve-only; Delayable on the left is rejected."""

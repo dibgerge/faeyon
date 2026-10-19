@@ -4,6 +4,7 @@ import abc
 import inspect
 import itertools
 import re
+import weakref
 
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
@@ -15,65 +16,12 @@ from ._opinfo import get_opinfo, OpInfo
 from .base import _MappingKey
 
 
-def _auto_fae_name(
-    op: Any,
-    args: tuple[Any, ...] = (),
-    kwargs: Optional[dict] = None
-) -> Optional[str]:
-    """Derive a default node name from an op (OpInfo name, module class, or ``__name__``)."""
-    if isinstance(op, OpInfo):
-        return op.name
-
-    from .faek import faek
-
-    if args and isinstance(args[0], nn.Module):
-        op_name = getattr(op, "__name__", "")
-        if op is faek.module__call__ or op_name in {
-            "_wrapped_call_impl", "__call__", "_call_impl",
-        }:
-            return type(args[0]).__name__
-
-    if isinstance(op, type):
-        return op.__name__
-
-    name = getattr(op, "__name__", None)
-    if isinstance(name, str) and name and not name.startswith("<"):
-        return name
-    return None
-
-
-def _suffix_duplicate_sibling_names(children: Sequence[Any]) -> None:
-    """
-    Among direct children that still have auto-assigned names, suffix duplicates
-    under this parent: ``add``, ``add`` → ``add[0]``, ``add[1]``. User names
-    set via ``@`` are left alone.
-    """
-    nodes = [
-        c for c in children
-        if isinstance(c, Delayable)
-        and c.fae_name is not None
-        and not getattr(c, "_fae_user_named", False)
-    ]
-    counts: dict[str, int] = {}
-    for c in nodes:
-        counts[c.fae_name] = counts.get(c.fae_name, 0) + 1
-
-    seen: dict[str, int] = {}
-    for c in nodes:
-        name = c.fae_name
-        if counts.get(name, 0) <= 1:
-            continue
-        i = seen.get(name, 0)
-        c.fae_name = f"{name}[{i}]"
-        seen[name] = i + 1
-
-
 class _Frame:
-    """One suspended `_fae_exchange` coroutine in an iterative traversal."""
+    """One suspended `fae_exchange` coroutine in an iterative traversal."""
     __slots__ = ("node", "exchange", "path", "sent", "changed")
-    def __init__(self, node: Delayable, path: str) -> None:
+    def __init__(self, node: Delayable, path: str, *, force_copy: bool = False) -> None:
         self.node = node
-        self.exchange = node._fae_exchange()
+        self.exchange = node.fae_exchange(force_copy=force_copy)
         self.path = path
         self.sent: Any = None       # value to resume the coroutine with
         self.changed = False        # did any item come back different?
@@ -109,22 +57,98 @@ class _DelayableBase:
         sig = inspect.signature(self.__init__)
         bound = sig.bind(*args, **kwargs)
         bound.apply_defaults()
-        self.fae_name = None
-        self._fae_user_named = False
         self._fae_arguments = bound
 
-    def _fae_exchange(self) -> Delayable:
-        """ 
-        This is a coroutine that yields the direct children of the delayable. This should be 
-        implemented by subclasses, where the subclasses yield immediate children of the delayable,
-        expect altered children, and return a new delayable instance.
+        self._fae_name = None
+        self._fae_parent: Optional[weakref.ref[Delayable]] = None
+        # name -> direct children with that ``fae_name`` (Symbols omitted).
+        self._fae_child_names: dict[str, list[Delayable]] = defaultdict(list)
+        # Subclasses set child storage before ``super().__init__``; then we
+        # auto-name and uniquify child names once here.
+        self.fae_init()
+
+        parent_ref = weakref.ref(self)
+        for c in self.fae_children():
+            if not isinstance(c, Delayable) or isinstance(c, type):
+                continue
+            c._fae_parent = parent_ref
+            name = c.fae_name
+            if name is not None:
+                self._fae_child_names[name].append(c)
+        self._dedup_child_names()
+
+    @property
+    def fae_name(self) -> Optional[str]:
+        return self._fae_name
+
+    @fae_name.setter
+    def fae_name(self, value: Optional[str]) -> None:
+        old = self._fae_name
+        if old == value:
+            return
+        self._fae_name = value
+
+        parent = self._fae_parent() if self._fae_parent is not None else None
+        if parent is None:
+            return
+
+        # Move this node between the parent's name buckets, then re-dedup.
+        names = parent._fae_child_names
+        if old is not None:
+            bucket = names.get(old)
+            if bucket is not None:
+                bucket = [c for c in bucket if c is not self]
+                if bucket:
+                    names[old] = bucket
+                else:
+                    del names[old]
+        if value is not None:
+            bucket = names[value]
+            # Identity check: ``Delayable.__eq__`` builds a delayed comparison.
+            if all(c is not self for c in bucket):
+                bucket.append(self)
+        parent._dedup_child_names()
+
+    def fae_init(self) -> None:
+        """Subclass hook to set an auto ``fae_name`` after base fields exist."""
+
+    def _dedup_child_names(self) -> None:
+        """
+        Among direct children, suffix duplicate ``fae_name`` values:
+        ``add``, ``add`` → ``add[0]``, ``add[1]``.
+
+        Uses ``_fae_child_names`` so repeat calls are cheap when nothing is
+        duplicated. Applies to auto-names and ``@`` names; Symbols are never
+        renamed.
+        """
+        dups = {
+            name: nodes
+            for name, nodes in self._fae_child_names.items()
+            if len(nodes) > 1
+        }
+        if not dups:
+            return
+
+        for name, nodes in dups.items():
+            del self._fae_child_names[name]
+            for i, c in enumerate(nodes):
+                # Bypass the setter: it would re-enter this dedup mid-iteration.
+                new_name = f"{name}[{i}]"
+                c._fae_name = new_name
+                self._fae_child_names[new_name].append(c)
+
+    def fae_exchange(self, *, force_copy: bool = False) -> Delayable:
+        """
+        Coroutine that yields direct children, expects replacements, and returns
+        a (possibly new) delayable. When children are unchanged, returns ``self``
+        unless ``force_copy`` (used by ``fae_clone``).
         """
         yield from ()
         return self
 
     def fae_children(self, items: bool = False) -> Iterator[Any]:
         """Yield this node's direct children, echoing every item back unchanged."""
-        exchange = self._fae_exchange()
+        exchange = self.fae_exchange()
         sent = None
         while True:
             try:
@@ -136,14 +160,53 @@ class _DelayableBase:
             if items or isinstance(item, Delayable):
                 yield item
 
-    def _fae_traverse(self, visit, *, always_copy=False, visit_items=False) -> Any:
+    def fae_traverse(
+        self,
+        pre_fn: Optional[Callable[[Delayable, str], Any]] = None,
+        *,
+        always_copy: bool = False,
+        pre_items: bool = False,
+        post_fn: Optional[Callable[[Delayable, str], Any]] = None,
+    ) -> Delayable:
+        """
+        Depth-first rebuild of the tree rooted at ``self``, without recursion.
+
+        Each node is identified by a dotted ``path`` of ``fae_name`` values
+        (``"_"`` for unnamed nodes), e.g. ``"Chain.Linear"``.
+
+        Parameters
+        ----------
+        pre_fn:
+            Pre-order hook, ``pre_fn(node, path)``, called before a node's children
+            are opened. Return ``None`` to descend into the node, or a replacement
+            to splice in its place; a replaced node is not descended into and
+            ``post_fn`` is not called on it. ``None`` descends into every node.
+        always_copy:
+            Rebuild every container even when none of its children changed
+            (used by ``fae_clone``). Otherwise unchanged subtrees are reused as is.
+        pre_items:
+            Also pass non-``Delayable`` items (modules, constants) to ``pre_fn``.
+            They are never descended into, and never passed to ``post_fn``.
+        post_fn:
+            Post-order hook, ``post_fn(node, path)``, called once all of a node's
+            children have been processed and the node has been rebuilt from them.
+            Return the node itself to keep it, or anything else to replace it in
+            its parent (the replacement may be a non-``Delayable``; the parent's
+            ``fae_exchange`` decides whether that is allowed). ``fae_bind`` uses
+            it to resolve each node whose children are all concrete.
+
+        Returns
+        -------
+        The rebuilt root, or ``self`` when nothing changed and ``always_copy``
+        is false.
+        """
         root_path = self.fae_name or "_"
-        replaced = visit(self, root_path)
+        replaced = pre_fn(self, root_path) if pre_fn is not None else None
         
         if replaced is not None:
             return replaced
         
-        stack = [_Frame(self, root_path)]
+        stack = [_Frame(self, root_path, force_copy=always_copy)]
         
         while True:
             frame = stack[-1]
@@ -151,6 +214,11 @@ class _DelayableBase:
                 item = frame.exchange.send(frame.sent)
             except StopIteration as stop:
                 node = stop.value if frame.changed or always_copy else frame.node
+                if post_fn is not None:
+                    updated = post_fn(node, frame.path)
+                    if updated is not node:
+                        frame.changed = True
+                        node = updated
                 stack.pop()
                 
                 if not stack:
@@ -164,8 +232,8 @@ class _DelayableBase:
             is_node = isinstance(item, Delayable)
             path = f"{frame.path}.{item.fae_name or '_'}" if is_node else frame.path
             
-            if is_node or visit_items:
-                new_item = visit(item, path)
+            if pre_fn is not None and (is_node or pre_items):
+                new_item = pre_fn(item, path)
                 if new_item is not None:
                     frame.sent = new_item      # replaced: prune, never open its coroutine
                     frame.changed = True
@@ -173,11 +241,11 @@ class _DelayableBase:
             
             frame.sent = item
             if is_node:
-                stack.append(_Frame(item, path))
+                stack.append(_Frame(item, path, force_copy=always_copy))
 
-    def _fae_apply(self, fn=None, *, always_copy: bool = False) -> Delayable:
+    def fae_apply(self, fn=None, *, always_copy: bool = False) -> Delayable:
         """Exchange this node's own items; children are not traversed."""
-        exchange = self._fae_exchange()
+        exchange = self.fae_exchange(force_copy=always_copy)
         changed, sent = False, None
 
         while True:
@@ -201,16 +269,16 @@ class _DelayableBase:
 
     def fae_clone(self, recurse: bool = False, clone_modules: bool = True) -> Delayable:
         if not recurse:
-            return self._fae_apply(always_copy=True)
+            return self.fae_apply(always_copy=True)
 
         def visit(item: Any, path: str) -> Any:            
             if clone_modules and isinstance(item, nn.Module):
                 return item.clone()
             return None
 
-        return self._fae_traverse(visit, always_copy=True, visit_items=True)
+        return self.fae_traverse(visit, always_copy=True, pre_items=True)
 
-    def _fae_match(
+    def fae_match(
         self,
         pattern: str | type[Delayable],
     ) -> Callable[[Delayable, str], bool]:
@@ -262,7 +330,7 @@ class _DelayableBase:
         Without ``callback``, yields matching nodes. With ``callback``, rebuilds the
         tree replacing each match with ``callback(node)``.
         """
-        matches = self._fae_match(pattern)
+        matches = self.fae_match(pattern)
 
         if callback is None:
             found: list[Delayable] = []
@@ -272,7 +340,7 @@ class _DelayableBase:
                     found.append(node)
                 return None
 
-            self._fae_traverse(collect)
+            self.fae_traverse(collect)
             return iter(found)
 
         def visit(node: Delayable, path: str) -> Optional[Delayable]:
@@ -280,7 +348,7 @@ class _DelayableBase:
                 return None
             return callback(node)
 
-        return self._fae_traverse(visit)
+        return self.fae_traverse(visit)
 
     def _record(self, result: Any, kwargs: dict[str, Any]) -> None:
         """
@@ -310,15 +378,14 @@ class _DelayableBase:
                 "Cannot use `|` with a tensor on the right; use `tensor | expr` to resolve."
             )
         raise TypeError(
-            "`|` is reserved for resolve (`data | expr`). "
-            "For bitwise or, use `torch.bitwise_or`."
+            "`|` is reserved for resolve (`data | expr`). For bitwise or, use `torch.bitwise_or`."
         )
 
     def __ror__(self, other: Any) -> Any:
         """``data | Delayable`` evaluates the delayed expression."""
         if isinstance(other, Delayable):
             return NotImplemented
-        return self._resolve(X=other)
+        return self.fae_resolve(X=other)
 
     def __matmul__[T: Delayable](self: T, other: Any) -> T:
         """
@@ -333,7 +400,6 @@ class _DelayableBase:
                 raise ValueError("Name cannot contain a period.")
             
             self.fae_name = other
-            self._fae_user_named = True
             return self
         return NotImplemented
 
@@ -344,9 +410,9 @@ class _DelayableBase:
 
     def __mod__[T: Delayable](self: T, modifier: Any) -> T:
         """
-        ``%`` applies a modifier (``Modify`` / objects with ``__rmod__``).
-        Arithmetic ``%`` is handled by ``_OpActionMixin`` when this returns
-        ``NotImplemented``. Naming uses ``@``, not ``%``.
+        `%` applies a modifier (`Modify` / objects with `__rmod__`).
+        Arithmetic `%` is handled by `_OpActionMixin` when this returns
+        `NotImplemented`. Naming uses `@`, not `%`.
         """
         rmod = getattr(modifier, "__rmod__", None)
         if callable(rmod):
@@ -359,25 +425,25 @@ class _DelayableBase:
         """Modifiers should always be to the right of the Delayable."""
         return NotImplemented
         
-    def fae_bind(self, **symbols: Any) -> Any:
+    def fae_bind(self, value: Any) -> Any:
         """
-        Substitute bound symbols structurally without requiring a pipeline ``X``.
-        Used during ``>> Sequence`` / clone expansion. When ``I`` is provided,
-        ``DelayedModule`` recipes in the subtree are materialized first.
+        Substitute `N` with `value` through one `fae_traverse` without running
+        a pipeline.
+
+        Each node is rebuilt from its bound children; a node with no `Delayable`
+        children left is then resolved (`N` becomes `value`, an `F` over
+        constants is computed). `_Unpack` is kept so its parent still splats it.
+        Containers reject a child that is no longer a `Delayable` in their
+        `fae_exchange`.
         """
-        node: Delayable = self
-        if "I" in symbols:
-            i_val = symbols["I"]
-            p_val = symbols.get("P")
+        def post_fn(node: Delayable, path: str) -> Any:
+            if isinstance(node, _Unpack) or any(
+                isinstance(child, Delayable) for child in node.fae_children()
+            ):
+                return node
+            return node.fae_resolve(N=value)
 
-            def visit(item: Any, path: str) -> Any:
-                if isinstance(item, DelayedModule):
-                    return item._generate(I=i_val, P=p_val)
-                return None
-
-            node = node._fae_traverse(visit)
-
-        return node._resolve(**symbols)
+        return self.fae_traverse(post_fn=post_fn)
 
     def __rshift__(self, other: Delayable | int | Sequence[Any]) -> Chain:
         """
@@ -386,43 +452,46 @@ class _DelayableBase:
 
         There are three possible cases:
         1. `Delayable >> Delayable` -> Chain(Delayable, Delayable)
-        2. `Delayable >> int` -> Chain of N clones (named clones get `[0]`, `[1]`, … suffixes)
-        3. `Delayable >> Sequence` -> one clone per row, binding ``I`` (and ``P`` to the row)
+        2. `Delayable >> int` -> expand over ``range(n)``, binding ``N`` to each index
+        3. `Delayable >> Sequence` -> one clone per element, binding ``N`` to that element
+
+        ``DelayedModule`` on either side is promoted to ``module(X)`` (override /
+        ``Chain``); use ``recipe(other)`` for a non-``X`` call arg.
         """
+        if isinstance(other, DelayedModule):
+            other = other(X)
         if isinstance(other, Delayable):
             return Chain(self, other)
         elif isinstance(other, int):
-            return self._fae_expand(range(other), rows=None)
+            return self.fae_expand(range(other))
         elif isinstance(other, Sequence) and not isinstance(other, (str, bytes)):
-            return self._fae_expand(range(len(other)), rows=other)
+            return self.fae_expand(other)
 
         return NotImplemented
 
-    def _fae_expand(
-        self,
-        indices: Sequence[int],
-        rows: Optional[Sequence[Any]],
-    ) -> Delayable:
-        """Clone this node once per index; bind I/P and suffix names when present."""
+    def fae_expand(self, rows: Sequence[Any]) -> Delayable:
+        """
+        Clone once per element of `rows`, binding `N` to that element. 
+        `>> n` passes `range(n)`; `>> seq` passes `seq`.
+        """
         base_name = self.fae_name
         out: Optional[Delayable] = None
-        for i in indices:
-            row = rows[i] if rows is not None else None
+
+        for i, row in enumerate(rows):
             cloned = self.fae_clone(recurse=True, clone_modules=True)
-            if row is not None:
-                cloned = cloned.fae_bind(I=row, P=row)
-            else:
-                cloned = cloned.fae_bind(I=i)
+            cloned = cloned.fae_bind(row)
 
             if base_name is not None and isinstance(cloned, Delayable):
                 cloned.fae_name = f"{base_name}[{i}]"
-                cloned._fae_user_named = self._fae_user_named
 
             if not isinstance(cloned, Delayable):
                 raise TypeError(f"Expansion produced non-Delayable: {type(cloned)}")
+
             out = cloned if out is None else (out >> cloned)
+
         if out is None:
             raise ValueError("Expansion produced an empty chain.")
+
         return out
 
     def __rrshift__(self, other: Any) -> Any:
@@ -440,7 +509,7 @@ class Delayable(_DelayableBase, ABC):
     """
 
     @abstractmethod
-    def _resolve(self, /, **kwargs: Any) -> Any:
+    def fae_resolve(self, /, **kwargs: Any) -> Any:
         """
         Resolve this delayable using keyword-bound symbols (at least ``X`` for
         the pipeline value). Must be implemented by subclasses.
@@ -669,9 +738,8 @@ class _SymbolMeta(_OpActionMixin["F"], _DelayableBase, abc.ABCMeta):
         # _DelayableBase.__init__ (via metaclass MRO) leaves fae_name=None; symbols
         # must resolve by class name so `X=...` / `A=...` kwargs match.
         cls.fae_name = name
-        cls._fae_user_named = True
 
-    def _resolve(self, /, **kwargs: Any) -> Any:
+    def fae_resolve(self, /, **kwargs: Any) -> Any:
         """
         If symbol is in kwargs, replace with that value; otherwise leave unresolved.
         """
@@ -738,13 +806,12 @@ class A(Symbol):
     pass
 
 
-class I(Symbol):
-    """ A special symbol that represents an index."""
-    pass
-
-
-class P(Symbol):
-    """ A special symbol that represents a placeholder for a parameter."""
+class N(Symbol):
+    """
+    Forward-looking symbol, bound by ``>>`` to each item on its right:
+    ``expr >> 3`` binds ``N`` to 0, 1, 2 and ``expr >> [a, b]`` to ``a``, ``b``.
+    ``X`` instead looks back at the previous result.
+    """
     pass
 
 
@@ -773,7 +840,7 @@ class R(Symbol):
     dotted path; recalled names should therefore be unique within one model.
     """
     @classmethod
-    def _resolve(cls, /, **kwargs: Any) -> Any:
+    def fae_resolve(cls, /, **kwargs: Any) -> Any:
         # R only means the recall table for the current evaluation.
         return kwargs.get(_RECALL_KEY, cls)
     
@@ -782,13 +849,22 @@ class _Unpack(Delayable):
     """
     Represents an unpacking operation (*X). When resolved, unpacks the data as *args.
     """
-    def __init__(self, target: Delayable, is_map: bool = False) -> None:
-        super().__init__(target=target, is_map=is_map)
+    def __init__(self, target: Any, is_map: bool = False) -> None:
         self._fae_target = target
         self._fae_is_map = is_map
+        super().__init__(target=target, is_map=is_map)
     
-    def _resolve(self, /, **kwargs: Any) -> Iterator[Any]:
-        return self._fae_target._resolve(**kwargs)
+    def fae_exchange(self, *, force_copy: bool = False) -> "_Unpack":
+        new_target = yield self._fae_target
+        if new_target is self._fae_target and not force_copy:
+            return self
+        return _Unpack(new_target, is_map=self._fae_is_map)
+
+    def fae_resolve(self, /, **kwargs: Any) -> Any:
+        target = self._fae_target
+        if isinstance(target, Delayable):
+            return target.fae_resolve(**kwargs)
+        return target
     
     def __repr__(self) -> str:
         if self._fae_is_map:
@@ -800,21 +876,43 @@ class _Unpack(Delayable):
 
 class F(_OpActionMixin["F"], Delayable):
     def __init__(self, op: Callable[..., Any], /, *args, **kwargs) -> None:
-        super().__init__(op, *args, **kwargs)
         self._fae_op = op
         self._fae_args = args
         self._fae_kwargs = kwargs
-        if self.fae_name is None and not self._fae_user_named:
-            self.fae_name = _auto_fae_name(op, args, kwargs)
-        _suffix_duplicate_sibling_names(
-            itertools.chain(args, kwargs.values())
-        )
+        super().__init__(op, *args, **kwargs)
 
-    def _resolve(self, /, **kwargs: Any) -> Any:
+    def fae_init(self) -> None:
+        if self.fae_name is not None:
+            return
+
+        op, args = self._fae_op, self._fae_args
+        if isinstance(op, OpInfo):
+            self.fae_name = op.name
+            return
+
+        from .faek import faek
+
+        if args and isinstance(args[0], nn.Module):
+            op_name = getattr(op, "__name__", "")
+            if op is faek.module__call__ or op_name in {
+                "_wrapped_call_impl", "__call__", "_call_impl",
+            }:
+                self.fae_name = type(args[0]).__name__
+                return
+
+        if isinstance(op, type):
+            self.fae_name = op.__name__
+            return
+
+        name = getattr(op, "__name__", None)
+        if isinstance(name, str) and name and not name.startswith("<"):
+            self.fae_name = name
+
+    def fae_resolve(self, /, **kwargs: Any) -> Any:
         resolved_args = []
         for arg in self._fae_args:
             if isinstance(arg, Delayable):
-                resolved = arg._resolve(**kwargs)
+                resolved = arg.fae_resolve(**kwargs)
             else:
                 resolved = arg
             
@@ -826,7 +924,7 @@ class F(_OpActionMixin["F"], Delayable):
         resolved_kwargs = {}
         for k, v in self._fae_kwargs.items():
             if isinstance(v, Delayable):
-                resolved = v._resolve(**kwargs)
+                resolved = v.fae_resolve(**kwargs)
             else:
                 resolved = v
         
@@ -840,29 +938,35 @@ class F(_OpActionMixin["F"], Delayable):
             resolved_kwargs.update(resolved)
 
         if any(
-            isinstance(a, Delayable) 
+            isinstance(a, Delayable)
             for a in itertools.chain(resolved_args, resolved_kwargs.values())
         ):
-            return F(self._fae_op, *resolved_args, **resolved_kwargs)
+            out = self.__class__(self._fae_op, *resolved_args, **resolved_kwargs)
+            out.fae_name = self.fae_name
+            return out
 
         result = self._fae_op(*resolved_args, **resolved_kwargs)
         self._record(result, kwargs)
         return result
 
-    def _fae_exchange(self) -> F:
+    def fae_exchange(self, *, force_copy: bool = False) -> F:
         new_args = []
+        changed = False
         for arg in self._fae_args:
             new_arg = yield arg
+            changed = changed or new_arg is not arg
             new_args.append(new_arg)
 
         new_kwargs = {}
         for key, kwarg in self._fae_kwargs.items():
             new_kwarg = yield kwarg
+            changed = changed or new_kwarg is not kwarg
             new_kwargs[key] = new_kwarg
 
+        if not changed and not force_copy:
+            return self
         out = self.__class__(self._fae_op, *new_args, **new_kwargs)
         out.fae_name = self.fae_name
-        out._fae_user_named = self._fae_user_named
         return out
     
     def __str__(self) -> str:
@@ -902,69 +1006,26 @@ class F(_OpActionMixin["F"], Delayable):
         return str(self)
 
 
-
-class ModuleCall(F):
-    """
-    Wrapper around a delayed module call. Currently unused; kept for experiment hooks.
-    """
-
-    def __init__(self, module, /, *args, **kwargs):
-        from .faek import faek
-
-        Delayable.__init__(self, module, *args, **kwargs)
-        self._call = F(faek.module__call__, module, *args, **kwargs)
-
-    def _resolve(self, /, **kwargs: Any) -> Any:
-        return self._call._resolve(**kwargs)
-
-
 class DelayedModule(F):
     """
-    Module constructor whose arguments still contain delayables (I/P holes).
-    Materialized via `_generate` during `>> Sequence` / clone expansion.
+    Module constructor recipe: ``F`` of an ``nn.Module`` class whose args still
+    contain delayables (e.g. ``nn.Linear(N, N * 3)`` via faek ``__new__``).
+
+    Resolution is the shared ``F.fae_resolve`` path. ``>>`` promotes to
+    ``module(X)``; use ``recipe(arg)`` for an explicit call arg other than ``X``.
     """
 
-    def _resolve(self, /, **kwargs: Any) -> Any:
-        raise ValueError("`DelayedModule` cannot be resolved directly.")
-
     def __rshift__(self, other: Any) -> Any:
-        # Keep recipes as Chain nodes (do not wrap in OpInfo ``call``); materialize later.
+        return self(X) >> other
+
+    def __call__(self, *args: Any, **kwargs: Any) -> F:
         from .faek import faek
 
-        if isinstance(other, nn.Module):
-            other = F(faek.module__call__, other, X)
-        if isinstance(other, Delayable):
-            return Chain(self, other)
-        return super().__rshift__(other)
-
-    def __rrshift__(self, other: Any) -> Any:
-        from .faek import faek
-
-        if isinstance(other, nn.Module):
-            other = F(faek.module__call__, other, X)
-        if isinstance(other, Delayable):
-            return Chain(other, self)
-        return super().__rrshift__(other)
-
-    def _generate(self, I: Any, P: Optional[Sequence[Any]] = None) -> F:
-        """Resolve ctor holes with clone index/row, then wrap as `module(X)`."""
-        from .faek import faek
-
-        resolve_kwargs: dict[str, Any] = {"I": I}
-        if P is not None:
-            resolve_kwargs["P"] = P
-
-        module_cls = self._fae_op
-        resolved_args = [
-            v._resolve(**resolve_kwargs) if isinstance(v, Delayable) else v
-            for v in self._fae_args
-        ]
-        resolved_kwargs = {
-            k: v._resolve(**resolve_kwargs) if isinstance(v, Delayable) else v
-            for k, v in self._fae_kwargs.items()
-        }
-        module = module_cls(*resolved_args, **resolved_kwargs)
-        return F(faek.module__call__, module, X)
+        call = F(faek.module__call__, self, *args, **kwargs)
+        call.fae_name = self.fae_name or (
+            self._fae_op.__name__ if isinstance(self._fae_op, type) else None
+        )
+        return call
 
 
 class Chain(_OpActionMixin[F], Delayable):
@@ -977,15 +1038,16 @@ class Chain(_OpActionMixin[F], Delayable):
         
         self._fae_ops = []
         for op in ops:
-            if isinstance(op, Delayable):
+            if isinstance(op, DelayedModule):
+                self._fae_ops.append(op(X))
+            elif isinstance(op, Delayable):
                 self._fae_ops.append(op)
             else:
                 raise ValueError("All arguments must be of subtype `Delayable` or `nn.Module`.")
-        super().__init__(*ops)
         # Chains stay unnamed unless the user sets ``@ "name"``.
-        _suffix_duplicate_sibling_names(self._fae_ops)
+        super().__init__(*ops)
 
-    def _resolve(self, /, **kwargs: Any) -> Any:
+    def fae_resolve(self, /, **kwargs: Any) -> Any:
         """
         data | chain. 
 
@@ -997,52 +1059,30 @@ class Chain(_OpActionMixin[F], Delayable):
         # nested chains find the caller's table in kwargs and share it.
         kwargs = dict(kwargs)
         kwargs.setdefault(_RECALL_KEY, _RecallTable())
-        x = self._fae_ops[0]._resolve(**kwargs)
+        x = self._fae_ops[0].fae_resolve(**kwargs)
         for op in self._fae_ops[1:]:
             kwargs["X"] = x
-            x = op._resolve(**kwargs)
+            x = op.fae_resolve(**kwargs)
         self._record(x, kwargs)
         return x
 
-    def fae_bind(self, **symbols: Any) -> Chain:
-        # Materialize DelayedModules on the whole chain first, then bind each op.
-        node: Delayable = self
-        if "I" in symbols:
-            i_val = symbols["I"]
-            p_val = symbols.get("P")
-
-            def visit(item: Any, path: str) -> Any:
-                if isinstance(item, DelayedModule):
-                    return item._generate(I=i_val, P=p_val)
-                return None
-
-            node = node._fae_traverse(visit)
-
-        if not isinstance(node, Chain):
-            bound = node.fae_bind(**symbols) if isinstance(node, Delayable) else node
-            if isinstance(bound, Chain):
-                bound.fae_name = self.fae_name
-                return bound
-            out = Chain(bound) if isinstance(bound, Delayable) else node
-            if isinstance(out, Chain):
-                out.fae_name = self.fae_name
-            return out  # type: ignore[return-value]
-
-        bound = Chain(*(
-            op.fae_bind(**symbols) if isinstance(op, Delayable) else op
-            for op in node._fae_ops
-        ))
-        bound.fae_name = self.fae_name
-        return bound
-
-    def _fae_exchange(self) -> Chain:
+    def fae_exchange(self, *, force_copy: bool = False) -> Chain:
         new_ops = []
+        changed = False
         for op in self._fae_ops:
             new_op = yield op
+            changed = changed or new_op is not op
+            if not isinstance(new_op, Delayable):
+                label = getattr(op, "fae_name", None) or type(op).__name__
+                raise TypeError(
+                    f"Chain op {label!r} bound to {type(new_op).__name__}, "
+                    "which is not a Delayable."
+                )
             new_ops.append(new_op)
+        if not changed and not force_copy:
+            return self
         out = self.__class__(*new_ops)
         out.fae_name = self.fae_name
-        out._fae_user_named = self._fae_user_named
         return out
 
     def __lshift__(self, other: Delayable) -> Chain:
@@ -1155,7 +1195,7 @@ class Substitute:
         self._kwargs = kwargs
 
     def __or__(self, other: Delayable) -> Any:
-        return other._resolve(**self._kwargs)
+        return other.fae_resolve(**self._kwargs)
 
 
 class FaeList(_OpActionMixin["FaeList"], Delayable):
@@ -1163,19 +1203,29 @@ class FaeList(_OpActionMixin["FaeList"], Delayable):
     TODO: Make FList generic e.g. Flist[Delayable, etc..]
     """
     def __init__(self, expressions: list[Delayable]) -> None:
-        super().__init__(expressions=expressions)
         self._fae_expressions = list(expressions)
-        if self.fae_name is None and not self._fae_user_named:
-            self.fae_name = "FaeList"
-        _suffix_duplicate_sibling_names(self._fae_expressions)
+        super().__init__(expressions=expressions)
 
-    def _fae_exchange(self) -> FaeList:
+    def fae_init(self) -> None:
+        if self.fae_name is None:
+            self.fae_name = "FaeList"
+
+    def fae_exchange(self, *, force_copy: bool = False) -> FaeList:
         new_exprs = []
+        changed = False
         for expr in self._fae_expressions:
-            new_exprs.append((yield expr))
+            new_expr = yield expr
+            changed = changed or new_expr is not expr
+            if not isinstance(new_expr, Delayable):
+                raise TypeError(
+                    f"FaeList item bound to {type(new_expr).__name__}, "
+                    "which is not a Delayable."
+                )
+            new_exprs.append(new_expr)
+        if not changed and not force_copy:
+            return self
         out = self.__class__(new_exprs)
         out.fae_name = self.fae_name
-        out._fae_user_named = self._fae_user_named
         return out
 
     def _op_action(self, name: str, *args: Any, **kwargs: Any) -> FaeList:
@@ -1203,8 +1253,8 @@ class FaeList(_OpActionMixin["FaeList"], Delayable):
             out.append(F(opinfo, item, *items_args, **items_kwargs))
         return FaeList(out)
 
-    def _resolve(self, /, **kwargs: Any) -> Any:
-        result = [item._resolve(**kwargs) for item in self._fae_expressions]
+    def fae_resolve(self, /, **kwargs: Any) -> Any:
+        result = [item.fae_resolve(**kwargs) for item in self._fae_expressions]
         self._record(result, kwargs)
         return result
 
@@ -1242,19 +1292,29 @@ class FaeList(_OpActionMixin["FaeList"], Delayable):
 
 class FaeDict(_OpActionMixin["FaeDict"], Delayable):
     def __init__(self, expressions: dict[str, Delayable]) -> None:
-        super().__init__(expressions=expressions)
         self._fae_expressions = dict(expressions)
-        if self.fae_name is None and not self._fae_user_named:
-            self.fae_name = "FaeDict"
-        _suffix_duplicate_sibling_names(self._fae_expressions.values())
+        super().__init__(expressions=expressions)
 
-    def _fae_exchange(self) -> FaeDict:
+    def fae_init(self) -> None:
+        if self.fae_name is None:
+            self.fae_name = "FaeDict"
+
+    def fae_exchange(self, *, force_copy: bool = False) -> FaeDict:
         new_exprs = {}
+        changed = False
         for key, expr in self._fae_expressions.items():
-            new_exprs[key] = yield expr
+            new_expr = yield expr
+            changed = changed or new_expr is not expr
+            if not isinstance(new_expr, Delayable):
+                raise TypeError(
+                    f"FaeDict item {key!r} bound to {type(new_expr).__name__}, "
+                    "which is not a Delayable."
+                )
+            new_exprs[key] = new_expr
+        if not changed and not force_copy:
+            return self
         out = self.__class__(new_exprs)
         out.fae_name = self.fae_name
-        out._fae_user_named = self._fae_user_named
         return out
 
     def _op_action(self, name: str, *args: Any, **kwargs: Any) -> FaeDict:
@@ -1291,9 +1351,9 @@ class FaeDict(_OpActionMixin["FaeDict"], Delayable):
             out[key] = F(opinfo, value, *items_args, **items_kwargs)
         return FaeDict(out)
 
-    def _resolve(self, /, **kwargs: Any) -> Any:
+    def fae_resolve(self, /, **kwargs: Any) -> Any:
         result = {
-            key: item._resolve(**kwargs)
+            key: item.fae_resolve(**kwargs)
             for key, item in self._fae_expressions.items()
         }
         self._record(result, kwargs)

@@ -1,8 +1,7 @@
 import abc
-from typing import Any, Optional
+from typing import Any
 
-from faeyon.magic.base import _NoValue
-from faeyon.magic.spells import Delayable, DelayedModule, F, X
+from faeyon.magic.spells import Delayable, F, X
 
 
 class Modifier(abc.ABC):
@@ -43,110 +42,69 @@ class Modify:
 
 class IF(Delayable, Modifier):
     """
-    Conditional branch used both as an expression node and as a ``Modify`` target.
+    Conditional branch: ``IF(cond, then, else_=...)``. Both arms default to ``X``.
 
-    Expression form (clone-time / resolve-time)::
+    Expression form::
 
         main + IF(cond, X, else_=proj)
 
-    When ``cond`` is statically known after ``fae_bind`` (e.g. after ``I`` is bound),
-    the unused arm is dropped. Otherwise a runtime select ``F`` is left in the tree.
+    When ``cond`` is concrete (e.g. after ``fae_bind`` binds ``N``), rebuilding the
+    node yields the chosen arm instead. Otherwise the ``IF`` node stays in the tree.
 
-    Modifier form::
+    As a modifier, the matched node becomes the ``then`` arm::
 
         model % Modify(r".*dropout", IF(training, else_=X))
     """
     def __init__(
         self,
         condition: bool | Delayable,
-        then: Any = _NoValue,
-        else_: Optional[Any] = None,
+        then: Any = X,
+        else_: Any = X,
     ) -> None:
         self.condition = condition
-        self._modifier_mode = then is _NoValue
-        self.then = None if self._modifier_mode else then
-        self.else_ = X if else_ is None else else_
+        self.then = then
+        self.else_ = else_
         super().__init__(condition, then, else_=else_)
 
     def __call__(self, node: Delayable) -> Delayable:
-        if self._modifier_mode:
-            return self._select(node)
-        raise TypeError("Expression-form IF is not callable; use IF(cond, then, else_=...)")
+        if isinstance(self.condition, Delayable):
+            return IF(self.condition, node, else_=self.else_)
+        return node if self.condition else self.else_
 
-    def _select(self, then_branch: Any) -> Any:
+    def fae_resolve(self, /, **kwargs: Any) -> Any:
         cond = self.condition
         if isinstance(cond, Delayable):
-            return F(
-                lambda c, a, b: a if c else b,
-                cond,
-                then_branch,
-                self.else_,
-            )
-        if isinstance(cond, bool):
-            return then_branch if cond else self.else_
-        raise ValueError(f"Invalid condition type: {type(cond)}")
-
-    def _resolve(self, /, **kwargs: Any) -> Any:
-        if self._modifier_mode:
-            raise ValueError("Modifier-form IF cannot be resolved; apply it via Modify")
-        cond = self.condition
+            cond = cond.fae_resolve(**kwargs)
         if isinstance(cond, Delayable):
-            cond = cond._resolve(**kwargs)
-        if isinstance(cond, Delayable):
-            then = self.then._resolve(**kwargs) if isinstance(self.then, Delayable) else self.then
-            else_ = self.else_._resolve(**kwargs) if isinstance(self.else_, Delayable) else self.else_
+            then = self.then.fae_resolve(**kwargs) if isinstance(self.then, Delayable) else self.then
+            else_ = self.else_.fae_resolve(**kwargs) if isinstance(self.else_, Delayable) else self.else_
             return F(lambda c, a, b: a if c else b, cond, then, else_)
         chosen = self.then if cond else self.else_
         if isinstance(chosen, Delayable):
-            return chosen._resolve(**kwargs)
+            return chosen.fae_resolve(**kwargs)
         return chosen
 
-    def fae_bind(self, **symbols: Any) -> Any:
-        if self._modifier_mode:
-            return self
-
-        node: Delayable = self
-        if "I" in symbols:
-            i_val = symbols["I"]
-            p_val = symbols.get("P")
-
-            def visit(item: Any, path: str) -> Any:
-                if isinstance(item, DelayedModule):
-                    return item._generate(I=i_val, P=p_val)
-                return None
-
-            node = node._fae_traverse(visit)
-            if not isinstance(node, IF):
-                return node.fae_bind(**symbols) if isinstance(node, Delayable) else node
-
-        cond = node.condition
-        if isinstance(cond, Delayable):
-            cond = cond.fae_bind(**symbols)
-        then = node.then.fae_bind(**symbols) if isinstance(node.then, Delayable) else node.then
-        else_ = node.else_.fae_bind(**symbols) if isinstance(node.else_, Delayable) else node.else_
-        if isinstance(cond, Delayable):
-            out = IF(cond, then, else_=else_)
-            out.fae_name = node.fae_name
-            return out
-        chosen = then if cond else else_
-        if isinstance(chosen, Delayable) and node.fae_name is not None:
-            chosen.fae_name = node.fae_name
-        return chosen
-
-    def _fae_exchange(self) -> "IF":
-        if self._modifier_mode:
-            yield from ()
-            return self
+    def fae_exchange(self, *, force_copy: bool = False) -> "IF":
         cond = yield self.condition
         then = yield self.then
         else_ = yield self.else_
+        changed = (
+            cond is not self.condition
+            or then is not self.then
+            or else_ is not self.else_
+        )
+        if not isinstance(cond, Delayable):
+            chosen = then if cond else else_
+            if isinstance(chosen, Delayable) and self.fae_name is not None:
+                chosen.fae_name = self.fae_name
+            return chosen
+        if not changed and not force_copy:
+            return self
         out = IF(cond, then, else_=else_)
         out.fae_name = self.fae_name
         return out
 
     def __repr__(self) -> str:
-        if self._modifier_mode:
-            return f"IF({self.condition!r}, else_={self.else_!r})"
         return f"IF({self.condition!r}, {self.then!r}, else_={self.else_!r})"
 
 

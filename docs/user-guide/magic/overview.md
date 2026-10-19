@@ -29,7 +29,7 @@ op = X.transpose(0, 1) >> X.reshape(-1, 10)
 from faeyon.magic.spells import Delayable
 
 class MyDelayable(Delayable):
-    def _resolve(self, data):
+    def fae_resolve(self, data):
         # Resolve the delayable with data
         return processed_data
 ```

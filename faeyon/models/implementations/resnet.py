@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from torch import nn
 
-from faeyon import materialize, I, X, faek
+from faeyon import materialize, N, X, faek
 from faeyon.modifiers import IF
 
 
@@ -24,11 +24,11 @@ def resnet50_blocks() -> list[tuple[int, int, int, int]]:
 
 def build_resnet50(num_classes: int = 1000) -> nn.Module:
     """
-    ResNet-50 via one DelayedModule bottleneck template + ``>> blocks`` table
-    (design Version B). Requires ``faek`` while building.
+    ResNet-50 via one ``N``-parameterized bottleneck template + ``>> blocks``
+    table. Requires ``faek`` while building.
     """
     blocks = resnet50_blocks()
-    c_in, c_mid, c_out, stride = I[0], I[1], I[2], I[3]
+    c_in, c_mid, c_out, stride = N[0], N[1], N[2], N[3]
 
     with faek:
         bottleneck = (
