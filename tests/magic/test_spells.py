@@ -21,6 +21,7 @@ class TestDelayable:
     def test_isinstance_symbol(self):
         assert isinstance(X, Delayable)
         assert isinstance(X, X)
+        assert X.fae_name == "X"
 
     def test_rshift_int_suffixes_names(self):
         block = (X + 1) @ "layer"
@@ -34,7 +35,7 @@ class TestDelayable:
         assert len(chain) == 2
         assert [op.fae_name for op in chain._fae_ops] == ["add[0]", "add[1]"]
 
-    def test_rshift_sequence_binds_i(self):
+    def test_rshift_sequence_binds_n(self):
         expr = (X + N) >> [10, 20]
         assert 1 | expr == 31  # (1+10)=11, then 11+20
 
@@ -42,9 +43,24 @@ class TestDelayable:
         with pytest.raises(TypeError, match="non-Delayable"):
             _ = (N + 1) >> 2
 
+    def test_rshift_rejects_op_without_x(self):
+        with pytest.raises(TypeError, match="does not use X"):
+            _ = X >> N
+        with pytest.raises(TypeError, match="does not use X"):
+            _ = X >> Sym.Y
+        # Uses X alongside another symbol — ok.
+        assert 3 | (X >> (Sym.Y + X)).fae_resolve(Y=10) == 13
+
+    def test_rshift_rejects_nested_chain_without_incoming_x(self):
+        # Nested chain only feeds X to its first op; Y ignores it.
+        with pytest.raises(TypeError, match="does not use X"):
+            _ = X >> (Sym.Y >> X)
+
     def test_rshift_rejects_fully_bound_chain_op(self):
+        from faeyon.modifiers import IF
+
         with pytest.raises(TypeError, match="not a Delayable"):
-            _ = (X >> (N + 1)) >> 2
+            _ = (X >> IF(N > 0, X + 1, else_=5)) >> 1
 
     def test_at_sets_name(self):
         expr = (X + 1) @ "add"

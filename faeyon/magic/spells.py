@@ -160,6 +160,19 @@ class _DelayableBase:
             if items or isinstance(item, Delayable):
                 yield item
 
+    def fae_uses(self, symbol: type) -> bool:
+        """
+        True if resolving this node depends on ``symbol``.
+
+        Walks Delayable children. ``Chain`` overrides this for ``X``: only the
+        first op sees the incoming pipeline value, so a nested chain uses ``X``
+        only when its first op does.
+        """
+        return any(
+            isinstance(child, Delayable) and child.fae_uses(symbol)
+            for child in self.fae_children()
+        )
+
     def fae_traverse(
         self,
         pre_fn: Optional[Callable[[Delayable, str], Any]] = None,
@@ -214,7 +227,10 @@ class _DelayableBase:
                 item = frame.exchange.send(frame.sent)
             except StopIteration as stop:
                 node = stop.value if frame.changed or always_copy else frame.node
-                if post_fn is not None:
+                # Exchange may collapse a node to a non-Delayable (e.g. IF → arm);
+                # the parent decides whether that is allowed. Only Delayables have
+                # post_fn / fae_resolve hooks.
+                if post_fn is not None and isinstance(node, Delayable):
                     updated = post_fn(node, frame.path)
                     if updated is not node:
                         frame.changed = True
@@ -747,6 +763,9 @@ class _SymbolMeta(_OpActionMixin["F"], _DelayableBase, abc.ABCMeta):
             return kwargs[self.fae_name]
         return self
 
+    def fae_uses(self, symbol: type) -> bool:
+        return self is symbol
+
     def __instancecheck__(cls, instance):
         return (
             super().__instancecheck__(instance) 
@@ -1031,6 +1050,9 @@ class DelayedModule(F):
 class Chain(_OpActionMixin[F], Delayable):
     """
     A Chain is a sequence of operations: `op0 >> op1 << op2 >> ... >> opn`.
+
+    Each stage after the first must use ``X`` so it takes the previous result.
+    The first stage may use ``A`` (or ``X``) for the pipeline / call arguments.
     """
     def __init__(self, *ops: Delayable) -> None:
         if not ops:
@@ -1044,8 +1066,34 @@ class Chain(_OpActionMixin[F], Delayable):
                 self._fae_ops.append(op)
             else:
                 raise ValueError("All arguments must be of subtype `Delayable` or `nn.Module`.")
+        self._check_ops(self._fae_ops)
         # Chains stay unnamed unless the user sets ``@ "name"``.
         super().__init__(*ops)
+
+    @staticmethod
+    def _op_label(op: Delayable) -> str:
+        return getattr(op, "fae_name", None) or type(op).__name__
+
+    @staticmethod
+    def _check_ops(ops: Sequence[Delayable]) -> None:
+        for i, op in enumerate(ops):
+            if not isinstance(op, Delayable):
+                raise TypeError(
+                    f"Chain op {Chain._op_label(op)!r} is {type(op).__name__}, "
+                    "which is not a Delayable."
+                )
+            # First stage may use A (or anything); later stages must take X.
+            if i > 0 and not op.fae_uses(X):
+                raise TypeError(
+                    f"Chain op {Chain._op_label(op)!r} does not use X; "
+                    "each stage after the first must take the previous result via X."
+                )
+
+    def fae_uses(self, symbol: type) -> bool:
+        # Incoming X is only fed to the first op; later ops see the prior result as X.
+        if symbol is X:
+            return self._fae_ops[0].fae_uses(X)
+        return super().fae_uses(symbol)
 
     def fae_resolve(self, /, **kwargs: Any) -> Any:
         """
@@ -1073,12 +1121,13 @@ class Chain(_OpActionMixin[F], Delayable):
             new_op = yield op
             changed = changed or new_op is not op
             if not isinstance(new_op, Delayable):
-                label = getattr(op, "fae_name", None) or type(op).__name__
                 raise TypeError(
-                    f"Chain op {label!r} bound to {type(new_op).__name__}, "
+                    f"Chain op {self._op_label(op)!r} bound to {type(new_op).__name__}, "
                     "which is not a Delayable."
                 )
             new_ops.append(new_op)
+        if changed:
+            self._check_ops(new_ops)
         if not changed and not force_copy:
             return self
         out = self.__class__(*new_ops)
